@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+data/config/providers.local.json
+data/sessions/
+data/exports/
+.superpowers/
+work/
