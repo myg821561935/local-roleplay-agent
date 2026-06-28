@@ -80,7 +80,7 @@ Create `package.json`:
   "scripts": {
     "dev": "node server/index.js",
     "start": "node server/index.js",
-    "test": "node --test"
+    "test": "node --test tests/*.test.js"
   },
   "engines": {
     "node": ">=20"
