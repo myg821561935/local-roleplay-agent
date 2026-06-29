@@ -17,7 +17,7 @@ http://127.0.0.1:5177
 1. 在左侧填写 OpenAI-compatible provider。
 2. 点击保存接口。
 3. 在中间输入第一条行动、对白或旁白指令。
-4. 在右侧查看记忆状态、世界书和 Prompt 模块。
+4. 在右侧查看记忆状态、世界书、角色卡和 Prompt 模块。
 
 ## 外部 API 配置
 
@@ -46,6 +46,12 @@ https://api.example.com/v1
 - `memoryCards`：预留的可检索记忆卡片层；当前版本会读取和检索它，但不会自动生成新的卡片。
 - `worldBook`：人工维护或种子导入的设定条目，会按关键词检索注入。
 
+## 增加世界书和角色卡
+
+- 世界书：打开右侧“世界书”，点击“新增条目”，把 `title`、`keywords`、`content` 改成你的设定后保存。
+- 角色卡：打开右侧“角色卡”，点击“角色模板”，填写主角姓名、身份、描述、性格和当前情境后保存。
+- 推荐选项：Agent 回复下方会出现“推荐下一步”。点击任意选项会直接作为下一轮输入发送；不合适就忽略，自己在输入框写。
+
 ## 自动总结
 
 当前实现会在未总结轮次较多，或 prompt 估算接近上限时触发滚动摘要。摘要成功后会清空未总结计数；如果摘要调用失败，会保留待总结窗口，下一轮继续尝试。
@@ -63,6 +69,7 @@ https://api.example.com/v1
 
 ```text
 data/config/providers.local.json    本地 provider，git 忽略
+data/config/character-card.json     角色卡
 data/config/prompt-modules.json     Prompt 模块
 data/config/world-book.json         世界书
 data/sessions/main.json             默认会话

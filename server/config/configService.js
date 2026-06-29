@@ -1,4 +1,4 @@
-import { defaultPromptModules, defaultProviders, defaultWorldBook } from './defaults.js';
+import { defaultCharacterCard, defaultPromptModules, defaultProviders, defaultWorldBook } from './defaults.js';
 
 export class ConfigService {
   constructor(store) {
@@ -9,7 +9,8 @@ export class ConfigService {
     const providers = await this.store.read('config/providers.local.json', defaultProviders);
     const promptModules = await this.store.read('config/prompt-modules.json', defaultPromptModules);
     const worldBook = await this.store.read('config/world-book.json', defaultWorldBook);
-    return { providers, promptModules, worldBook };
+    const characterCard = await this.store.read('config/character-card.json', defaultCharacterCard);
+    return { providers, promptModules, worldBook, characterCard };
   }
 
   async saveProviders(providers) {
@@ -22,6 +23,10 @@ export class ConfigService {
 
   async saveWorldBook(worldBook) {
     return this.store.write('config/world-book.json', worldBook.map(normalizeWorldBookEntry));
+  }
+
+  async saveCharacterCard(characterCard) {
+    return this.store.write('config/character-card.json', normalizeCharacterCard(characterCard));
   }
 }
 
@@ -77,5 +82,19 @@ function normalizeWorldBookEntry(entry) {
     enabled: Boolean(entry.enabled),
     source: String(entry.source || 'manual'),
     updatedAt: String(entry.updatedAt || new Date().toISOString())
+  };
+}
+
+function normalizeCharacterCard(card = {}) {
+  return {
+    name: String(card.name || '未命名主角'),
+    role: String(card.role || '个人创作主角'),
+    description: String(card.description || ''),
+    personality: String(card.personality || ''),
+    scenario: String(card.scenario || ''),
+    firstMessage: String(card.firstMessage || ''),
+    exampleDialog: Array.isArray(card.exampleDialog) ? card.exampleDialog.map(String) : [],
+    tags: Array.isArray(card.tags) ? card.tags.map(String) : [],
+    enabled: card.enabled !== false
   };
 }

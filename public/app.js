@@ -4,7 +4,8 @@ const state = {
   config: {
     providers: { activeProviderId: '', providers: [] },
     promptModules: [],
-    worldBook: []
+    worldBook: [],
+    characterCard: {}
   },
   session: {
     id: 'main',
@@ -31,7 +32,12 @@ const els = {
   memoryView: document.querySelector('#memory-view'),
   worldbookEditor: document.querySelector('#worldbook-editor'),
   saveWorldbook: document.querySelector('#save-worldbook'),
+  addWorldbookEntry: document.querySelector('#add-worldbook-entry'),
   worldbookStatus: document.querySelector('#worldbook-status'),
+  characterCardEditor: document.querySelector('#character-card-editor'),
+  saveCharacterCard: document.querySelector('#save-character-card'),
+  resetCharacterCard: document.querySelector('#reset-character-card'),
+  characterCardStatus: document.querySelector('#character-card-status'),
   promptEditor: document.querySelector('#prompt-editor'),
   savePrompt: document.querySelector('#save-prompt'),
   promptStatus: document.querySelector('#prompt-status'),
@@ -58,7 +64,16 @@ function bindEvents() {
 
   els.refreshState.addEventListener('click', () => loadState());
   els.saveWorldbook.addEventListener('click', () => saveWorldBook());
+  els.addWorldbookEntry.addEventListener('click', () => addWorldBookEntry());
+  els.saveCharacterCard.addEventListener('click', () => saveCharacterCard());
+  els.resetCharacterCard.addEventListener('click', () => resetCharacterCardTemplate());
   els.savePrompt.addEventListener('click', () => savePromptModules());
+
+  els.messages.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-recommended-action]');
+    if (!button) return;
+    useRecommendedAction(button.dataset.recommendedAction);
+  });
 
   els.tabButtons.forEach((button) => {
     button.addEventListener('click', () => activateTab(button.dataset.tab));
@@ -148,12 +163,46 @@ function createMessageNode(message) {
 
   meta.append(roleText, time);
   article.append(meta, content);
+  const actions = createRecommendedActionsNode(message.recommendedActions);
+  if (actions) article.append(actions);
   return article;
+}
+
+function createRecommendedActionsNode(actions) {
+  if (!Array.isArray(actions) || !actions.length) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'recommended-actions';
+
+  const label = document.createElement('span');
+  label.className = 'recommended-actions-label';
+  label.textContent = '推荐下一步';
+  wrap.append(label);
+
+  actions.forEach((action) => {
+    const text = String(action || '').trim();
+    if (!text) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'recommendation-button';
+    button.dataset.recommendedAction = text;
+    button.textContent = text;
+    wrap.append(button);
+  });
+
+  return wrap.childElementCount > 1 ? wrap : null;
+}
+
+function useRecommendedAction(action) {
+  const text = String(action || '').trim();
+  if (!text || els.chatInput.disabled) return;
+  els.chatInput.value = text;
+  sendMessage();
 }
 
 function renderInspector() {
   els.memoryView.textContent = prettyJson(state.session?.memory || {});
   els.worldbookEditor.value = prettyJson(state.config.worldBook || []);
+  els.characterCardEditor.value = prettyJson(state.config.characterCard || createCharacterCardTemplate());
   els.promptEditor.value = prettyJson(state.config.promptModules || []);
 }
 
@@ -227,6 +276,46 @@ async function saveWorldBook() {
   } finally {
     els.saveWorldbook.disabled = false;
   }
+}
+
+function addWorldBookEntry() {
+  try {
+    const worldBook = parseJsonFromTextarea(els.worldbookEditor, '世界书 JSON');
+    if (!Array.isArray(worldBook)) throw new Error('世界书 JSON 必须是数组');
+    worldBook.push(createWorldBookEntryTemplate());
+    els.worldbookEditor.value = prettyJson(worldBook);
+    setStatus(els.worldbookStatus, '已添加条目模板，编辑后保存', 'ok');
+  } catch (error) {
+    setStatus(els.worldbookStatus, `新增失败：${error.message}`, 'error');
+  }
+}
+
+async function saveCharacterCard() {
+  setStatus(els.characterCardStatus, '正在保存...', 'busy');
+  els.saveCharacterCard.disabled = true;
+  try {
+    const characterCard = parseJsonFromTextarea(els.characterCardEditor, '角色卡 JSON');
+    if (!isPlainObject(characterCard)) throw new Error('角色卡 JSON 必须是普通对象');
+    const payload = await apiRequest('/api/character-card', {
+      method: 'PUT',
+      body: { characterCard }
+    });
+    state.config.characterCard = payload.characterCard || characterCard;
+    els.characterCardEditor.value = prettyJson(state.config.characterCard);
+    setStatus(els.characterCardStatus, '角色卡已保存', 'ok');
+  } catch (error) {
+    setStatus(els.characterCardStatus, `保存失败：${error.message}`, 'error');
+  } finally {
+    els.saveCharacterCard.disabled = false;
+  }
+}
+
+function resetCharacterCardTemplate() {
+  els.characterCardEditor.value = prettyJson({
+    ...createCharacterCardTemplate(),
+    ...safeObjectFromTextarea(els.characterCardEditor)
+  });
+  setStatus(els.characterCardStatus, '已套用角色卡模板，编辑后保存', 'ok');
 }
 
 async function savePromptModules() {
@@ -355,6 +444,45 @@ function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function safeObjectFromTextarea(textarea) {
+  try {
+    const value = JSON.parse(textarea.value || '{}');
+    return isPlainObject(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function createWorldBookEntryTemplate() {
+  return {
+    id: `manual-${Date.now()}`,
+    type: 'memory',
+    title: '新世界书条目',
+    keywords: ['关键词'],
+    content: '这里写设定、地点、势力、物品、伏笔或长期事实。',
+    priority: 50,
+    depth: 4,
+    scope: 'prompt',
+    enabled: true,
+    source: 'manual',
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function createCharacterCardTemplate() {
+  return {
+    name: '未命名主角',
+    role: '身份/职业',
+    description: '外貌、背景、能力、限制、长期目标。',
+    personality: '性格、说话方式、价值观。',
+    scenario: '当前处境、开局地点、正在面对的问题。',
+    firstMessage: '',
+    exampleDialog: [],
+    tags: [],
+    enabled: true
+  };
 }
 
 function humanizeApiError(error) {

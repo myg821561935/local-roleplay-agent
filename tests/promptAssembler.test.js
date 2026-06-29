@@ -15,6 +15,15 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
       { id: 'disabled', title: '禁用', enabled: false, content: '不应注入。' },
       { id: 'empty', title: '空内容', enabled: true, content: '   ' }
     ],
+    characterCard: {
+      name: '沈观澜',
+      role: '游侠',
+      description: '初入江湖的刀客。',
+      personality: '沉稳，重诺。',
+      scenario: '正在调查镇武司旧案。',
+      exampleDialog: ['用户：你是谁？', '沈观澜：过路人。'],
+      enabled: true
+    },
     worldBook: [{
       id: 'wb-1',
       title: '镇武司',
@@ -40,12 +49,17 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
   assert.equal(result.messages.at(-1).content, '我要去镇武司附近打探消息。');
   assert.equal(result.injectedCards.length, 1);
   assert.match(result.messages[0].content, /保持角色一致/);
+  assert.match(result.messages[0].content, /# 角色卡/);
+  assert.match(result.messages[0].content, /沈观澜/);
+  assert.match(result.messages[0].content, /正在调查镇武司旧案/);
+  assert.match(result.messages[0].content, /<recommended_actions>/);
   assert.match(result.messages[0].content, /镇武司负责约束江湖武人/);
   assert.match(result.messages[0].content, /云州城/);
   assert.match(result.messages[0].content, /主角刚到城中。/);
   assert.ok(result.messages.some((message) => message.content === '我走进云州城。'));
   assert.ok(result.messages.some((message) => message.content === '城门外风雪未歇。'));
   assert.deepEqual(result.sections.promptModules, ['core']);
+  assert.equal(result.sections.hasCharacterCard, true);
 });
 
 test('retrieveCards ignores cards without keyword matches', () => {

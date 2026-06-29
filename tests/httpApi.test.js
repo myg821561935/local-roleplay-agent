@@ -15,6 +15,51 @@ test('GET /api/state returns config and session', async () => {
   assert.equal(response.status, 200);
   assert.equal(payload.session.id, 'main');
   assert.equal(Array.isArray(payload.config.promptModules), true);
+  assert.equal(payload.config.characterCard.name, '未命名主角');
+});
+
+test('PUT /api/character-card saves character card', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/character-card',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      characterCard: {
+        name: '沈观澜',
+        role: '游侠',
+        description: '初入江湖的刀客。',
+        personality: '沉稳，重诺。',
+        scenario: '正在调查镇武司旧案。',
+        firstMessage: '夜雨打在刀鞘上。',
+        exampleDialog: ['用户：你是谁？', '沈观澜：过路人。'],
+        tags: ['武侠'],
+        enabled: true
+      }
+    }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.characterCard.name, '沈观澜');
+  assert.equal(state.config.characterCard.name, '沈观澜');
+});
+
+test('PUT /api/character-card rejects non-object payload', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/character-card',
+    headers: { 'content-type': 'application/json' },
+    body: { characterCard: [] }
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { error: 'INVALID_CHARACTER_CARD' });
 });
 
 test('PUT /api/providers saves provider and GET /api/state masks apiKey and sensitive headers', async () => {

@@ -17,6 +17,31 @@ test('AgentService runs one chat turn and records memory metadata', async () => 
   assert.equal(result.debug.injectedCards.length, 1);
 });
 
+test('AgentService extracts recommended actions from assistant reply', async () => {
+  const { service, sessionService } = await createHarness({
+    providerClient: {
+      complete: async () => ({
+        content: [
+          '你看见镇武司门前灯火森严。',
+          '',
+          '<recommended_actions>',
+          '["上前询问守卫", "绕到侧门观察", "先去茶摊打听消息"]',
+          '</recommended_actions>'
+        ].join('\n'),
+        raw: { fake: true }
+      })
+    }
+  });
+
+  const result = await service.sendMessage({ sessionId: 'main', content: '我到镇武司门口。' });
+  const reply = result.reply;
+  const readback = await sessionService.getSession('main');
+
+  assert.equal(reply.content, '你看见镇武司门前灯火森严。');
+  assert.deepEqual(reply.recommendedActions, ['上前询问守卫', '绕到侧门观察', '先去茶摊打听消息']);
+  assert.deepEqual(readback.messages[1].recommendedActions, reply.recommendedActions);
+});
+
 test('SessionService rejects unsafe session id on read', async () => {
   const { sessionService } = await createHarness({ configureProvider: false });
 

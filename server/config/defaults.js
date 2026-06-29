@@ -3,6 +3,18 @@ export const defaultProviders = {
   providers: []
 };
 
+export const defaultCharacterCard = {
+  name: '未命名主角',
+  role: '个人创作主角',
+  description: '请在右侧角色卡中补充姓名、身份、外貌、经历和长期目标。',
+  personality: '由用户补充。',
+  scenario: '长篇角色扮演开局。',
+  firstMessage: '',
+  exampleDialog: [],
+  tags: [],
+  enabled: true
+};
+
 export const defaultPromptModules = [
   {
     id: 'core-rules',

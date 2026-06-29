@@ -107,6 +107,18 @@ async function handleApi({ req, res, url, configService, sessionService, agentSe
     return;
   }
 
+  if (req.method === 'PUT' && url.pathname === '/api/character-card') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const characterCardPayload = body.characterCard ?? {};
+    if (!isPlainObject(characterCardPayload)) {
+      throw new ApiError(400, 'INVALID_CHARACTER_CARD');
+    }
+    const characterCard = await configService.saveCharacterCard(characterCardPayload);
+    writeJson(res, 200, { characterCard });
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     validateMutatingRequest(req);
     const body = await readRequestJson(req);

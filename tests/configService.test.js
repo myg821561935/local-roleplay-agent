@@ -12,12 +12,35 @@ test('ConfigService returns seeded prompt modules and world book', async () => {
   const state = await service.getAll();
   assert.equal(state.promptModules.length >= 5, true);
   assert.equal(state.worldBook.length >= 3, true);
+  assert.equal(state.characterCard.name, '未命名主角');
   assert.equal(state.providers.activeProviderId, '');
 
   const creativeMode = state.promptModules.find((module) => module.id === 'personal-creative-mode');
   assert.ok(creativeMode);
   assert.match(creativeMode.content, /不增加限制词/);
   assert.ok(state.worldBook.find((entry) => entry.id === 'faction-zhenwusi'));
+});
+
+test('ConfigService saves character card', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-config-'));
+  const service = new ConfigService(new JsonStore(root));
+
+  await service.saveCharacterCard({
+    name: '沈观澜',
+    role: '游侠',
+    description: '初入江湖的刀客。',
+    personality: '沉稳，重诺。',
+    scenario: '正在调查镇武司旧案。',
+    firstMessage: '夜雨打在刀鞘上。',
+    exampleDialog: ['用户：你是谁？', '沈观澜：过路人。'],
+    tags: ['武侠', '高武'],
+    enabled: true
+  });
+
+  const state = await service.getAll();
+  assert.equal(state.characterCard.name, '沈观澜');
+  assert.equal(state.characterCard.role, '游侠');
+  assert.deepEqual(state.characterCard.tags, ['武侠', '高武']);
 });
 
 test('ConfigService saves provider config without touching prompt modules', async () => {

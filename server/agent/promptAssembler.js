@@ -3,6 +3,7 @@ import { retrieveCards } from './memoryRetriever.js';
 
 export function assemblePrompt({
   promptModules,
+  characterCard,
   worldBook,
   memory,
   messages,
@@ -20,10 +21,12 @@ export function assemblePrompt({
   const renderedPromptModules = getRenderablePromptModules(safePromptModules);
 
   const systemSections = [
+    renderCharacterCard(characterCard),
     renderPromptModules(renderedPromptModules),
     renderWorldState(memory?.worldState),
     renderRollingSummary(memory?.rollingSummary),
-    renderCards(injectedCards)
+    renderCards(injectedCards),
+    renderRecommendationInstruction()
   ].filter(Boolean);
 
   const recentMessages = safeMessages.slice(-recentPairs * 2).map((message) => ({
@@ -44,11 +47,30 @@ export function assemblePrompt({
     injectedCards,
     sections: {
       promptModules: renderedPromptModules.map((module) => module.id),
+      hasCharacterCard: Boolean(characterCard?.enabled !== false && String(characterCard?.name || '').trim()),
       hasWorldState: Boolean(memory?.worldState),
       hasRollingSummary: Boolean(memory?.rollingSummary),
       injectedCardIds: injectedCards.map((card) => card.id)
     }
   };
+}
+
+function renderCharacterCard(card) {
+  if (!card || card.enabled === false) return '';
+  const lines = [
+    '# 角色卡',
+    `姓名：${card.name || '未命名主角'}`,
+    `身份：${card.role || ''}`,
+    `描述：${card.description || ''}`,
+    `性格：${card.personality || ''}`,
+    `当前情境：${card.scenario || ''}`
+  ];
+  if (card.firstMessage) lines.push(`开场语：${card.firstMessage}`);
+  if (Array.isArray(card.exampleDialog) && card.exampleDialog.length) {
+    lines.push(`示例对话：\n${card.exampleDialog.join('\n')}`);
+  }
+  if (Array.isArray(card.tags) && card.tags.length) lines.push(`标签：${card.tags.join('、')}`);
+  return lines.filter((line) => !line.endsWith('：')).join('\n');
 }
 
 function renderPromptModules(promptModules = []) {
@@ -73,4 +95,16 @@ function renderRollingSummary(summary) {
 function renderCards(cards) {
   if (!cards.length) return '';
   return ['# 本轮注入的世界书和记忆', ...cards.map((card) => `## ${card.title}\n${card.content}`)].join('\n\n');
+}
+
+function renderRecommendationInstruction() {
+  return [
+    '# 推荐选项输出规则',
+    '每次回复正文之后，额外给出 2-4 个用户下一步行动建议。',
+    '建议必须适合作为用户下一轮输入，简短、可点击、不要包含解释。',
+    '请用如下独立标签输出，标签之外仍是正常回复正文：',
+    '<recommended_actions>',
+    '["行动选项一", "行动选项二", "行动选项三"]',
+    '</recommended_actions>'
+  ].join('\n');
 }

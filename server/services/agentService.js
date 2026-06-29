@@ -20,6 +20,7 @@ export class AgentService {
     const userMessage = createMessage('user', content);
     const assembled = assemblePrompt({
       promptModules: config.promptModules,
+      characterCard: config.characterCard,
       worldBook: config.worldBook,
       memory: session.memory,
       messages: session.messages,
@@ -31,7 +32,10 @@ export class AgentService {
       provider,
       messages: assembled.messages
     });
-    const assistantMessage = createMessage('assistant', assistantResult.content);
+    const parsedReply = extractRecommendedActions(assistantResult.content);
+    const assistantMessage = createMessage('assistant', parsedReply.content, {
+      recommendedActions: parsedReply.recommendedActions
+    });
 
     session.messages.push(userMessage, assistantMessage);
     session.memory = appendTurnEvent({
@@ -79,11 +83,39 @@ export class AgentService {
   }
 }
 
-function createMessage(role, content) {
-  return {
+function createMessage(role, content, extras = {}) {
+  const message = {
     id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     role,
     content: String(content || ''),
     createdAt: new Date().toISOString()
   };
+  if (Array.isArray(extras.recommendedActions) && extras.recommendedActions.length) {
+    message.recommendedActions = extras.recommendedActions;
+  }
+  return message;
+}
+
+function extractRecommendedActions(rawContent) {
+  const content = String(rawContent || '');
+  const match = content.match(/<recommended_actions>\s*([\s\S]*?)\s*<\/recommended_actions>/i);
+  if (!match) return { content, recommendedActions: [] };
+
+  const recommendedActions = parseRecommendedActions(match[1]);
+  const cleanContent = content.replace(match[0], '').trim();
+  return { content: cleanContent, recommendedActions };
+}
+
+function parseRecommendedActions(value) {
+  try {
+    const parsed = JSON.parse(String(value || '').trim());
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4);
+  } catch {
+    return String(value || '')
+      .split('\n')
+      .map((line) => line.replace(/^[-*\d.、\s]+/, '').trim())
+      .filter(Boolean)
+      .slice(0, 4);
+  }
 }
