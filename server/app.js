@@ -16,6 +16,15 @@ const contentTypes = new Map([
 
 const MASKED_SECRET = '********';
 const LOCAL_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const SENSITIVE_HEADER_PATTERNS = [
+  'authorization',
+  'api-key',
+  'apikey',
+  'token',
+  'secret',
+  'credential',
+  'auth'
+];
 
 class ApiError extends Error {
   constructor(statusCode, code) {
@@ -77,7 +86,11 @@ async function handleApi({ req, res, url, configService, sessionService, agentSe
   if (req.method === 'PUT' && url.pathname === '/api/prompt-modules') {
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
-    const promptModules = await configService.savePromptModules(body.promptModules || []);
+    const promptModulePayload = body.promptModules ?? [];
+    if (!Array.isArray(promptModulePayload)) {
+      throw new ApiError(400, 'INVALID_PROMPT_MODULES');
+    }
+    const promptModules = await configService.savePromptModules(promptModulePayload);
     writeJson(res, 200, { promptModules });
     return;
   }
@@ -85,7 +98,11 @@ async function handleApi({ req, res, url, configService, sessionService, agentSe
   if (req.method === 'PUT' && url.pathname === '/api/world-book') {
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
-    const worldBook = await configService.saveWorldBook(body.worldBook || []);
+    const worldBookPayload = body.worldBook ?? [];
+    if (!Array.isArray(worldBookPayload)) {
+      throw new ApiError(400, 'INVALID_WORLD_BOOK');
+    }
+    const worldBook = await configService.saveWorldBook(worldBookPayload);
     writeJson(res, 200, { worldBook });
     return;
   }
@@ -137,7 +154,8 @@ function maskConfig(config) {
       ...config.providers,
       providers: (config.providers.providers || []).map((provider) => ({
         ...provider,
-        apiKey: provider.apiKey ? MASKED_SECRET : ''
+        apiKey: provider.apiKey ? MASKED_SECRET : '',
+        headers: maskHeaders(provider.headers)
       }))
     }
   };
@@ -149,15 +167,54 @@ async function resolveProviderSecrets({ configService, incoming }) {
     (config.providers.providers || []).map((provider) => [String(provider.id || ''), provider])
   );
   const providers = Array.isArray(incoming.providers) ? incoming.providers.map((provider) => {
-    if (provider?.apiKey !== MASKED_SECRET) return provider;
     const existingProvider = existingProviders.get(String(provider.id || ''));
+    if (provider?.apiKey !== MASKED_SECRET) {
+      return {
+        ...provider,
+        headers: resolveMaskedHeaders(provider.headers, existingProvider?.headers)
+      };
+    }
     return {
       ...provider,
-      apiKey: existingProvider?.apiKey || ''
+      apiKey: existingProvider?.apiKey || '',
+      headers: resolveMaskedHeaders(provider.headers, existingProvider?.headers)
     };
   }) : incoming.providers;
 
   return { ...incoming, providers };
+}
+
+function maskHeaders(headers) {
+  if (!isPlainObject(headers)) return {};
+
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [
+    name,
+    isSensitiveHeaderName(name) && value ? MASKED_SECRET : value
+  ]));
+}
+
+function resolveMaskedHeaders(incomingHeaders, existingHeaders) {
+  if (!isPlainObject(incomingHeaders)) return incomingHeaders;
+
+  const existingHeadersByLowerName = isPlainObject(existingHeaders)
+    ? new Map(Object.entries(existingHeaders).map(([name, value]) => [name.toLowerCase(), value]))
+    : new Map();
+
+  return Object.fromEntries(Object.entries(incomingHeaders).map(([name, value]) => {
+    if (value === MASKED_SECRET && isSensitiveHeaderName(name)) {
+      return [name, existingHeadersByLowerName.get(name.toLowerCase()) || ''];
+    }
+    return [name, value];
+  }));
+}
+
+function isSensitiveHeaderName(name) {
+  const lowerName = String(name || '').toLowerCase();
+  return SENSITIVE_HEADER_PATTERNS.some((pattern) => lowerName.includes(pattern));
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function sendChat({ agentService, body }) {

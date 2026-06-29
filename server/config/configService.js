@@ -36,9 +36,13 @@ function normalizeProviders(value) {
       model: String(provider.model || ''),
       temperature: normalizeFiniteNumber(provider.temperature, 0.9),
       maxTokens: normalizePositiveFiniteNumber(provider.maxTokens, 2000),
-      headers: provider.headers && typeof provider.headers === 'object' ? provider.headers : {}
+      headers: isPlainObject(provider.headers) ? provider.headers : {}
     })) : []
   };
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function normalizeFiniteNumber(value, fallback) {

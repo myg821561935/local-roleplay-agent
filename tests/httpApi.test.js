@@ -17,7 +17,7 @@ test('GET /api/state returns config and session', async () => {
   assert.equal(Array.isArray(payload.config.promptModules), true);
 });
 
-test('PUT /api/providers saves provider and GET /api/state masks apiKey', async () => {
+test('PUT /api/providers saves provider and GET /api/state masks apiKey and sensitive headers', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   const providerConfig = {
     activeProviderId: 'local',
@@ -29,7 +29,12 @@ test('PUT /api/providers saves provider and GET /api/state masks apiKey', async 
       model: 'model-a',
       temperature: 0.8,
       maxTokens: 1024,
-      headers: {}
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'x-api-key': 'header-secret',
+        'x-auth-token': 'auth-secret',
+        'x-request-id': 'visible-request'
+      }
     }]
   };
 
@@ -46,10 +51,14 @@ test('PUT /api/providers saves provider and GET /api/state masks apiKey', async 
 
   assert.equal(payload.config.providers.activeProviderId, 'local');
   assert.equal(payload.config.providers.providers[0].apiKey, '********');
+  assert.equal(payload.config.providers.providers[0].headers.Authorization, '********');
+  assert.equal(payload.config.providers.providers[0].headers['x-api-key'], '********');
+  assert.equal(payload.config.providers.providers[0].headers['x-auth-token'], '********');
+  assert.equal(payload.config.providers.providers[0].headers['x-request-id'], 'visible-request');
   assert.equal(payload.config.providers.providers[0].model, 'model-a');
 });
 
-test('PUT /api/providers preserves real apiKey when saving masked provider config', async () => {
+test('PUT /api/providers preserves real apiKey and sensitive headers when saving masked provider config', async () => {
   const rootDir = await createTestRoot();
   const app = createApp({ rootDir });
   const providerConfig = {
@@ -62,7 +71,11 @@ test('PUT /api/providers preserves real apiKey when saving masked provider confi
       model: 'model-a',
       temperature: 0.8,
       maxTokens: 1024,
-      headers: {}
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'x-api-key': 'header-secret',
+        'x-request-id': 'visible-request'
+      }
     }]
   };
 
@@ -75,6 +88,7 @@ test('PUT /api/providers preserves real apiKey when saving masked provider confi
   const stateResponse = await request(app, { url: '/api/state' });
   const maskedConfig = stateResponse.json().config.providers;
   maskedConfig.providers[0].model = 'model-b';
+  maskedConfig.providers[0].headers['x-request-id'] = 'next-request';
 
   const saveMaskedResponse = await request(app, {
     method: 'PUT',
@@ -90,8 +104,44 @@ test('PUT /api/providers preserves real apiKey when saving masked provider confi
   assert.equal(saveMaskedResponse.status, 200);
   assert.equal(nextState.config.providers.providers[0].apiKey, '********');
   assert.equal(nextState.config.providers.providers[0].model, 'model-b');
+  assert.equal(nextState.config.providers.providers[0].headers.Authorization, '********');
+  assert.equal(nextState.config.providers.providers[0].headers['x-api-key'], '********');
+  assert.equal(nextState.config.providers.providers[0].headers['x-request-id'], 'next-request');
   assert.equal(savedProviderConfig.providers[0].apiKey, 'secret');
   assert.equal(savedProviderConfig.providers[0].model, 'model-b');
+  assert.equal(savedProviderConfig.providers[0].headers.Authorization, 'Bearer secret-token');
+  assert.equal(savedProviderConfig.providers[0].headers['x-api-key'], 'header-secret');
+  assert.equal(savedProviderConfig.providers[0].headers['x-request-id'], 'next-request');
+});
+
+test('PUT /api/providers normalizes non-object headers to empty object', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({ rootDir });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      activeProviderId: 'local',
+      providers: [{
+        id: 'local',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'secret',
+        model: 'model-a',
+        temperature: 0.8,
+        maxTokens: 1024,
+        headers: ['x-api-key', 'secret']
+      }]
+    }
+  });
+  const savedProviderConfig = JSON.parse(
+    await readFile(path.join(rootDir, 'data', 'config', 'providers.local.json'), 'utf8')
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(savedProviderConfig.providers[0].headers, {});
 });
 
 test('GET /api/health returns ok', async () => {
@@ -160,6 +210,36 @@ test('mutating API route rejects forbidden origin', async () => {
 
   assert.equal(response.status, 403);
   assert.deepEqual(payload, { error: 'FORBIDDEN_ORIGIN' });
+});
+
+test('PUT /api/prompt-modules rejects non-array payload', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/prompt-modules',
+    headers: { 'content-type': 'application/json' },
+    body: { promptModules: { id: 'not-an-array' } }
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { error: 'INVALID_PROMPT_MODULES' });
+});
+
+test('PUT /api/world-book rejects non-array payload', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/world-book',
+    headers: { 'content-type': 'application/json' },
+    body: { worldBook: 'not-an-array' }
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { error: 'INVALID_WORLD_BOOK' });
 });
 
 test('POST /api/chat without active provider returns NO_ACTIVE_PROVIDER', async () => {
