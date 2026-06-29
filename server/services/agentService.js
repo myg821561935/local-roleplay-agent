@@ -59,7 +59,9 @@ export class AgentService {
   }
 
   async trySummarize({ session, provider }) {
-    const recent = session.messages.slice(-8);
+    const unsummarizedTurnCount = Number(session.memory.unsummarizedTurnCount || 0);
+    const messageWindow = Math.max(8, unsummarizedTurnCount * 2);
+    const recent = session.messages.slice(-messageWindow);
     try {
       const result = await this.providerClient.complete({
         provider,
