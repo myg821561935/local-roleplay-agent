@@ -34,11 +34,21 @@ function normalizeProviders(value) {
       baseUrl: String(provider.baseUrl || ''),
       apiKey: String(provider.apiKey || ''),
       model: String(provider.model || ''),
-      temperature: Number(provider.temperature ?? 0.9),
-      maxTokens: Number(provider.maxTokens ?? 2000),
+      temperature: normalizeFiniteNumber(provider.temperature, 0.9),
+      maxTokens: normalizePositiveFiniteNumber(provider.maxTokens, 2000),
       headers: provider.headers && typeof provider.headers === 'object' ? provider.headers : {}
     })) : []
   };
+}
+
+function normalizeFiniteNumber(value, fallback) {
+  const number = Number(value ?? fallback);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizePositiveFiniteNumber(value, fallback) {
+  const number = normalizeFiniteNumber(value, fallback);
+  return number > 0 ? number : fallback;
 }
 
 function normalizePromptModule(module) {
