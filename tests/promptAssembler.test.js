@@ -32,8 +32,12 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
   });
 
   assert.equal(result.messages.at(-1).role, 'user');
+  assert.equal(result.messages.at(-1).content, '我要去镇武司附近打探消息。');
   assert.equal(result.injectedCards.length, 1);
   assert.match(result.messages[0].content, /保持角色一致/);
   assert.match(result.messages[0].content, /镇武司负责约束江湖武人/);
   assert.match(result.messages[0].content, /云州城/);
+  assert.match(result.messages[0].content, /主角刚到城中。/);
+  assert.ok(result.messages.some((message) => message.content === '我走进云州城。'));
+  assert.ok(result.messages.some((message) => message.content === '城门外风雪未歇。'));
 });
