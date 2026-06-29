@@ -9,20 +9,24 @@ export function assemblePrompt({
   userMessage,
   options = {}
 }) {
+  const safePromptModules = Array.isArray(promptModules) ? promptModules : [];
+  const safeWorldBook = Array.isArray(worldBook) ? worldBook : [];
+  const safeMessages = Array.isArray(messages) ? messages : [];
   const recentPairs = Number(options.recentPairs ?? 8);
   const maxInjectedCards = Number(options.maxInjectedCards ?? 5);
   const memoryCards = Array.isArray(memory?.memoryCards) ? memory.memoryCards : [];
-  const query = [userMessage, ...messages.slice(-recentPairs * 2).map((message) => message.content)].join('\n');
-  const injectedCards = retrieveCards({ query, worldBook, memoryCards, maxCards: maxInjectedCards });
+  const query = [userMessage, ...safeMessages.slice(-recentPairs * 2).map((message) => message.content)].join('\n');
+  const injectedCards = retrieveCards({ query, worldBook: safeWorldBook, memoryCards, maxCards: maxInjectedCards });
+  const renderedPromptModules = getRenderablePromptModules(safePromptModules);
 
   const systemSections = [
-    renderPromptModules(promptModules),
+    renderPromptModules(renderedPromptModules),
     renderWorldState(memory?.worldState),
     renderRollingSummary(memory?.rollingSummary),
     renderCards(injectedCards)
   ].filter(Boolean);
 
-  const recentMessages = messages.slice(-recentPairs * 2).map((message) => ({
+  const recentMessages = safeMessages.slice(-recentPairs * 2).map((message) => ({
     role: message.role,
     content: String(message.content || '')
   }));
@@ -39,7 +43,7 @@ export function assemblePrompt({
     tokenEstimate,
     injectedCards,
     sections: {
-      promptModules: promptModules.filter((module) => module.enabled !== false).map((module) => module.id),
+      promptModules: renderedPromptModules.map((module) => module.id),
       hasWorldState: Boolean(memory?.worldState),
       hasRollingSummary: Boolean(memory?.rollingSummary),
       injectedCardIds: injectedCards.map((card) => card.id)
@@ -48,9 +52,12 @@ export function assemblePrompt({
 }
 
 function renderPromptModules(promptModules = []) {
-  const enabled = promptModules.filter((module) => module.enabled !== false && String(module.content || '').trim());
-  if (!enabled.length) return '';
-  return ['# Prompt 模块', ...enabled.map((module) => `## ${module.title}\n${module.content}`)].join('\n\n');
+  if (!promptModules.length) return '';
+  return ['# Prompt 模块', ...promptModules.map((module) => `## ${module.title}\n${module.content}`)].join('\n\n');
+}
+
+function getRenderablePromptModules(promptModules = []) {
+  return promptModules.filter((module) => module.enabled !== false && String(module.content || '').trim());
 }
 
 function renderWorldState(worldState) {
