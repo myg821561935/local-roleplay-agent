@@ -300,6 +300,33 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.swipe-count {
+  color: var(--blue);
+}
+
+.message-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tool-button {
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #171a1d;
+  color: var(--muted);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tool-button:hover {
+  border-color: var(--gold-deep);
+  color: #f3dfb6;
+}
+
 .recommended-actions {
   display: flex;
   flex-wrap: wrap;
@@ -378,6 +405,19 @@ textarea:focus {
 
 .tab-pane[hidden] {
   display: none;
+}
+
+.file-row {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  background: #17191b;
+}
+
+.file-row input {
+  height: auto;
+  min-height: 34px;
+  padding: 6px 8px;
+  color: var(--muted);
 }
 
 .json-view,

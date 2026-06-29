@@ -35,6 +35,7 @@ const els = {
   addWorldbookEntry: document.querySelector('#add-worldbook-entry'),
   worldbookStatus: document.querySelector('#worldbook-status'),
   characterCardEditor: document.querySelector('#character-card-editor'),
+  characterCardImport: document.querySelector('#character-card-import'),
   saveCharacterCard: document.querySelector('#save-character-card'),
   resetCharacterCard: document.querySelector('#reset-character-card'),
   characterCardStatus: document.querySelector('#character-card-status'),
@@ -67,12 +68,24 @@ function bindEvents() {
   els.addWorldbookEntry.addEventListener('click', () => addWorldBookEntry());
   els.saveCharacterCard.addEventListener('click', () => saveCharacterCard());
   els.resetCharacterCard.addEventListener('click', () => resetCharacterCardTemplate());
+  els.characterCardImport.addEventListener('change', () => importCharacterCardFile());
   els.savePrompt.addEventListener('click', () => savePromptModules());
 
   els.messages.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-recommended-action]');
-    if (!button) return;
-    useRecommendedAction(button.dataset.recommendedAction);
+    const recommendation = event.target.closest('[data-recommended-action]');
+    if (recommendation) {
+      useRecommendedAction(recommendation.dataset.recommendedAction);
+      return;
+    }
+
+    const edit = event.target.closest('[data-edit-message]');
+    if (edit) {
+      editMessage(edit.dataset.editMessage);
+      return;
+    }
+
+    const regenerate = event.target.closest('[data-regenerate-message]');
+    if (regenerate) regenerateMessage(regenerate.dataset.regenerateMessage);
   });
 
   els.tabButtons.forEach((button) => {
@@ -157,15 +170,47 @@ function createMessageNode(message) {
   time.textContent = formatTime(message.createdAt);
   if (message.createdAt) time.dateTime = message.createdAt;
 
+  if (role === 'assistant' && Array.isArray(message.swipes) && message.swipes.length > 1) {
+    const swipes = document.createElement('span');
+    swipes.className = 'swipe-count';
+    swipes.textContent = `Swipe ${Number(message.activeSwipeIndex || 0) + 1}/${message.swipes.length}`;
+    meta.append(roleText, swipes, time);
+  } else {
+    meta.append(roleText, time);
+  }
+
   const content = document.createElement('div');
   content.className = 'message-content';
   content.textContent = message.content || '';
 
-  meta.append(roleText, time);
   article.append(meta, content);
+  article.append(createMessageTools(message, role));
   const actions = createRecommendedActionsNode(message.recommendedActions);
   if (actions) article.append(actions);
   return article;
+}
+
+function createMessageTools(message, role) {
+  const wrap = document.createElement('div');
+  wrap.className = 'message-tools';
+
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'tool-button';
+  edit.dataset.editMessage = message.id;
+  edit.textContent = '编辑';
+  wrap.append(edit);
+
+  if (role === 'assistant') {
+    const regenerate = document.createElement('button');
+    regenerate.type = 'button';
+    regenerate.className = 'tool-button';
+    regenerate.dataset.regenerateMessage = message.id;
+    regenerate.textContent = '重生成';
+    wrap.append(regenerate);
+  }
+
+  return wrap;
 }
 
 function createRecommendedActionsNode(actions) {
@@ -197,6 +242,50 @@ function useRecommendedAction(action) {
   if (!text || els.chatInput.disabled) return;
   els.chatInput.value = text;
   sendMessage();
+}
+
+async function editMessage(messageId) {
+  const message = findMessage(messageId);
+  if (!message) return;
+  const content = window.prompt('编辑消息', message.content || '');
+  if (content === null) return;
+  setStatus(els.sessionStatus, '正在编辑并重生成...', 'busy');
+  try {
+    const payload = await apiRequest(`/api/messages/${encodeURIComponent(messageId)}`, {
+      method: 'PATCH',
+      body: {
+        sessionId: state.session?.id || 'main',
+        content
+      }
+    });
+    state.session = payload.session || state.session;
+    renderMessages();
+    renderInspector();
+    setStatus(els.appStatus, '消息已编辑', 'ok');
+  } catch (error) {
+    setStatus(els.sessionStatus, `编辑失败：${humanizeApiError(error)}`, 'error');
+  }
+}
+
+async function regenerateMessage(messageId) {
+  setStatus(els.sessionStatus, '正在重生成...', 'busy');
+  try {
+    const payload = await apiRequest(`/api/messages/${encodeURIComponent(messageId)}/regenerate`, {
+      method: 'POST',
+      body: { sessionId: state.session?.id || 'main' }
+    });
+    state.session = payload.session || state.session;
+    renderMessages();
+    renderInspector();
+    setStatus(els.appStatus, '已生成新的 Swipe', 'ok');
+  } catch (error) {
+    setStatus(els.sessionStatus, `重生成失败：${humanizeApiError(error)}`, 'error');
+  }
+}
+
+function findMessage(messageId) {
+  return (Array.isArray(state.session?.messages) ? state.session.messages : [])
+    .find((message) => message.id === messageId);
 }
 
 function renderInspector() {
@@ -316,6 +405,31 @@ function resetCharacterCardTemplate() {
     ...safeObjectFromTextarea(els.characterCardEditor)
   });
   setStatus(els.characterCardStatus, '已套用角色卡模板，编辑后保存', 'ok');
+}
+
+async function importCharacterCardFile() {
+  const file = els.characterCardImport.files?.[0];
+  if (!file) return;
+  setStatus(els.characterCardStatus, '正在导入角色卡...', 'busy');
+  try {
+    const data = await readFileAsDataUrl(file);
+    const payload = await apiRequest('/api/character-card/import', {
+      method: 'POST',
+      body: {
+        fileName: file.name,
+        mimeType: file.type || inferMimeType(file.name),
+        data
+      }
+    });
+    state.config.characterCard = payload.characterCard || state.config.characterCard;
+    state.config.worldBook = payload.worldBook || state.config.worldBook;
+    renderInspector();
+    setStatus(els.characterCardStatus, `导入完成，角色书条目 ${payload.importedWorldBookCount || 0} 条`, 'ok');
+  } catch (error) {
+    setStatus(els.characterCardStatus, `导入失败：${humanizeApiError(error)}`, 'error');
+  } finally {
+    els.characterCardImport.value = '';
+  }
 }
 
 async function savePromptModules() {
@@ -461,12 +575,21 @@ function createWorldBookEntryTemplate() {
     type: 'memory',
     title: '新世界书条目',
     keywords: ['关键词'],
+    secondaryKeywords: [],
+    matchMode: 'keyword',
+    regex: [],
+    logic: 'any',
     content: '这里写设定、地点、势力、物品、伏笔或长期事实。',
     priority: 50,
     depth: 4,
+    insertionOrder: 0,
+    constant: false,
+    caseSensitive: false,
+    position: 'after_character',
     scope: 'prompt',
     enabled: true,
     source: 'manual',
+    extensions: {},
     updatedAt: new Date().toISOString()
   };
 }
@@ -480,9 +603,29 @@ function createCharacterCardTemplate() {
     scenario: '当前处境、开局地点、正在面对的问题。',
     firstMessage: '',
     exampleDialog: [],
+    creatorNotes: '',
+    systemPrompt: '',
+    postHistoryInstructions: '',
+    alternateGreetings: [],
     tags: [],
+    creator: '',
+    characterVersion: '',
+    extensions: {},
     enabled: true
   };
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => resolve(String(reader.result || '')));
+    reader.addEventListener('error', () => reject(reader.error || new Error('文件读取失败')));
+    reader.readAsDataURL(file);
+  });
+}
+
+function inferMimeType(fileName) {
+  return String(fileName || '').toLowerCase().endsWith('.png') ? 'image/png' : 'application/json';
 }
 
 function humanizeApiError(error) {

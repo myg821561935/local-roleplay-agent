@@ -6,6 +6,7 @@ import { ConfigService } from './config/configService.js';
 import { SessionService } from './services/sessionService.js';
 import { AgentService } from './services/agentService.js';
 import { callOpenAICompatible } from './provider/openaiCompatible.js';
+import { importCharacterCardFromPayload } from './character/characterCardImport.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -119,10 +120,36 @@ async function handleApi({ req, res, url, configService, sessionService, agentSe
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/character-card/import') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const imported = importCharacterCardFromPayload(body);
+    const result = await configService.importCharacterCard(imported);
+    writeJson(res, 200, result);
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
     const result = await sendChat({ agentService, body });
+    writeJson(res, 200, result);
+    return;
+  }
+
+  const messageRoute = matchMessageRoute(url.pathname);
+  if (messageRoute && req.method === 'PATCH' && messageRoute.action === 'edit') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const result = await editMessage({ agentService, body, messageId: messageRoute.messageId });
+    writeJson(res, 200, result);
+    return;
+  }
+
+  if (messageRoute && req.method === 'POST' && messageRoute.action === 'regenerate') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const result = await regenerateMessage({ agentService, body, messageId: messageRoute.messageId });
     writeJson(res, 200, result);
     return;
   }
@@ -241,6 +268,42 @@ async function sendChat({ agentService, body }) {
     }
     throw new ApiError(502, 'PROVIDER_ERROR');
   }
+}
+
+async function editMessage({ agentService, body, messageId }) {
+  try {
+    return await agentService.editMessage({
+      sessionId: body.sessionId || 'main',
+      messageId,
+      content: body.content
+    });
+  } catch (error) {
+    if (error.message === 'NO_ACTIVE_PROVIDER') throw new ApiError(409, 'NO_ACTIVE_PROVIDER');
+    if (error.message === 'MESSAGE_NOT_FOUND') throw new ApiError(404, 'MESSAGE_NOT_FOUND');
+    throw new ApiError(502, 'PROVIDER_ERROR');
+  }
+}
+
+async function regenerateMessage({ agentService, body, messageId }) {
+  try {
+    return await agentService.regenerateAssistantMessage({
+      sessionId: body.sessionId || 'main',
+      messageId
+    });
+  } catch (error) {
+    if (error.message === 'NO_ACTIVE_PROVIDER') throw new ApiError(409, 'NO_ACTIVE_PROVIDER');
+    if (error.message === 'MESSAGE_NOT_FOUND') throw new ApiError(404, 'MESSAGE_NOT_FOUND');
+    if (error.message === 'MESSAGE_NOT_ASSISTANT') throw new ApiError(400, 'MESSAGE_NOT_ASSISTANT');
+    throw new ApiError(502, 'PROVIDER_ERROR');
+  }
+}
+
+function matchMessageRoute(pathname) {
+  const editMatch = pathname.match(/^\/api\/messages\/([^/]+)$/);
+  if (editMatch) return { action: 'edit', messageId: decodeURIComponent(editMatch[1]) };
+  const regenerateMatch = pathname.match(/^\/api\/messages\/([^/]+)\/regenerate$/);
+  if (regenerateMatch) return { action: 'regenerate', messageId: decodeURIComponent(regenerateMatch[1]) };
+  return null;
 }
 
 async function readRequestJson(req) {

@@ -62,6 +62,29 @@ test('PUT /api/character-card rejects non-object payload', async () => {
   assert.deepEqual(payload, { error: 'INVALID_CHARACTER_CARD' });
 });
 
+test('POST /api/character-card/import saves Character Card V2 and imports character book', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/character-card/import',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      fileName: 'shen.json',
+      mimeType: 'application/json',
+      data: JSON.stringify(createV2CardPayload())
+    }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.characterCard.name, '沈观澜');
+  assert.equal(payload.importedWorldBookCount, 1);
+  assert.equal(state.config.characterCard.name, '沈观澜');
+  assert.ok(state.config.worldBook.find((entry) => entry.title === '镇武司暗线'));
+});
+
 test('PUT /api/providers saves provider and GET /api/state masks apiKey and sensitive headers', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   const providerConfig = {
@@ -344,6 +367,74 @@ test('POST /api/chat maps provider failure to PROVIDER_ERROR', async () => {
   assert.deepEqual(payload, { error: 'PROVIDER_ERROR' });
 });
 
+test('PATCH /api/messages/:messageId edits a user message and trims later history', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({ rootDir, providerClient: createHttpEchoProviderClient() });
+  await saveHttpProvider(app);
+
+  const firstTurn = await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '我去镇武司。' }
+  });
+  await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '我继续前进。' }
+  });
+  const userId = firstTurn.json().session.messages[0].id;
+
+  const response = await request(app, {
+    method: 'PATCH',
+    url: `/api/messages/${userId}`,
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main', content: '我改去听雨楼。' }
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.session.messages.length, 2);
+  assert.equal(payload.session.messages[0].content, '我改去听雨楼。');
+  assert.match(payload.session.messages[1].content, /回应：我改去听雨楼。/);
+});
+
+test('POST /api/messages/:messageId/regenerate stores assistant swipes', async () => {
+  const rootDir = await createTestRoot();
+  let turn = 0;
+  const app = createApp({
+    rootDir,
+    providerClient: {
+      complete: async ({ messages }) => {
+        turn += 1;
+        return { content: `第${turn}版回应：${messages.at(-1).content}`, raw: { fake: true } };
+      }
+    }
+  });
+  await saveHttpProvider(app);
+
+  const firstTurn = await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '我推门进去。' }
+  });
+  const assistantId = firstTurn.json().reply.id;
+
+  const response = await request(app, {
+    method: 'POST',
+    url: `/api/messages/${assistantId}/regenerate`,
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const assistant = response.json().session.messages[1];
+
+  assert.equal(response.status, 200);
+  assert.equal(assistant.activeSwipeIndex, 1);
+  assert.deepEqual(assistant.swipes, ['第1版回应：我推门进去。', '第2版回应：我推门进去。']);
+});
+
 test('static / returns the HTML page', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
 
@@ -414,4 +505,69 @@ async function createTestRoot() {
   );
   await writeFile(path.join(rootDir, 'secret.txt'), 'do-not-expose', 'utf8');
   return rootDir;
+}
+
+async function saveHttpProvider(app) {
+  await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      activeProviderId: 'local',
+      providers: [{
+        id: 'local',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'secret',
+        model: 'model-a',
+        temperature: 0.8,
+        maxTokens: 1024,
+        headers: {}
+      }]
+    }
+  });
+}
+
+function createHttpEchoProviderClient() {
+  return {
+    complete: async ({ messages }) => ({
+      content: `回应：${messages.at(-1).content}`,
+      raw: { fake: true }
+    })
+  };
+}
+
+function createV2CardPayload() {
+  return {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: '沈观澜',
+      description: '初入江湖的刀客。',
+      personality: '沉稳。',
+      scenario: '旧案开局。',
+      first_mes: '夜雨打在刀鞘上。',
+      mes_example: '',
+      creator_notes: '',
+      system_prompt: '',
+      post_history_instructions: '',
+      alternate_greetings: [],
+      tags: ['武侠'],
+      creator: 'liufeng',
+      character_version: '1.0.0',
+      extensions: {},
+      character_book: {
+        scan_depth: 5,
+        extensions: {},
+        entries: [{
+          name: '镇武司暗线',
+          keys: ['镇武司'],
+          content: '镇武司旧案背后另有朝堂暗线。',
+          enabled: true,
+          insertion_order: 1,
+          extensions: {}
+        }]
+      }
+    }
+  };
 }

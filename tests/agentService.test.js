@@ -42,6 +42,52 @@ test('AgentService extracts recommended actions from assistant reply', async () 
   assert.deepEqual(readback.messages[1].recommendedActions, reply.recommendedActions);
 });
 
+test('AgentService edits a user message and regenerates from that point', async () => {
+  const { service, sessionService } = await createHarness();
+
+  await service.sendMessage({ sessionId: 'main', content: '我去镇武司。' });
+  await service.sendMessage({ sessionId: 'main', content: '我继续往里走。' });
+  const beforeEdit = await sessionService.getSession('main');
+
+  const result = await service.editMessage({
+    sessionId: 'main',
+    messageId: beforeEdit.messages[0].id,
+    content: '我改去听雨楼。'
+  });
+
+  assert.equal(result.session.messages.length, 2);
+  assert.equal(result.session.messages[0].id, beforeEdit.messages[0].id);
+  assert.equal(result.session.messages[0].content, '我改去听雨楼。');
+  assert.match(result.session.messages[1].content, /回应：我改去听雨楼。/);
+  assert.equal(result.session.memory.eventLedger.length, 1);
+});
+
+test('AgentService regenerates an assistant message as a new swipe', async () => {
+  let replyIndex = 0;
+  const { service } = await createHarness({
+    providerClient: {
+      complete: async ({ messages }) => {
+        if (isSummaryRequest(messages) || isFactExtractionRequest(messages)) {
+          return { content: '{}', raw: { maintenance: true } };
+        }
+        replyIndex += 1;
+        return { content: `第${replyIndex}版回应：${messages.at(-1).content}`, raw: { fake: true } };
+      }
+    }
+  });
+
+  const first = await service.sendMessage({ sessionId: 'main', content: '我推门进去。' });
+  const assistantId = first.reply.id;
+  const regenerated = await service.regenerateAssistantMessage({ sessionId: 'main', messageId: assistantId });
+  const assistant = regenerated.session.messages[1];
+
+  assert.equal(regenerated.session.messages.length, 2);
+  assert.equal(assistant.id, assistantId);
+  assert.equal(assistant.content, '第2版回应：我推门进去。');
+  assert.deepEqual(assistant.swipes, ['第1版回应：我推门进去。', '第2版回应：我推门进去。']);
+  assert.equal(assistant.activeSwipeIndex, 1);
+});
+
 test('SessionService rejects unsafe session id on read', async () => {
   const { sessionService } = await createHarness({ configureProvider: false });
 
@@ -159,6 +205,63 @@ test('AgentService summary retry includes every unsummarized turn', async () => 
   assert.match(summaryPrompts[1], /第5轮行动。/);
 });
 
+test('AgentService dynamic memory trigger extracts new facts into world state', async () => {
+  const { service } = await createHarness({
+    providerClient: {
+      complete: async ({ messages }) => {
+        if (isFactExtractionRequest(messages)) {
+          return {
+            content: JSON.stringify({
+              worldState: {
+                protagonist: { name: '沈观澜', traits: ['守诺'] },
+                location: { current: '镇武司门前' },
+                flags: { 已见守卫: true }
+              }
+            }),
+            raw: { facts: true }
+          };
+        }
+        if (isSummaryRequest(messages)) {
+          return { content: '新的滚动摘要。', raw: { summary: true } };
+        }
+        return { content: `回应：${messages.at(-1).content}`, raw: { fake: true } };
+      }
+    }
+  });
+
+  let result;
+  for (let turn = 1; turn <= 4; turn += 1) {
+    result = await service.sendMessage({ sessionId: 'main', content: `第${turn}轮行动。` });
+  }
+
+  assert.equal(result.session.memory.worldState.protagonist.name, '沈观澜');
+  assert.deepEqual(result.session.memory.worldState.protagonist.traits, ['守诺']);
+  assert.equal(result.session.memory.worldState.location.current, '镇武司门前');
+  assert.equal(result.session.memory.worldState.flags.已见守卫, true);
+  assert.equal(result.session.memory.lastFactExtractionError, '');
+});
+
+test('AgentService dynamic memory failure preserves chat and records error', async () => {
+  const { service } = await createHarness({
+    providerClient: {
+      complete: async ({ messages }) => {
+        if (isFactExtractionRequest(messages)) throw new Error('facts down');
+        if (isSummaryRequest(messages)) return { content: '摘要仍然更新。', raw: { summary: true } };
+        return { content: `回应：${messages.at(-1).content}`, raw: { fake: true } };
+      }
+    }
+  });
+
+  let result;
+  for (let turn = 1; turn <= 4; turn += 1) {
+    result = await service.sendMessage({ sessionId: 'main', content: `第${turn}轮行动。` });
+  }
+
+  assert.equal(result.session.messages.length, 8);
+  assert.equal(result.session.memory.lastFactExtractionError, 'facts down');
+  assert.equal(result.session.memory.rollingSummary, '摘要仍然更新。');
+});
+
 test('SessionService reads back saved chat messages', async () => {
   const { service, sessionService } = await createHarness();
 
@@ -231,4 +334,8 @@ function createEchoProviderClient() {
 
 function isSummaryRequest(messages) {
   return String(messages?.[0]?.content || '').includes('记忆整理器');
+}
+
+function isFactExtractionRequest(messages) {
+  return String(messages?.[0]?.content || '').includes('事实提取器');
 }

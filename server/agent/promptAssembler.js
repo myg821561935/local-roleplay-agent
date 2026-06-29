@@ -66,6 +66,11 @@ function renderCharacterCard(card) {
     `当前情境：${card.scenario || ''}`
   ];
   if (card.firstMessage) lines.push(`开场语：${card.firstMessage}`);
+  if (card.systemPrompt) lines.push(`角色系统提示：${card.systemPrompt}`);
+  if (card.postHistoryInstructions) lines.push(`历史后置指令：${card.postHistoryInstructions}`);
+  if (Array.isArray(card.alternateGreetings) && card.alternateGreetings.length) {
+    lines.push(`备用开场：\n${card.alternateGreetings.join('\n')}`);
+  }
   if (Array.isArray(card.exampleDialog) && card.exampleDialog.length) {
     lines.push(`示例对话：\n${card.exampleDialog.join('\n')}`);
   }
@@ -94,7 +99,28 @@ function renderRollingSummary(summary) {
 
 function renderCards(cards) {
   if (!cards.length) return '';
-  return ['# 本轮注入的世界书和记忆', ...cards.map((card) => `## ${card.title}\n${card.content}`)].join('\n\n');
+  const groups = new Map();
+  cards.forEach((card) => {
+    const depth = normalizeDepth(card.depth ?? card.scanDepth ?? card.scan_depth);
+    const key = `Depth ${depth}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(card);
+  });
+
+  const sections = ['# 本轮注入的世界书和记忆'];
+  for (const [depthLabel, depthCards] of groups.entries()) {
+    sections.push([
+      `## ${depthLabel}`,
+      ...depthCards.map((card) => `### ${card.title}\n${card.content}`)
+    ].join('\n\n'));
+  }
+  return sections.join('\n\n');
+}
+
+function normalizeDepth(depth) {
+  const number = Number(depth);
+  if (!Number.isFinite(number) || number <= 0) return 4;
+  return Math.floor(number);
 }
 
 function renderRecommendationInstruction() {

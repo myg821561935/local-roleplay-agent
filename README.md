@@ -47,7 +47,7 @@ Provider 配置保存在 `data/config/providers.local.json`，该文件不会进
 Agent = Prompt 组装器 + 记忆管理器 + API 客户端 + 对话循环 + 状态存储
 ```
 
-每轮对话会读取角色卡、prompt 模块、世界书、最近对话、滚动摘要和结构化世界状态，再调用模型生成回复。生成后会保存消息、追加事件账本，并在满足条件时尝试更新滚动摘要。模型按提示输出推荐下一步选项时，网页会把它们显示成可点击按钮。
+每轮对话会读取角色卡、prompt 模块、世界书、最近对话、滚动摘要和结构化世界状态，再调用模型生成回复。生成后会保存消息、追加事件账本，并在满足条件时尝试更新滚动摘要和结构化事实。模型按提示输出推荐下一步选项时，网页会把它们显示成可点击按钮。
 
 ## 记忆层
 
@@ -55,17 +55,24 @@ Agent = Prompt 组装器 + 记忆管理器 + API 客户端 + 对话循环 + 状�
 - `rollingSummary`：旧对话的滚动摘要，用来压缩 token 消耗。
 - `worldState`：主角、地点、关系、任务、势力、时间线等结构化事实。
 - `eventLedger`：每轮发生了什么的追加记录。
-- `memoryCards` / `worldBook`：可检索注入的长期设定和剧情记忆；当前版本会读取和检索 `memoryCards`，但不会自动生成新的卡片。
+- `memoryCards` / `worldBook`：可检索注入的长期设定和剧情记忆；世界书支持关键词、正则、二级关键词、常驻条目和 Depth 分组注入。
 
 ## 角色卡、Prompt 和世界书
 
-角色卡、Prompt 模块与世界书都可以在网页右侧检查器里直接编辑。世界书页可以点击“新增条目”生成模板，角色卡页可以点击“角色模板”补齐字段。保存后会写入本地 JSON：
+角色卡、Prompt 模块与世界书都可以在网页右侧检查器里直接编辑。世界书页可以点击“新增条目”生成模板，角色卡页可以点击“角色模板”补齐字段，也可以直接导入 Character Card V2 的 `.json` 或带 `Chara/chara` 元数据的 `.png` 角色卡。保存后会写入本地 JSON：
 
 ```text
 data/config/character-card.json
 data/config/prompt-modules.json
 data/config/world-book.json
 ```
+
+## 创作者控制
+
+- `编辑`：每条消息都可以编辑。编辑用户消息会截断后续分支并从该点重生成；编辑 Agent 消息会保留当前分支到该消息。
+- `重生成`：Agent 消息可以重生成，结果会作为新的 Swipe 保存，当前显示最新版本。
+- `Character Card V2`：导入后会映射 `data.name`、`first_mes`、`mes_example`、`system_prompt`、`post_history_instructions`、`alternate_greetings` 等字段；卡内 `character_book` 会追加到本地世界书。
+- `动态记忆触发器`：达到总结阈值时，后台会先尝试提取新事实合并进 `worldState`，再更新滚动摘要。
 
 ## Personal Creative Mode
 

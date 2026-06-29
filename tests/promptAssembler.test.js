@@ -120,6 +120,67 @@ test('retrieveCards prefers higher priority when keyword hits are equal', () => 
   assert.deepEqual(result.map((card) => card.id), ['high', 'low']);
 });
 
+test('retrieveCards supports regex matching', () => {
+  const result = retrieveCards({
+    query: '沈观澜踏入第七层，听见刀鸣。',
+    worldBook: [cardFixture({
+      id: 'regex-card',
+      title: '境界层数',
+      matchMode: 'regex',
+      regex: ['第[一二三四五六七八九十]+层'],
+      keywords: [],
+      content: '层数代表秘境深度。'
+    })]
+  });
+
+  assert.deepEqual(result.map((card) => card.id), ['regex-card']);
+});
+
+test('retrieveCards supports selective secondary-key logic', () => {
+  const selective = cardFixture({
+    id: 'selective-card',
+    title: '镇武司暗牢',
+    keywords: ['镇武司'],
+    secondaryKeywords: ['暗牢'],
+    logic: 'selective'
+  });
+
+  assert.deepEqual(retrieveCards({ query: '我去镇武司门口。', worldBook: [selective] }), []);
+  assert.deepEqual(
+    retrieveCards({ query: '我去镇武司暗牢。', worldBook: [selective] }).map((card) => card.id),
+    ['selective-card']
+  );
+});
+
+test('retrieveCards always returns constant entries', () => {
+  const result = retrieveCards({
+    query: '无关文本',
+    worldBook: [cardFixture({ id: 'constant-card', title: '常驻设定', keywords: [], constant: true })]
+  });
+
+  assert.deepEqual(result.map((card) => card.id), ['constant-card']);
+});
+
+test('assemblePrompt renders world book entries by insertion depth', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '沈观澜', enabled: true },
+    worldBook: [
+      cardFixture({ id: 'depth-2', title: '浅层伏笔', content: '两轮内要记得的伏笔。', depth: 2 }),
+      cardFixture({ id: 'depth-6', title: '深层设定', content: '六轮内仍要保留的设定。', depth: 6 })
+    ],
+    memory: { worldState: {}, memoryCards: [] },
+    messages: [],
+    userMessage: '镇武司',
+    options: { maxInjectedCards: 4 }
+  });
+
+  assert.match(result.messages[0].content, /Depth 2/);
+  assert.match(result.messages[0].content, /两轮内要记得的伏笔/);
+  assert.match(result.messages[0].content, /Depth 6/);
+  assert.match(result.messages[0].content, /六轮内仍要保留的设定/);
+});
+
 test('retrieveCards sorts equal scores by title', () => {
   const result = retrieveCards({
     query: '镇武司',

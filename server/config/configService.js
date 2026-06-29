@@ -28,6 +28,14 @@ export class ConfigService {
   async saveCharacterCard(characterCard) {
     return this.store.write('config/character-card.json', normalizeCharacterCard(characterCard));
   }
+
+  async importCharacterCard({ characterCard, worldBook = [] }) {
+    const currentWorldBook = await this.store.read('config/world-book.json', defaultWorldBook);
+    const savedCharacterCard = await this.saveCharacterCard(characterCard);
+    const importedEntries = worldBook.map(normalizeWorldBookEntry);
+    const nextWorldBook = await this.saveWorldBook([...currentWorldBook, ...importedEntries]);
+    return { characterCard: savedCharacterCard, worldBook: nextWorldBook, importedWorldBookCount: importedEntries.length };
+  }
 }
 
 function normalizeProviders(value) {
@@ -75,12 +83,21 @@ function normalizeWorldBookEntry(entry) {
     type: String(entry.type || 'memory'),
     title: String(entry.title || '未命名条目'),
     keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
+    secondaryKeywords: Array.isArray(entry.secondaryKeywords) ? entry.secondaryKeywords.map(String) : [],
+    matchMode: String(entry.matchMode || 'keyword'),
+    regex: Array.isArray(entry.regex) ? entry.regex.map(String) : [],
+    logic: String(entry.logic || 'any'),
     content: String(entry.content || ''),
     priority: Number(entry.priority ?? 50),
     depth: Number(entry.depth ?? 4),
+    insertionOrder: Number(entry.insertionOrder ?? entry.insertion_order ?? 0),
+    constant: entry.constant === true,
+    caseSensitive: entry.caseSensitive === true,
+    position: String(entry.position || 'after_character'),
     scope: String(entry.scope || 'prompt'),
     enabled: Boolean(entry.enabled),
     source: String(entry.source || 'manual'),
+    extensions: isPlainObject(entry.extensions) ? entry.extensions : {},
     updatedAt: String(entry.updatedAt || new Date().toISOString())
   };
 }
@@ -94,7 +111,16 @@ function normalizeCharacterCard(card = {}) {
     scenario: String(card.scenario || ''),
     firstMessage: String(card.firstMessage || ''),
     exampleDialog: Array.isArray(card.exampleDialog) ? card.exampleDialog.map(String) : [],
+    creatorNotes: String(card.creatorNotes || ''),
+    systemPrompt: String(card.systemPrompt || ''),
+    postHistoryInstructions: String(card.postHistoryInstructions || ''),
+    alternateGreetings: Array.isArray(card.alternateGreetings) ? card.alternateGreetings.map(String) : [],
     tags: Array.isArray(card.tags) ? card.tags.map(String) : [],
+    creator: String(card.creator || ''),
+    characterVersion: String(card.characterVersion || ''),
+    sourceSpec: String(card.sourceSpec || ''),
+    extensions: isPlainObject(card.extensions) ? card.extensions : {},
+    raw: isPlainObject(card.raw) ? card.raw : undefined,
     enabled: card.enabled !== false
   };
 }
