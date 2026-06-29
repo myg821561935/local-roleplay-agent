@@ -367,6 +367,36 @@ test('POST /api/chat maps provider failure to PROVIDER_ERROR', async () => {
   assert.deepEqual(payload, { error: 'PROVIDER_ERROR' });
 });
 
+test('POST /api/chat/stream returns SSE chunks and persists the turn', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({
+    rootDir,
+    providerClient: {
+      complete: async ({ messages }) => ({
+        content: `流式回应：${messages.at(-1).content}`,
+        raw: { fake: true }
+      })
+    }
+  });
+  await saveHttpProvider(app);
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/chat/stream',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '我拔刀。' }
+  });
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers['content-type'], /^text\/event-stream/);
+  assert.match(response.text, /event: token/);
+  assert.match(response.text, /流式回应/);
+  assert.match(response.text, /event: done/);
+  assert.equal(state.session.messages.length, 2);
+  assert.equal(state.session.messages[1].content, '流式回应：我拔刀。');
+});
+
 test('PATCH /api/messages/:messageId edits a user message and trims later history', async () => {
   const rootDir = await createTestRoot();
   const app = createApp({ rootDir, providerClient: createHttpEchoProviderClient() });
@@ -473,6 +503,9 @@ async function request(app, { method = 'GET', url = '/', body, headers = {} } = 
     writeHead(code, writtenHeaders = {}) {
       statusCode = code;
       responseHeaders = normalizeHeaders(writtenHeaders);
+    },
+    write(chunk = '') {
+      if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
     },
     end(chunk = '') {
       if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));

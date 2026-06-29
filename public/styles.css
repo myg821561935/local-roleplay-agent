@@ -300,6 +300,33 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.message-content strong {
+  color: #f5d58d;
+  font-weight: 780;
+}
+
+.message-content em {
+  color: #c7d7e4;
+}
+
+.message.is-streaming .message-content::after {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 3px;
+  border-radius: 2px;
+  background: var(--gold);
+  vertical-align: -0.16em;
+  animation: caret-blink 900ms steps(1) infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .swipe-count {
   color: var(--blue);
 }

@@ -47,7 +47,7 @@ Provider 配置保存在 `data/config/providers.local.json`，该文件不会进
 Agent = Prompt 组装器 + 记忆管理器 + API 客户端 + 对话循环 + 状态存储
 ```
 
-每轮对话会读取角色卡、prompt 模块、世界书、最近对话、滚动摘要和结构化世界状态，再调用模型生成回复。生成后会保存消息、追加事件账本，并在满足条件时尝试更新滚动摘要和结构化事实。模型按提示输出推荐下一步选项时，网页会把它们显示成可点击按钮。
+每轮对话会读取角色卡、prompt 模块、世界书、最近对话、滚动摘要和结构化世界状态，再调用模型生成回复。生成后会保存消息、追加事件账本，并在满足条件时尝试更新滚动摘要、结构化事实和动态世界书条目。模型按提示输出推荐下一步选项时，网页会把它们显示成可点击按钮。
 
 ## 记忆层
 
@@ -72,7 +72,9 @@ data/config/world-book.json
 - `编辑`：每条消息都可以编辑。编辑用户消息会截断后续分支并从该点重生成；编辑 Agent 消息会保留当前分支到该消息。
 - `重生成`：Agent 消息可以重生成，结果会作为新的 Swipe 保存，当前显示最新版本。
 - `Character Card V2`：导入后会映射 `data.name`、`first_mes`、`mes_example`、`system_prompt`、`post_history_instructions`、`alternate_greetings` 等字段；卡内 `character_book` 会追加到本地世界书。
-- `动态记忆触发器`：达到总结阈值时，后台会先尝试提取新事实合并进 `worldState`，再更新滚动摘要。
+- `动态记忆触发器`：达到总结阈值时，后台会先尝试提取新事实合并进 `worldState`，并把稳定长期事实追加成 `source: "dynamic-memory"` 的世界书条目，再更新滚动摘要。
+- `Markdown 消息`：消息正文支持安全的 `**加粗**` 和 `*斜体*`，原始 HTML 会被转义。
+- `SSE 流式输出`：发送消息走 `/api/chat/stream`。OpenAI-compatible provider 支持 SSE 时会按 `delta.content` 真实流式输出；不支持时会退回到完整响应后的分块打字机效果。
 
 ## Personal Creative Mode
 

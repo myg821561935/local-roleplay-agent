@@ -5,7 +5,7 @@ import { readJson, writeJson } from './lib/http.js';
 import { ConfigService } from './config/configService.js';
 import { SessionService } from './services/sessionService.js';
 import { AgentService } from './services/agentService.js';
-import { callOpenAICompatible } from './provider/openaiCompatible.js';
+import { callOpenAICompatible, streamOpenAICompatible } from './provider/openaiCompatible.js';
 import { importCharacterCardFromPayload } from './character/characterCardImport.js';
 
 const contentTypes = new Map([
@@ -41,7 +41,8 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   const configService = new ConfigService(store);
   const sessionService = new SessionService(store);
   const providerClient = providerClientOverride || {
-    complete: ({ provider, messages }) => callOpenAICompatible({ provider, messages })
+    complete: ({ provider, messages }) => callOpenAICompatible({ provider, messages }),
+    stream: ({ provider, messages, onToken }) => streamOpenAICompatible({ provider, messages, onToken })
   };
   const agentService = new AgentService({ configService, sessionService, providerClient });
 
@@ -134,6 +135,13 @@ async function handleApi({ req, res, url, configService, sessionService, agentSe
     const body = await readRequestJson(req);
     const result = await sendChat({ agentService, body });
     writeJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/chat/stream') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    await streamChat({ agentService, body, res });
     return;
   }
 
@@ -268,6 +276,33 @@ async function sendChat({ agentService, body }) {
     }
     throw new ApiError(502, 'PROVIDER_ERROR');
   }
+}
+
+async function streamChat({ agentService, body, res }) {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive'
+  });
+
+  try {
+    const result = await agentService.sendMessageStream({
+      sessionId: body.sessionId || 'main',
+      content: body.content,
+      onToken: async (content) => writeSse(res, 'token', { content })
+    });
+    writeSse(res, 'done', result);
+  } catch (error) {
+    const code = error.message === 'NO_ACTIVE_PROVIDER' ? 'NO_ACTIVE_PROVIDER' : 'PROVIDER_ERROR';
+    writeSse(res, 'error', { error: code });
+  } finally {
+    res.end();
+  }
+}
+
+function writeSse(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 async function editMessage({ agentService, body, messageId }) {

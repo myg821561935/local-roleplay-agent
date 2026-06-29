@@ -51,6 +51,7 @@ https://api.example.com/v1
 - 世界书：打开右侧“世界书”，点击“新增条目”，把 `title`、`keywords`、`content` 改成你的设定后保存。需要正则时设置 `matchMode: "regex"` 并填写 `regex`；需要主关键词和副关键词同时命中时设置 `logic: "selective"` 和 `secondaryKeywords`；需要常驻注入时设置 `constant: true`；`depth` 用于控制注入分组。
 - 角色卡：打开右侧“角色卡”，点击“角色模板”，填写主角姓名、身份、描述、性格和当前情境后保存。也可以选择 `.json` 或 `.png` 社区角色卡导入；支持 Character Card V2，卡内 `character_book` 会追加进世界书。
 - 推荐选项：Agent 回复下方会出现“推荐下一步”。点击任意选项会直接作为下一轮输入发送；不合适就忽略，自己在输入框写。
+- Markdown：对话正文可以使用 `**动作**` 和 `*心理活动*`；网页会渲染为加粗和斜体，同时转义原始 HTML。
 
 ## Swipes 和消息编辑
 
@@ -60,7 +61,21 @@ https://api.example.com/v1
 
 ## 自动总结
 
-当前实现会在未总结轮次较多，或 prompt 估算接近上限时触发后台记忆维护。它会先尝试提取新事实并合并到 `worldState`，再更新滚动摘要。摘要成功后会清空未总结计数；如果事实提取或摘要调用失败，会记录错误并在后续轮次继续尝试。
+当前实现会在未总结轮次较多，或 prompt 估算接近上限时触发后台记忆维护。它会先尝试提取新事实并合并到 `worldState`，再把稳定长期事实追加为 `source: "dynamic-memory"` 的世界书条目，最后更新滚动摘要。摘要成功后会清空未总结计数；如果事实提取或摘要调用失败，会记录错误并在后续轮次继续尝试。
+
+## 流式输出
+
+网页发送消息时调用 `/api/chat/stream`，服务端用 SSE 返回：
+
+```text
+event: token
+data: {"content":"..."}
+
+event: done
+data: {"session":{...},"reply":{...}}
+```
+
+如果 OpenAI-compatible provider 支持标准 `stream: true`，会按服务商返回的 `delta.content` 实时推送；如果当前 provider 没有流式实现，会退回到完整生成后的分块打字机效果。
 
 ## 常见错误
 

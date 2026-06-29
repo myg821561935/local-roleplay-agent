@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOpenAICompatibleRequest, callOpenAICompatible, readOpenAICompatibleResponse } from '../server/provider/openaiCompatible.js';
+import { buildOpenAICompatibleRequest, callOpenAICompatible, readOpenAICompatibleResponse, streamOpenAICompatible } from '../server/provider/openaiCompatible.js';
 
 function provider(overrides = {}) {
   return {
@@ -115,6 +115,31 @@ test('callOpenAICompatible uses injected fetch and extracts content', async () =
   assert.equal(request.init.method, 'POST');
   assert.equal(JSON.parse(request.init.body).messages[0].content, '你好');
   assert.equal(result.content, '收到。');
+});
+
+test('streamOpenAICompatible parses SSE delta content', async () => {
+  const tokens = [];
+  let request;
+  const result = await streamOpenAICompatible({
+    provider: provider(),
+    messages: [{ role: 'user', content: '你好' }],
+    onToken: async (token) => tokens.push(token),
+    fetchImpl: async (url, init) => {
+      request = { url, init };
+      return new Response([
+        'data: {"choices":[{"delta":{"content":"江湖"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"夜雨"}}]}\n\n',
+        'data: [DONE]\n\n'
+      ].join(''), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+      });
+    }
+  });
+
+  assert.equal(JSON.parse(request.init.body).stream, true);
+  assert.deepEqual(tokens, ['江湖', '夜雨']);
+  assert.equal(result.content, '江湖夜雨');
 });
 
 test('readOpenAICompatibleResponse extracts assistant content', async () => {

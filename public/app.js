@@ -1,3 +1,5 @@
+import { renderSafeMarkdown } from './markdown.js';
+
 const MASKED_SECRET = '********';
 
 const state = {
@@ -181,7 +183,7 @@ function createMessageNode(message) {
 
   const content = document.createElement('div');
   content.className = 'message-content';
-  content.textContent = message.content || '';
+  content.innerHTML = renderSafeMarkdown(message.content || '');
 
   article.append(meta, content);
   article.append(createMessageTools(message, role));
@@ -458,26 +460,121 @@ async function sendMessage() {
 
   els.chatInput.disabled = true;
   setStatus(els.sessionStatus, 'Agent 正在生成...', 'busy');
+  els.chatInput.value = '';
+  const preview = appendStreamingPreview(content);
 
   try {
-    const payload = await apiRequest('/api/chat', {
-      method: 'POST',
-      body: {
-        sessionId: state.session?.id || 'main',
-        content
-      }
+    const payload = await streamChat({
+      sessionId: state.session?.id || 'main',
+      content,
+      onToken: (token) => updateStreamingPreview(preview, token)
     });
-    els.chatInput.value = '';
     state.session = payload.session || state.session;
     renderMessages();
     els.memoryView.textContent = prettyJson(state.session?.memory || {});
     setStatus(els.appStatus, '对话已更新', 'ok');
   } catch (error) {
+    renderMessages();
     setStatus(els.sessionStatus, `发送失败：${humanizeApiError(error)}`, 'error');
   } finally {
     els.chatInput.disabled = false;
     els.chatInput.focus();
   }
+}
+
+function appendStreamingPreview(userContent) {
+  const empty = els.messages.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const userNode = createPreviewNode('user', userContent);
+  const assistantNode = createPreviewNode('assistant', '');
+  assistantNode.classList.add('is-streaming');
+  els.messages.append(userNode, assistantNode);
+  els.messages.scrollTop = els.messages.scrollHeight;
+  return {
+    content: '',
+    userNode,
+    node: assistantNode,
+    contentNode: assistantNode.querySelector('.message-content')
+  };
+}
+
+function createPreviewNode(role, content) {
+  const article = document.createElement('article');
+  article.className = `message ${role}`;
+  const meta = document.createElement('div');
+  meta.className = 'message-meta';
+  const roleText = document.createElement('span');
+  roleText.className = 'message-role';
+  roleText.textContent = role === 'user' ? '用户' : 'Agent';
+  meta.append(roleText);
+  const body = document.createElement('div');
+  body.className = 'message-content';
+  body.innerHTML = renderSafeMarkdown(content);
+  article.append(meta, body);
+  return article;
+}
+
+function updateStreamingPreview(preview, token) {
+  if (!preview?.contentNode) return;
+  preview.content += token;
+  preview.contentNode.innerHTML = renderSafeMarkdown(preview.content);
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+async function streamChat(body) {
+  const response = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(formatHttpError(response, text));
+  }
+  if (!response.body) {
+    throw new Error('当前浏览器不支持流式响应');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let donePayload;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+    events.forEach((eventText) => {
+      const event = parseSseEvent(eventText);
+      if (!event) return;
+      if (event.event === 'token') body.onToken?.(String(event.data?.content || ''));
+      if (event.event === 'done') donePayload = event.data;
+      if (event.event === 'error') throwSseError(event.data);
+    });
+  }
+
+  if (!donePayload) throw new Error('流式响应缺少完成事件');
+  return donePayload;
+}
+
+function parseSseEvent(text) {
+  const lines = String(text || '').split('\n');
+  const event = lines.find((line) => line.startsWith('event: '))?.slice(7).trim();
+  const dataText = lines
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => line.slice(6))
+    .join('\n');
+  if (!event) return null;
+  return { event, data: parseJsonResponse(dataText) };
+}
+
+function throwSseError(data) {
+  const error = new Error(data?.error || 'STREAM_ERROR');
+  error.code = data?.error;
+  throw error;
 }
 
 function activateTab(tab) {

@@ -21,7 +21,7 @@ export function buildFactExtractionPrompt({ worldState, messages }) {
 
 export function applyFactExtractionResult(memory, content) {
   const next = structuredClone(memory || createDefaultMemory());
-  const payload = parseJsonObject(content);
+  const payload = parseFactExtractionResult(content);
   if (payload.worldState && typeof payload.worldState === 'object') {
     next.worldState = mergeWorldState(next.worldState || createDefaultMemory().worldState, payload.worldState);
   }
@@ -30,6 +30,39 @@ export function applyFactExtractionResult(memory, content) {
   }
   next.lastFactExtractionError = '';
   return next;
+}
+
+export function parseFactExtractionResult(content) {
+  return parseJsonObject(content);
+}
+
+export function normalizeDynamicWorldBookEntries(content) {
+  const payload = parseFactExtractionResult(content);
+  const entries = Array.isArray(payload.worldBook) ? payload.worldBook : [];
+  return entries
+    .filter((entry) => entry && stringValue(entry.content))
+    .map((entry) => ({
+      id: stringValue(entry.id) || `dynamic-memory-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      type: stringValue(entry.type) || 'dynamic-memory',
+      title: stringValue(entry.title) || '动态记忆',
+      keywords: normalizeStringArray(entry.keywords),
+      secondaryKeywords: normalizeStringArray(entry.secondaryKeywords),
+      matchMode: stringValue(entry.matchMode) || 'keyword',
+      regex: normalizeStringArray(entry.regex),
+      logic: stringValue(entry.logic) || 'any',
+      content: stringValue(entry.content),
+      priority: normalizeNumber(entry.priority, 75),
+      depth: normalizeNumber(entry.depth, 6),
+      insertionOrder: normalizeNumber(entry.insertionOrder, 0),
+      constant: entry.constant === true,
+      caseSensitive: entry.caseSensitive === true,
+      position: stringValue(entry.position) || 'after_character',
+      scope: stringValue(entry.scope) || 'prompt',
+      enabled: entry.enabled !== false,
+      source: 'dynamic-memory',
+      extensions: isPlainObject(entry.extensions) ? entry.extensions : {},
+      updatedAt: new Date().toISOString()
+    }));
 }
 
 function parseJsonObject(content) {
@@ -78,4 +111,18 @@ function stableKey(value) {
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => stringValue(item)).filter(Boolean);
+}
+
+function normalizeNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function stringValue(value) {
+  return String(value ?? '').trim();
 }

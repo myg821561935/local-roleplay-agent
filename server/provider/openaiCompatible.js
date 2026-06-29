@@ -30,7 +30,7 @@ function validateOpenAICompatibleRequest({ provider, messages }) {
   };
 }
 
-export function buildOpenAICompatibleRequest({ provider, messages }) {
+export function buildOpenAICompatibleRequest({ provider, messages, stream = false }) {
   const validated = validateOpenAICompatibleRequest({ provider, messages });
   if (!Array.isArray(validated.messages)) {
     throw new Error('messages must be an array');
@@ -44,6 +44,7 @@ export function buildOpenAICompatibleRequest({ provider, messages }) {
     temperature: Number(provider.temperature ?? 0.9),
     max_tokens: Number(provider.maxTokens ?? 2000)
   };
+  if (stream) body.stream = true;
 
   return {
     url,
@@ -63,6 +64,52 @@ export async function callOpenAICompatible({ provider, messages, fetchImpl = fet
   const { url, init } = buildOpenAICompatibleRequest({ provider, messages });
   const response = await fetchImpl(url, init);
   return readOpenAICompatibleResponse(response);
+}
+
+export async function streamOpenAICompatible({ provider, messages, onToken, fetchImpl = fetch }) {
+  const { url, init } = buildOpenAICompatibleRequest({ provider, messages, stream: true });
+  const response = await fetchImpl(url, init);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Provider stream error ${response.status}: ${text.slice(0, 240)}`);
+  }
+  if (!response.body?.getReader) {
+    throw new Error('Provider stream response missing readable body');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+    for (const eventText of events) {
+      const token = readStreamToken(eventText);
+      if (!token) continue;
+      content += token;
+      await onToken?.(token);
+    }
+  }
+
+  return { content, raw: null };
+}
+
+function readStreamToken(eventText) {
+  const lines = String(eventText || '').split('\n');
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue;
+    const data = line.slice(6).trim();
+    if (!data || data === '[DONE]') continue;
+    const payload = JSON.parse(data);
+    const token = payload?.choices?.[0]?.delta?.content;
+    if (typeof token === 'string') return token;
+  }
+  return '';
 }
 
 export async function readOpenAICompatibleResponse(response) {

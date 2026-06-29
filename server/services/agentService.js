@@ -1,7 +1,7 @@
 import { assemblePrompt } from '../agent/promptAssembler.js';
 import { appendTurnEvent, rebuildMemoryFromMessages } from '../agent/memoryUpdater.js';
 import { buildSummaryPrompt, shouldSummarize } from '../agent/summaryScheduler.js';
-import { applyFactExtractionResult, buildFactExtractionPrompt } from '../agent/factExtractor.js';
+import { applyFactExtractionResult, buildFactExtractionPrompt, normalizeDynamicWorldBookEntries } from '../agent/factExtractor.js';
 
 export class AgentService {
   constructor({ configService, sessionService, providerClient }) {
@@ -42,6 +42,57 @@ export class AgentService {
       reply: assistantMessage,
       debug: assembled
     };
+  }
+
+  async sendMessageStream({ sessionId = 'main', content, onToken }) {
+    const [config, session] = await Promise.all([
+      this.configService.getAll(),
+      this.sessionService.getSession(sessionId)
+    ]);
+    const provider = getActiveProvider(config);
+    const userMessage = createMessage('user', content);
+    const assembled = assemblePrompt({
+      promptModules: config.promptModules,
+      characterCard: config.characterCard,
+      worldBook: config.worldBook,
+      memory: session.memory,
+      messages: session.messages,
+      userMessage: userMessage.content,
+      options: session.settings
+    });
+
+    const assistantContent = await this.completeAssistantContentStream({ provider, messages: assembled.messages, onToken });
+    const parsedReply = extractRecommendedActions(assistantContent);
+    const assistantMessage = createMessage('assistant', parsedReply.content, {
+      recommendedActions: parsedReply.recommendedActions
+    });
+
+    session.messages.push(userMessage, assistantMessage);
+    session.memory = appendTurnEvent({
+      memory: session.memory,
+      userMessage,
+      assistantMessage,
+      turnId: assistantMessage.id
+    });
+    await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled });
+
+    session.updatedAt = new Date().toISOString();
+    await this.sessionService.saveSession(session);
+    return { session, reply: assistantMessage, debug: assembled };
+  }
+
+  async completeAssistantContentStream({ provider, messages, onToken }) {
+    if (typeof this.providerClient.stream === 'function') {
+      const result = await this.providerClient.stream({ provider, messages, onToken });
+      return result.content;
+    }
+
+    const result = await this.providerClient.complete({ provider, messages });
+    const parsed = extractRecommendedActions(result.content);
+    for (const token of chunkText(parsed.content)) {
+      await onToken?.(token);
+    }
+    return result.content;
   }
 
   async editMessage({ sessionId = 'main', messageId, content }) {
@@ -168,9 +219,21 @@ export class AgentService {
         })
       });
       session.memory = applyFactExtractionResult(session.memory, result.content);
+      await this.appendDynamicWorldBookEntries(result.content);
     } catch (error) {
       session.memory.lastFactExtractionError = error.message;
     }
+  }
+
+  async appendDynamicWorldBookEntries(content) {
+    const entries = normalizeDynamicWorldBookEntries(content);
+    if (!entries.length) return;
+    const config = await this.configService.getAll();
+    const existing = Array.isArray(config.worldBook) ? config.worldBook : [];
+    const existingKeys = new Set(existing.map(worldBookIdentity));
+    const nextEntries = entries.filter((entry) => !existingKeys.has(worldBookIdentity(entry)));
+    if (!nextEntries.length) return;
+    await this.configService.saveWorldBook([...existing, ...nextEntries]);
   }
 
   async trySummarize({ session, provider }) {
@@ -252,4 +315,14 @@ function parseRecommendedActions(value) {
       .filter(Boolean)
       .slice(0, 4);
   }
+}
+
+function chunkText(text) {
+  const value = String(text || '');
+  const chunks = value.match(/[\s\S]{1,24}/g);
+  return chunks || [];
+}
+
+function worldBookIdentity(entry) {
+  return `${String(entry.title || '').trim()}\n${String(entry.content || '').trim()}`;
 }

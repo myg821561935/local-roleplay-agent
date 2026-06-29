@@ -241,6 +241,42 @@ test('AgentService dynamic memory trigger extracts new facts into world state', 
   assert.equal(result.session.memory.lastFactExtractionError, '');
 });
 
+test('AgentService dynamic memory trigger appends stable facts to world book', async () => {
+  const { service, configService } = await createHarness({
+    providerClient: {
+      complete: async ({ messages }) => {
+        if (isFactExtractionRequest(messages)) {
+          return {
+            content: JSON.stringify({
+              worldBook: [{
+                title: '名刀雪照',
+                keywords: ['雪照', '名刀'],
+                content: '沈观澜获得名刀雪照，刀身寒白，疑似与镇武司旧案有关。',
+                priority: 85,
+                depth: 6
+              }]
+            }),
+            raw: { facts: true }
+          };
+        }
+        if (isSummaryRequest(messages)) return { content: '新的滚动摘要。', raw: { summary: true } };
+        return { content: `回应：${messages.at(-1).content}`, raw: { fake: true } };
+      }
+    }
+  });
+
+  for (let turn = 1; turn <= 4; turn += 1) {
+    await service.sendMessage({ sessionId: 'main', content: `第${turn}轮行动。` });
+  }
+  const config = await configService.getAll();
+  const entry = config.worldBook.find((item) => item.title === '名刀雪照');
+
+  assert.ok(entry);
+  assert.deepEqual(entry.keywords, ['雪照', '名刀']);
+  assert.equal(entry.depth, 6);
+  assert.equal(entry.source, 'dynamic-memory');
+});
+
 test('AgentService dynamic memory failure preserves chat and records error', async () => {
   const { service } = await createHarness({
     providerClient: {
