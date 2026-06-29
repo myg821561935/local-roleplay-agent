@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../server/app.js';
@@ -49,6 +49,51 @@ test('PUT /api/providers saves provider and GET /api/state masks apiKey', async 
   assert.equal(payload.config.providers.providers[0].model, 'model-a');
 });
 
+test('PUT /api/providers preserves real apiKey when saving masked provider config', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({ rootDir });
+  const providerConfig = {
+    activeProviderId: 'local',
+    providers: [{
+      id: 'local',
+      kind: 'openai-compatible',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: 'secret',
+      model: 'model-a',
+      temperature: 0.8,
+      maxTokens: 1024,
+      headers: {}
+    }]
+  };
+
+  await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'application/json' },
+    body: providerConfig
+  });
+  const stateResponse = await request(app, { url: '/api/state' });
+  const maskedConfig = stateResponse.json().config.providers;
+  maskedConfig.providers[0].model = 'model-b';
+
+  const saveMaskedResponse = await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'application/json' },
+    body: maskedConfig
+  });
+  const nextState = (await request(app, { url: '/api/state' })).json();
+  const savedProviderConfig = JSON.parse(
+    await readFile(path.join(rootDir, 'data', 'config', 'providers.local.json'), 'utf8')
+  );
+
+  assert.equal(saveMaskedResponse.status, 200);
+  assert.equal(nextState.config.providers.providers[0].apiKey, '********');
+  assert.equal(nextState.config.providers.providers[0].model, 'model-b');
+  assert.equal(savedProviderConfig.providers[0].apiKey, 'secret');
+  assert.equal(savedProviderConfig.providers[0].model, 'model-b');
+});
+
 test('GET /api/health returns ok', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
 
@@ -57,6 +102,121 @@ test('GET /api/health returns ok', async () => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(payload, { ok: true, app: 'local-roleplay-agent' });
+});
+
+test('unknown API route returns JSON 404', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, { url: '/api/missing' });
+  const payload = response.json();
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(payload, { error: 'NOT_FOUND' });
+});
+
+test('invalid JSON body returns INVALID_JSON', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'application/json' },
+    body: '{not-json'
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(payload, { error: 'INVALID_JSON' });
+});
+
+test('mutating API route rejects unsupported media type', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'text/plain' },
+    body: '{}'
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 415);
+  assert.deepEqual(payload, { error: 'UNSUPPORTED_MEDIA_TYPE' });
+});
+
+test('mutating API route rejects forbidden origin', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: {
+      'content-type': 'application/json',
+      origin: 'https://evil.example'
+    },
+    body: {}
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(payload, { error: 'FORBIDDEN_ORIGIN' });
+});
+
+test('POST /api/chat without active provider returns NO_ACTIVE_PROVIDER', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '有人吗？' }
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(payload, { error: 'NO_ACTIVE_PROVIDER' });
+});
+
+test('POST /api/chat maps provider failure to PROVIDER_ERROR', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({
+    rootDir,
+    providerClient: {
+      complete: async () => {
+        throw new Error('provider down');
+      }
+    }
+  });
+
+  await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      activeProviderId: 'local',
+      providers: [{
+        id: 'local',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'secret',
+        model: 'model-a',
+        temperature: 0.8,
+        maxTokens: 1024,
+        headers: {}
+      }]
+    }
+  });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '推门进去。' }
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 502);
+  assert.deepEqual(payload, { error: 'PROVIDER_ERROR' });
 });
 
 test('static / returns the HTML page', async () => {

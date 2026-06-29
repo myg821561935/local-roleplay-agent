@@ -14,12 +14,23 @@ const contentTypes = new Map([
   ['.json', 'application/json; charset=utf-8']
 ]);
 
-export function createApp({ rootDir }) {
+const MASKED_SECRET = '********';
+const LOCAL_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+class ApiError extends Error {
+  constructor(statusCode, code) {
+    super(code);
+    this.statusCode = statusCode;
+    this.code = code;
+  }
+}
+
+export function createApp({ rootDir = process.cwd(), providerClient: providerClientOverride } = {}) {
   const appRoot = path.resolve(rootDir);
   const store = new JsonStore(path.join(appRoot, 'data'));
   const configService = new ConfigService(store);
   const sessionService = new SessionService(store);
-  const providerClient = {
+  const providerClient = providerClientOverride || {
     complete: ({ provider, messages }) => callOpenAICompatible({ provider, messages })
   };
   const agentService = new AgentService({ configService, sessionService, providerClient });
@@ -34,7 +45,7 @@ export function createApp({ rootDir }) {
 
       await serveStatic({ rootDir: appRoot, pathname: url.pathname, res });
     } catch (error) {
-      writeJson(res, 500, { error: 'INTERNAL_ERROR', message: error.message });
+      writeApiError(res, error);
     }
   };
 }
@@ -55,32 +66,34 @@ async function handleApi({ req, res, url, configService, sessionService, agentSe
   }
 
   if (req.method === 'PUT' && url.pathname === '/api/providers') {
-    const body = await readJson(req);
-    await configService.saveProviders(body);
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const providers = await resolveProviderSecrets({ configService, incoming: body });
+    await configService.saveProviders(providers);
     writeJson(res, 200, { ok: true });
     return;
   }
 
   if (req.method === 'PUT' && url.pathname === '/api/prompt-modules') {
-    const body = await readJson(req);
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
     const promptModules = await configService.savePromptModules(body.promptModules || []);
     writeJson(res, 200, { promptModules });
     return;
   }
 
   if (req.method === 'PUT' && url.pathname === '/api/world-book') {
-    const body = await readJson(req);
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
     const worldBook = await configService.saveWorldBook(body.worldBook || []);
     writeJson(res, 200, { worldBook });
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/chat') {
-    const body = await readJson(req);
-    const result = await agentService.sendMessage({
-      sessionId: body.sessionId || 'main',
-      content: body.content
-    });
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const result = await sendChat({ agentService, body });
     writeJson(res, 200, result);
     return;
   }
@@ -124,8 +137,95 @@ function maskConfig(config) {
       ...config.providers,
       providers: (config.providers.providers || []).map((provider) => ({
         ...provider,
-        apiKey: provider.apiKey ? '********' : ''
+        apiKey: provider.apiKey ? MASKED_SECRET : ''
       }))
     }
   };
+}
+
+async function resolveProviderSecrets({ configService, incoming }) {
+  const config = await configService.getAll();
+  const existingProviders = new Map(
+    (config.providers.providers || []).map((provider) => [String(provider.id || ''), provider])
+  );
+  const providers = Array.isArray(incoming.providers) ? incoming.providers.map((provider) => {
+    if (provider?.apiKey !== MASKED_SECRET) return provider;
+    const existingProvider = existingProviders.get(String(provider.id || ''));
+    return {
+      ...provider,
+      apiKey: existingProvider?.apiKey || ''
+    };
+  }) : incoming.providers;
+
+  return { ...incoming, providers };
+}
+
+async function sendChat({ agentService, body }) {
+  try {
+    return await agentService.sendMessage({
+      sessionId: body.sessionId || 'main',
+      content: body.content
+    });
+  } catch (error) {
+    if (error.message === 'NO_ACTIVE_PROVIDER') {
+      throw new ApiError(409, 'NO_ACTIVE_PROVIDER');
+    }
+    throw new ApiError(502, 'PROVIDER_ERROR');
+  }
+}
+
+async function readRequestJson(req) {
+  try {
+    return await readJson(req);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new ApiError(400, 'INVALID_JSON');
+    }
+    throw error;
+  }
+}
+
+function validateMutatingRequest(req) {
+  if (!isAllowedOrigin(req)) {
+    throw new ApiError(403, 'FORBIDDEN_ORIGIN');
+  }
+  if (!isJsonRequest(req)) {
+    throw new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE');
+  }
+}
+
+function isJsonRequest(req) {
+  const contentType = getHeader(req, 'content-type');
+  return contentType.split(';', 1)[0].trim().toLowerCase() === 'application/json';
+}
+
+function isAllowedOrigin(req) {
+  const origin = getHeader(req, 'origin');
+  if (!origin) return true;
+
+  try {
+    const { hostname } = new URL(origin);
+    return LOCAL_ORIGIN_HOSTS.has(hostname);
+  } catch {
+    return false;
+  }
+}
+
+function getHeader(req, headerName) {
+  const headers = req.headers || {};
+  const lowerHeaderName = headerName.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lowerHeaderName) {
+      return Array.isArray(value) ? String(value[0] || '') : String(value || '');
+    }
+  }
+  return '';
+}
+
+function writeApiError(res, error) {
+  if (error instanceof ApiError) {
+    writeJson(res, error.statusCode, { error: error.code });
+    return;
+  }
+  writeJson(res, 500, { error: 'INTERNAL_ERROR' });
 }
