@@ -339,12 +339,13 @@ function createFactNode(fact, index) {
     ? fact.keywords.join('、')
     : '';
   const source = String(fact?.source || 'manual');
-  const factId = String(fact?.id || `manual-${index}-${Date.now()}`);
+  const factId = String(fact?.id || '').trim();
+  const cardFactId = factId || `__index:${index}`;
   const enabled = Boolean(fact?.enabled);
 
   const card = document.createElement('article');
   card.className = 'fact-card';
-  card.dataset.factId = factId;
+  card.dataset.factId = cardFactId;
 
   const topline = document.createElement('div');
   topline.className = 'fact-card-topline';
@@ -427,13 +428,18 @@ function createFactNode(fact, index) {
   const promote = document.createElement('button');
   promote.type = 'button';
   promote.className = 'ghost-button compact';
-  promote.dataset.promoteFact = factId;
+  if (factId) {
+    promote.dataset.promoteFact = factId;
+  } else {
+    promote.disabled = true;
+    promote.title = '请先保存事实后再提升';
+  }
   promote.textContent = '提升为世界书';
 
   const remove = document.createElement('button');
   remove.type = 'button';
   remove.className = 'danger-button compact';
-  remove.dataset.deleteFact = factId;
+  remove.dataset.deleteFact = cardFactId;
   remove.textContent = '删除';
 
   actions.append(promote, remove);
@@ -461,12 +467,31 @@ function addFactCard() {
 }
 
 function deleteFactCard(factId) {
-  const facts = getMemoryFacts().filter((fact) => fact.id !== factId);
+  const facts = getMemoryFacts();
+  if (typeof factId === 'string' && factId.startsWith('__index:')) {
+    const index = Number(factId.slice(8));
+    if (Number.isInteger(index) && index >= 0) {
+      const nextFacts = facts.slice();
+      nextFacts.splice(index, 1);
+      state.session = {
+        ...state.session,
+        memory: {
+          ...state.session?.memory,
+          memoryCards: nextFacts
+        }
+      };
+      renderFacts();
+      setStatus(els.factStatus, '已删除事实，请保存', 'ok');
+      return;
+    }
+  }
+
+  const nextFacts = facts.filter((fact) => fact.id !== factId);
   state.session = {
     ...state.session,
     memory: {
       ...state.session?.memory,
-      memoryCards: facts
+      memoryCards: nextFacts
     }
   };
   renderFacts();
@@ -496,6 +521,10 @@ async function saveFacts() {
 }
 
 async function promoteFact(factId) {
+  if (String(factId || '').startsWith('__index:')) {
+    setStatus(els.factStatus, '请先保存事实后再提升', 'error');
+    return;
+  }
   setStatus(els.factStatus, '正在提升为世界书...', 'busy');
   try {
     const payload = await apiRequest(`/api/memory/facts/${encodeURIComponent(factId)}/promote`, {
