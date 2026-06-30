@@ -107,8 +107,19 @@ function bindEvents() {
       return;
     }
     const promoteButton = event.target.closest('[data-promote-fact]');
-    if (promoteButton) promoteFact(promoteButton.dataset.promoteFact);
+    if (promoteButton) {
+      const card = promoteButton.closest('.fact-card');
+      if (card && isFactCardDirty(card)) {
+        syncFactPromoteState(card);
+        setStatus(els.factStatus, '请先保存修改后再提升', 'error');
+        return;
+      }
+      promoteFact(promoteButton.dataset.promoteFact);
+    }
   });
+
+  els.factList.addEventListener('input', syncChangedFactCard);
+  els.factList.addEventListener('change', syncChangedFactCard);
 }
 
 async function loadState() {
@@ -332,20 +343,16 @@ function renderFacts() {
 }
 
 function createFactNode(fact, index) {
-  const title = String(fact?.title || `事实 ${index + 1}`);
-  const content = String(fact?.content || '');
-  const type = String(fact?.type || 'uncategorized');
-  const keywords = Array.isArray(fact?.keywords)
-    ? fact.keywords.join('、')
-    : '';
-  const source = String(fact?.source || 'manual');
-  const factId = String(fact?.id || '').trim();
+  const normalized = normalizeUiFact(fact, index);
+  const { title, content, type, source, enabled } = normalized;
+  const keywords = normalized.keywords.join('、');
+  const factId = normalized.id;
   const cardFactId = factId || `__index:${index}`;
-  const enabled = fact?.enabled !== false;
 
   const card = document.createElement('article');
   card.className = 'fact-card';
   card.dataset.factId = cardFactId;
+  card.dataset.savedSignature = factSignature(normalized);
 
   const topline = document.createElement('div');
   topline.className = 'fact-card-topline';
@@ -428,12 +435,7 @@ function createFactNode(fact, index) {
   const promote = document.createElement('button');
   promote.type = 'button';
   promote.className = 'ghost-button compact';
-  if (factId) {
-    promote.dataset.promoteFact = factId;
-  } else {
-    promote.disabled = true;
-    promote.title = '请先保存事实后再提升';
-  }
+  promote.dataset.promoteFact = cardFactId;
   promote.textContent = '提升为世界书';
 
   const remove = document.createElement('button');
@@ -444,6 +446,7 @@ function createFactNode(fact, index) {
 
   actions.append(promote, remove);
   card.append(topline, grid, actions);
+  syncFactPromoteState(card);
   return card;
 }
 
@@ -521,7 +524,7 @@ async function saveFacts() {
 }
 
 async function promoteFact(factId) {
-  if (String(factId || '').startsWith('__index:')) {
+  if (!isPersistedFactId(factId)) {
     setStatus(els.factStatus, '请先保存事实后再提升', 'error');
     return;
   }
@@ -541,29 +544,17 @@ async function promoteFact(factId) {
 
 function collectFactsFromDom() {
   return Array.from(els.factList.querySelectorAll('.fact-card')).map((card) => {
-    const factId = String(card.dataset.factId || `manual-${Date.now()}`);
-    const title = String(card.querySelector('.fact-title-input')?.value || '').trim();
-    const content = String(card.querySelector('.fact-content')?.value || '').trim();
-    const type = String(card.querySelector('.fact-type')?.value || 'uncategorized').trim();
-    const source = String(card.querySelector('.fact-source')?.value || '').trim();
-    const keywords = splitKeywords(card.querySelector('.fact-keywords')?.value || '');
-    const enabledInput = card.querySelector('.fact-enabled input');
-
+    const factId = String(card.dataset.factId || '').trim();
+    const fields = readFactCardFields(card);
     return {
-      ...(factId.startsWith('__index:') ? {} : { id: factId }),
-      title,
-      content,
-      type,
-      source,
-      keywords,
-      enabled: Boolean(enabledInput?.checked)
+      ...(isPersistedFactId(factId) ? { id: factId } : {}),
+      ...fields
     };
   });
 }
 
 function createFactTemplate() {
   return {
-    id: `manual-${Date.now()}`,
     title: '新事实',
     enabled: true,
     content: '',
@@ -573,28 +564,83 @@ function createFactTemplate() {
   };
 }
 
+function normalizeUiFact(fact, index = 0) {
+  const object = typeof fact === 'string' ? { content: fact } : (isPlainObject(fact) ? fact : {});
+  const content = String(object.content ?? '').trim();
+  return {
+    id: String(object.id ?? '').trim(),
+    title: String(object.title ?? '').trim() || content.slice(0, 40) || `事实 ${index + 1}`,
+    content,
+    type: String(object.type ?? 'uncategorized').trim() || 'uncategorized',
+    keywords: normalizeKeywordList(object.keywords),
+    source: String(object.source ?? 'manual').trim() || 'manual',
+    enabled: object.enabled !== false
+  };
+}
+
+function normalizeKeywordList(value) {
+  if (typeof value === 'string') return splitKeywords(value);
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+}
+
+function readFactCardFields(card) {
+  const enabledInput = card.querySelector('.fact-enabled input');
+  return {
+    title: String(card.querySelector('.fact-title-input')?.value || '').trim(),
+    content: String(card.querySelector('.fact-content')?.value || '').trim(),
+    type: String(card.querySelector('.fact-type')?.value || 'uncategorized').trim() || 'uncategorized',
+    source: String(card.querySelector('.fact-source')?.value || '').trim() || 'manual',
+    keywords: splitKeywords(card.querySelector('.fact-keywords')?.value || ''),
+    enabled: Boolean(enabledInput?.checked)
+  };
+}
+
+function factSignature(fact) {
+  return JSON.stringify({
+    title: String(fact.title || '').trim(),
+    content: String(fact.content || '').trim(),
+    type: String(fact.type || 'uncategorized').trim() || 'uncategorized',
+    source: String(fact.source || 'manual').trim() || 'manual',
+    keywords: normalizeKeywordList(fact.keywords),
+    enabled: fact.enabled !== false
+  });
+}
+
+function factSignatureFromCard(card) {
+  return factSignature(readFactCardFields(card));
+}
+
+function isFactCardDirty(card) {
+  return String(card.dataset.savedSignature || '') !== factSignatureFromCard(card);
+}
+
+function isPersistedFactId(factId) {
+  const value = String(factId || '').trim();
+  return Boolean(value) && !value.startsWith('__index:');
+}
+
+function syncChangedFactCard(event) {
+  const card = event.target.closest('.fact-card');
+  if (card) syncFactPromoteState(card);
+}
+
+function syncFactPromoteState(card) {
+  const promote = card.querySelector('[data-promote-fact]');
+  if (!promote) return;
+
+  const factId = String(card.dataset.factId || '').trim();
+  const needsSave = !isPersistedFactId(factId);
+  const dirty = !needsSave && isFactCardDirty(card);
+  promote.disabled = needsSave || dirty;
+  promote.title = needsSave ? '请先保存事实后再提升' : (dirty ? '请先保存修改后再提升' : '');
+}
+
 function splitKeywords(value) {
   return String(value || '')
     .split(/[\n\r、,，]+/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function escapeHtml(value) {
-  const text = String(value ?? '');
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function escapeAttribute(value) {
-  return escapeHtml(value)
-    .replace(/\//g, '&#x2F;')
-    .replace(/`/g, '&#x60;')
-    .replace(/=/g, '&#x3D;');
 }
 
 async function saveProvider() {

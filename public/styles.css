@@ -424,18 +424,22 @@ textarea:focus {
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(72px, 1fr));
   gap: 6px;
+  overflow-x: auto;
   padding: 9px;
   border-bottom: 1px solid var(--line);
   background: #17191b;
+  scrollbar-width: thin;
 }
 
 .tab-button {
-  min-width: 0;
+  min-width: 72px;
+  padding-inline: 8px;
   background: #111315;
   border-color: var(--line);
   color: var(--muted);
+  white-space: nowrap;
 }
 
 .tab-button.active {
