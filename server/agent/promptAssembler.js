@@ -16,11 +16,7 @@ export function assemblePrompt({
   const safeMessages = Array.isArray(messages) ? messages : [];
   const recentPairs = Number(options.recentPairs ?? 8);
   const maxInjectedCards = Number(options.maxInjectedCards ?? 5);
-  const memoryCards = normalizeFactCards(Array.isArray(memory?.memoryCards) ? memory.memoryCards : [])
-    .map((card) => {
-      if (Array.isArray(card.keywords) && card.keywords.length) return card;
-      return { ...card, keywords: inferFactKeywords(card) };
-    });
+  const memoryCards = normalizeFactCards(Array.isArray(memory?.memoryCards) ? memory.memoryCards : []);
   const query = [userMessage, ...safeMessages.slice(-recentPairs * 2).map((message) => message.content)].join('\n');
   const injectedCards = retrieveCards({ query, worldBook: safeWorldBook, memoryCards, maxCards: maxInjectedCards });
   const renderedPromptModules = getRenderablePromptModules(safePromptModules);
@@ -55,30 +51,9 @@ export function assemblePrompt({
       hasCharacterCard: Boolean(characterCard?.enabled !== false && String(characterCard?.name || '').trim()),
       hasWorldState: Boolean(memory?.worldState),
       hasRollingSummary: Boolean(memory?.rollingSummary),
-      injectedCardIds: injectedCards.filter((card) => !card.__generatedId).map((card) => card.id)
+      injectedCardIds: injectedCards.map((card) => card.id)
     }
   };
-}
-
-function inferFactKeywords(card) {
-  const text = String((card && card.content) || '');
-  const terms = text.split(/[^\u4e00-\u9fffA-Za-z0-9]+/).map((term) => term.trim()).filter(Boolean);
-  const keywords = new Set();
-
-  for (const term of terms) {
-    const trimmed = term.trim();
-    if (!trimmed) continue;
-    if (trimmed.length <= 2) {
-      keywords.add(trimmed);
-      continue;
-    }
-    for (let index = 0; index < trimmed.length - 1; index += 1) {
-      keywords.add(trimmed.slice(index, index + 2));
-      if (index >= 5) break;
-    }
-  }
-
-  return Array.from(keywords).slice(0, 12);
 }
 
 function renderCharacterCard(card) {
