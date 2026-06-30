@@ -341,7 +341,7 @@ function createFactNode(fact, index) {
   const source = String(fact?.source || 'manual');
   const factId = String(fact?.id || '').trim();
   const cardFactId = factId || `__index:${index}`;
-  const enabled = Boolean(fact?.enabled);
+  const enabled = fact?.enabled !== false;
 
   const card = document.createElement('article');
   card.className = 'fact-card';
@@ -550,7 +550,7 @@ function collectFactsFromDom() {
     const enabledInput = card.querySelector('.fact-enabled input');
 
     return {
-      id: factId,
+      ...(factId.startsWith('__index:') ? {} : { id: factId }),
       title,
       content,
       type,
@@ -575,7 +575,7 @@ function createFactTemplate() {
 
 function splitKeywords(value) {
   return String(value || '')
-    .split(/[\n\r、,]+/)
+    .split(/[\n\r、,，]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
