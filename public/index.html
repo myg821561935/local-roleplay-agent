@@ -81,6 +81,7 @@
 
           <div class="tabs" role="tablist" aria-label="检查器标签">
             <button class="tab-button active" type="button" data-tab="memory" role="tab" aria-selected="true">记忆</button>
+            <button class="tab-button" type="button" data-tab="facts" role="tab" aria-selected="false">事实</button>
             <button class="tab-button" type="button" data-tab="worldbook" role="tab" aria-selected="false">世界书</button>
             <button class="tab-button" type="button" data-tab="character" role="tab" aria-selected="false">角色卡</button>
             <button class="tab-button" type="button" data-tab="prompt" role="tab" aria-selected="false">Prompt</button>
@@ -88,6 +89,15 @@
 
           <section class="tab-pane active" data-pane="memory" role="tabpanel">
             <pre id="memory-view" class="json-view"></pre>
+          </section>
+
+          <section class="tab-pane" data-pane="facts" role="tabpanel" hidden>
+            <div id="fact-list" class="fact-list"></div>
+            <div class="editor-actions">
+              <span id="fact-status" class="status-text"></span>
+              <button id="add-fact" class="ghost-button compact" type="button">新增事实</button>
+              <button id="save-facts" class="primary-button compact" type="button">保存事实</button>
+            </div>
           </section>
 
           <section class="tab-pane" data-pane="worldbook" role="tabpanel" hidden>

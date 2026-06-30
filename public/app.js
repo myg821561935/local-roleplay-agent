@@ -32,6 +32,10 @@ const els = {
   chatInput: document.querySelector('#chat-input'),
   refreshState: document.querySelector('#refresh-state'),
   memoryView: document.querySelector('#memory-view'),
+  factList: document.querySelector('#fact-list'),
+  factStatus: document.querySelector('#fact-status'),
+  addFact: document.querySelector('#add-fact'),
+  saveFacts: document.querySelector('#save-facts'),
   worldbookEditor: document.querySelector('#worldbook-editor'),
   saveWorldbook: document.querySelector('#save-worldbook'),
   addWorldbookEntry: document.querySelector('#add-worldbook-entry'),
@@ -66,6 +70,8 @@ function bindEvents() {
   });
 
   els.refreshState.addEventListener('click', () => loadState());
+  els.addFact.addEventListener('click', () => addFactCard());
+  els.saveFacts.addEventListener('click', () => saveFacts());
   els.saveWorldbook.addEventListener('click', () => saveWorldBook());
   els.addWorldbookEntry.addEventListener('click', () => addWorldBookEntry());
   els.saveCharacterCard.addEventListener('click', () => saveCharacterCard());
@@ -92,6 +98,16 @@ function bindEvents() {
 
   els.tabButtons.forEach((button) => {
     button.addEventListener('click', () => activateTab(button.dataset.tab));
+  });
+
+  els.factList.addEventListener('click', (event) => {
+    const deleteButton = event.target.closest('[data-delete-fact]');
+    if (deleteButton) {
+      deleteFactCard(deleteButton.dataset.deleteFact);
+      return;
+    }
+    const promoteButton = event.target.closest('[data-promote-fact]');
+    if (promoteButton) promoteFact(promoteButton.dataset.promoteFact);
   });
 }
 
@@ -292,9 +308,264 @@ function findMessage(messageId) {
 
 function renderInspector() {
   els.memoryView.textContent = prettyJson(state.session?.memory || {});
+  renderFacts();
   els.worldbookEditor.value = prettyJson(state.config.worldBook || []);
   els.characterCardEditor.value = prettyJson(state.config.characterCard || createCharacterCardTemplate());
   els.promptEditor.value = prettyJson(state.config.promptModules || []);
+}
+
+function renderFacts() {
+  const facts = getMemoryFacts();
+  els.factList.innerHTML = '';
+
+  if (!facts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'compact-empty';
+    empty.textContent = '暂无事实卡片。';
+    els.factList.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  facts.forEach((fact, index) => fragment.append(createFactNode(fact, index)));
+  els.factList.append(fragment);
+}
+
+function createFactNode(fact, index) {
+  const title = String(fact?.title || `事实 ${index + 1}`);
+  const content = String(fact?.content || '');
+  const type = String(fact?.type || 'uncategorized');
+  const keywords = Array.isArray(fact?.keywords)
+    ? fact.keywords.join('、')
+    : '';
+  const source = String(fact?.source || 'manual');
+  const factId = String(fact?.id || `manual-${index}-${Date.now()}`);
+  const enabled = Boolean(fact?.enabled);
+
+  const card = document.createElement('article');
+  card.className = 'fact-card';
+  card.dataset.factId = factId;
+
+  const topline = document.createElement('div');
+  topline.className = 'fact-card-topline';
+
+  const titleWrap = document.createElement('label');
+  titleWrap.className = 'fact-title';
+  const titleLabel = document.createElement('span');
+  titleLabel.textContent = '标题';
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.className = 'fact-title-input';
+  titleInput.value = title;
+  titleInput.placeholder = '事实标题';
+  titleWrap.append(titleLabel, titleInput);
+
+  const enabledWrap = document.createElement('label');
+  enabledWrap.className = 'fact-enabled';
+  const enabledInput = document.createElement('input');
+  enabledInput.type = 'checkbox';
+  enabledInput.className = 'fact-enabled-input';
+  enabledInput.checked = enabled;
+  enabledInput.title = '是否启用';
+  const enabledText = document.createElement('span');
+  enabledText.textContent = '启用';
+  enabledWrap.append(enabledInput, enabledText);
+  topline.append(titleWrap, enabledWrap);
+
+  const grid = document.createElement('div');
+  grid.className = 'fact-grid';
+
+  const contentWrap = document.createElement('label');
+  contentWrap.className = 'fact-field';
+  const contentLabel = document.createElement('span');
+  contentLabel.textContent = '内容';
+  const contentInput = document.createElement('textarea');
+  contentInput.className = 'fact-content';
+  contentInput.rows = 4;
+  contentInput.value = content;
+  contentInput.placeholder = '输入事实内容';
+  contentWrap.append(contentLabel, contentInput);
+
+  const typeWrap = document.createElement('label');
+  typeWrap.className = 'fact-field';
+  const typeLabel = document.createElement('span');
+  typeLabel.textContent = '类型';
+  const typeInput = document.createElement('input');
+  typeInput.type = 'text';
+  typeInput.className = 'fact-type';
+  typeInput.value = type;
+  typeInput.placeholder = 'uncategorized';
+  typeWrap.append(typeLabel, typeInput);
+
+  const keywordWrap = document.createElement('label');
+  keywordWrap.className = 'fact-field';
+  const keywordLabel = document.createElement('span');
+  keywordLabel.textContent = '关键词（逗号分隔）';
+  const keywordInput = document.createElement('input');
+  keywordInput.type = 'text';
+  keywordInput.className = 'fact-keywords';
+  keywordInput.value = keywords;
+  keywordInput.placeholder = '关键词1、关键词2';
+  keywordWrap.append(keywordLabel, keywordInput);
+
+  const sourceWrap = document.createElement('label');
+  sourceWrap.className = 'fact-field';
+  const sourceLabel = document.createElement('span');
+  sourceLabel.textContent = '来源';
+  const sourceInput = document.createElement('input');
+  sourceInput.type = 'text';
+  sourceInput.className = 'fact-source';
+  sourceInput.value = source;
+  sourceInput.placeholder = 'manual';
+  sourceWrap.append(sourceLabel, sourceInput);
+
+  grid.append(contentWrap, typeWrap, keywordWrap, sourceWrap);
+
+  const actions = document.createElement('div');
+  actions.className = 'fact-card-actions';
+
+  const promote = document.createElement('button');
+  promote.type = 'button';
+  promote.className = 'ghost-button compact';
+  promote.dataset.promoteFact = factId;
+  promote.textContent = '提升为世界书';
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'danger-button compact';
+  remove.dataset.deleteFact = factId;
+  remove.textContent = '删除';
+
+  actions.append(promote, remove);
+  card.append(topline, grid, actions);
+  return card;
+}
+
+function getMemoryFacts() {
+  const memoryCards = state.session?.memory?.memoryCards;
+  return Array.isArray(memoryCards) ? memoryCards : [];
+}
+
+function addFactCard() {
+  const facts = getMemoryFacts();
+  facts.push(createFactTemplate());
+  state.session = {
+    ...state.session,
+    memory: {
+      ...state.session?.memory,
+      memoryCards: facts
+    }
+  };
+  renderFacts();
+  setStatus(els.factStatus, '已添加事实模板，请保存更新', 'ok');
+}
+
+function deleteFactCard(factId) {
+  const facts = getMemoryFacts().filter((fact) => fact.id !== factId);
+  state.session = {
+    ...state.session,
+    memory: {
+      ...state.session?.memory,
+      memoryCards: facts
+    }
+  };
+  renderFacts();
+  setStatus(els.factStatus, '已删除事实，请保存', 'ok');
+}
+
+async function saveFacts() {
+  setStatus(els.factStatus, '正在保存...', 'busy');
+  els.saveFacts.disabled = true;
+  try {
+    const facts = collectFactsFromDom();
+    const payload = await apiRequest('/api/memory/facts', {
+      method: 'PUT',
+      body: {
+        sessionId: state.session?.id || 'main',
+        facts
+      }
+    });
+    state.session = payload.session || state.session;
+    renderInspector();
+    setStatus(els.factStatus, '事实已保存', 'ok');
+  } catch (error) {
+    setStatus(els.factStatus, `保存失败：${humanizeApiError(error)}`, 'error');
+  } finally {
+    els.saveFacts.disabled = false;
+  }
+}
+
+async function promoteFact(factId) {
+  setStatus(els.factStatus, '正在提升为世界书...', 'busy');
+  try {
+    const payload = await apiRequest(`/api/memory/facts/${encodeURIComponent(factId)}/promote`, {
+      method: 'POST',
+      body: { sessionId: state.session?.id || 'main' }
+    });
+    state.config.worldBook = payload.worldBook || state.config.worldBook;
+    renderInspector();
+    setStatus(els.factStatus, '已提升为世界书', 'ok');
+  } catch (error) {
+    setStatus(els.factStatus, `提升失败：${humanizeApiError(error)}`, 'error');
+  }
+}
+
+function collectFactsFromDom() {
+  return Array.from(els.factList.querySelectorAll('.fact-card')).map((card) => {
+    const factId = String(card.dataset.factId || `manual-${Date.now()}`);
+    const title = String(card.querySelector('.fact-title-input')?.value || '').trim();
+    const content = String(card.querySelector('.fact-content')?.value || '').trim();
+    const type = String(card.querySelector('.fact-type')?.value || 'uncategorized').trim();
+    const source = String(card.querySelector('.fact-source')?.value || '').trim();
+    const keywords = splitKeywords(card.querySelector('.fact-keywords')?.value || '');
+    const enabledInput = card.querySelector('.fact-enabled input');
+
+    return {
+      id: factId,
+      title,
+      content,
+      type,
+      source,
+      keywords,
+      enabled: Boolean(enabledInput?.checked)
+    };
+  });
+}
+
+function createFactTemplate() {
+  return {
+    id: `manual-${Date.now()}`,
+    title: '新事实',
+    enabled: true,
+    content: '',
+    type: 'uncategorized',
+    keywords: [],
+    source: 'manual'
+  };
+}
+
+function splitKeywords(value) {
+  return String(value || '')
+    .split(/[\n\r、,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function escapeHtml(value) {
+  const text = String(value ?? '');
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value)
+    .replace(/\//g, '&#x2F;')
+    .replace(/`/g, '&#x60;')
+    .replace(/=/g, '&#x3D;');
 }
 
 async function saveProvider() {

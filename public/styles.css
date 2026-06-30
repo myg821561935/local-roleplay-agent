@@ -424,7 +424,7 @@ textarea:focus {
 
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   padding: 9px;
   border-bottom: 1px solid var(--line);
@@ -504,6 +504,105 @@ textarea:focus {
   background: var(--panel-raised);
 }
 
+.fact-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: var(--panel-deep);
+}
+
+.fact-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(214, 166, 74, 0.2);
+  border-radius: var(--radius);
+  padding: 8px;
+  background: #1e2224;
+}
+
+.fact-card-topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.fact-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fact-title {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  flex: 1;
+}
+
+.fact-title-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.fact-enabled {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.fact-enabled input {
+  width: 14px;
+  height: 14px;
+  min-height: auto;
+  margin: 0;
+}
+
+.fact-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.fact-grid .fact-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.fact-grid .fact-field input,
+.fact-grid .fact-field textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.danger-button {
+  background: #341d1a;
+  border-color: var(--danger);
+  color: #f3bfaa;
+}
+
+.danger-button:hover {
+  border-color: #dca08f;
+  background: #4a2723;
+  color: #ffe9df;
+}
+
+.compact-empty {
+  margin: auto;
+  color: var(--muted);
+}
+
 .is-error {
   color: var(--danger);
 }
@@ -558,6 +657,10 @@ textarea:focus {
     max-height: 68px;
   }
 
+  .fact-grid .fact-field textarea {
+    max-height: 120px;
+  }
+
   .chat-panel {
     min-height: 0;
   }
@@ -608,5 +711,18 @@ textarea:focus {
   .chat-form .primary-button,
   .form-grid .primary-button {
     width: 100%;
+  }
+
+  .fact-card-topline {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .fact-enabled {
+    align-self: flex-start;
+  }
+
+  .fact-card-actions {
+    justify-content: flex-start;
   }
 }
