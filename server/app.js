@@ -359,7 +359,7 @@ async function regenerateMessage({ agentService, body, messageId }) {
 async function saveMemoryFacts({ sessionService, body }) {
   const factsPayload = body.facts ?? [];
   if (!Array.isArray(factsPayload)) throw new ApiError(400, 'INVALID_MEMORY_FACTS');
-  const session = await sessionService.getSession(body.sessionId || 'main');
+  const session = await getApiSession(sessionService, body.sessionId || 'main');
   const facts = normalizeFactCards(factsPayload);
   session.memory = {
     ...session.memory,
@@ -371,7 +371,7 @@ async function saveMemoryFacts({ sessionService, body }) {
 }
 
 async function promoteMemoryFact({ configService, sessionService, body, factId }) {
-  const session = await sessionService.getSession(body.sessionId || 'main');
+  const session = await getApiSession(sessionService, body.sessionId || 'main');
   const facts = normalizeFactCards(session.memory?.memoryCards || []);
   const fact = facts.find((item) => item.id === factId);
   if (!fact) throw new ApiError(404, 'MEMORY_FACT_NOT_FOUND');
@@ -385,6 +385,15 @@ async function promoteMemoryFact({ configService, sessionService, body, factId }
     : await configService.saveWorldBook([...existingWorldBook, nextEntry]);
 
   return { fact, worldBook: nextWorldBook };
+}
+
+async function getApiSession(sessionService, sessionId) {
+  try {
+    return await sessionService.getSession(sessionId);
+  } catch (error) {
+    if (error.message === 'Invalid session id') throw new ApiError(400, 'INVALID_SESSION_ID');
+    throw error;
+  }
 }
 
 function matchMessageRoute(pathname) {

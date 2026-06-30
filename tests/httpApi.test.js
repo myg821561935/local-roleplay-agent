@@ -507,6 +507,20 @@ test('PUT /api/memory/facts rejects non-array facts', async () => {
   assert.deepEqual(response.json(), { error: 'INVALID_MEMORY_FACTS' });
 });
 
+test('PUT /api/memory/facts rejects invalid session id', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/memory/facts',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: '../bad', facts: [] }
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_SESSION_ID' });
+});
+
 test('POST /api/memory/facts/:factId/promote creates one world book entry', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   await request(app, {
@@ -551,6 +565,20 @@ test('POST /api/memory/facts/:factId/promote rejects missing fact', async () => 
 
   assert.equal(response.status, 404);
   assert.deepEqual(response.json(), { error: 'MEMORY_FACT_NOT_FOUND' });
+});
+
+test('POST /api/memory/facts/:factId/promote rejects invalid session id', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/memory/facts/fact-sword/promote',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: '../bad' }
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_SESSION_ID' });
 });
 
 test('static / returns the HTML page', async () => {
