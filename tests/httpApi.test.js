@@ -465,6 +465,94 @@ test('POST /api/messages/:messageId/regenerate stores assistant swipes', async (
   assert.deepEqual(assistant.swipes, ['第1版回应：我推门进去。', '第2版回应：我推门进去。']);
 });
 
+test('PUT /api/memory/facts saves normalized memory facts', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/memory/facts',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'main',
+      facts: [{
+        title: '名刀雪照',
+        content: '沈观澜持有名刀雪照。',
+        keywords: ['雪照'],
+        type: 'item',
+        enabled: false
+      }]
+    }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.facts.length, 1);
+  assert.equal(payload.facts[0].title, '名刀雪照');
+  assert.equal(payload.facts[0].enabled, false);
+  assert.equal(state.session.memory.memoryCards[0].content, '沈观澜持有名刀雪照。');
+});
+
+test('PUT /api/memory/facts rejects non-array facts', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/memory/facts',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main', facts: { content: 'not-array' } }
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_MEMORY_FACTS' });
+});
+
+test('POST /api/memory/facts/:factId/promote creates one world book entry', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'PUT',
+    url: '/api/memory/facts',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'main',
+      facts: [{ id: 'fact-sword', title: '名刀雪照', content: '沈观澜持有名刀雪照。', keywords: ['雪照'] }]
+    }
+  });
+
+  const first = await request(app, {
+    method: 'POST',
+    url: '/api/memory/facts/fact-sword/promote',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const second = await request(app, {
+    method: 'POST',
+    url: '/api/memory/facts/fact-sword/promote',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const worldBook = second.json().worldBook.filter((entry) => entry.source === 'fact-management');
+
+  assert.equal(first.status, 200);
+  assert.equal(worldBook.length, 1);
+  assert.equal(worldBook[0].title, '名刀雪照');
+  assert.equal(worldBook[0].extensions.sourceFactId, 'fact-sword');
+});
+
+test('POST /api/memory/facts/:factId/promote rejects missing fact', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/memory/facts/missing/promote',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(response.json(), { error: 'MEMORY_FACT_NOT_FOUND' });
+});
+
 test('static / returns the HTML page', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
 

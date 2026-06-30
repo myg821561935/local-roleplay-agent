@@ -7,6 +7,7 @@ import { SessionService } from './services/sessionService.js';
 import { AgentService } from './services/agentService.js';
 import { callOpenAICompatible, streamOpenAICompatible } from './provider/openaiCompatible.js';
 import { importCharacterCardFromPayload } from './character/characterCardImport.js';
+import { createWorldBookEntryFromFact, normalizeFactCards, worldBookIdentity } from './agent/factCards.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -106,6 +107,28 @@ async function handleApi({ req, res, url, configService, sessionService, agentSe
     }
     const worldBook = await configService.saveWorldBook(worldBookPayload);
     writeJson(res, 200, { worldBook });
+    return;
+  }
+
+  if (req.method === 'PUT' && url.pathname === '/api/memory/facts') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const result = await saveMemoryFacts({ sessionService, body });
+    writeJson(res, 200, result);
+    return;
+  }
+
+  const memoryFactPromoteRoute = matchMemoryFactPromoteRoute(url.pathname);
+  if (memoryFactPromoteRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const result = await promoteMemoryFact({
+      configService,
+      sessionService,
+      body,
+      factId: memoryFactPromoteRoute.factId
+    });
+    writeJson(res, 200, result);
     return;
   }
 
@@ -333,12 +356,49 @@ async function regenerateMessage({ agentService, body, messageId }) {
   }
 }
 
+async function saveMemoryFacts({ sessionService, body }) {
+  const factsPayload = body.facts ?? [];
+  if (!Array.isArray(factsPayload)) throw new ApiError(400, 'INVALID_MEMORY_FACTS');
+  const session = await sessionService.getSession(body.sessionId || 'main');
+  const facts = normalizeFactCards(factsPayload);
+  session.memory = {
+    ...session.memory,
+    memoryCards: facts
+  };
+  session.updatedAt = new Date().toISOString();
+  await sessionService.saveSession(session);
+  return { facts, session };
+}
+
+async function promoteMemoryFact({ configService, sessionService, body, factId }) {
+  const session = await sessionService.getSession(body.sessionId || 'main');
+  const facts = normalizeFactCards(session.memory?.memoryCards || []);
+  const fact = facts.find((item) => item.id === factId);
+  if (!fact) throw new ApiError(404, 'MEMORY_FACT_NOT_FOUND');
+
+  const nextEntry = createWorldBookEntryFromFact(fact);
+  const config = await configService.getAll();
+  const existingWorldBook = Array.isArray(config.worldBook) ? config.worldBook : [];
+  const existingKeys = new Set(existingWorldBook.map(worldBookIdentity));
+  const nextWorldBook = existingKeys.has(worldBookIdentity(nextEntry))
+    ? existingWorldBook
+    : await configService.saveWorldBook([...existingWorldBook, nextEntry]);
+
+  return { fact, worldBook: nextWorldBook };
+}
+
 function matchMessageRoute(pathname) {
   const editMatch = pathname.match(/^\/api\/messages\/([^/]+)$/);
   if (editMatch) return { action: 'edit', messageId: decodeURIComponent(editMatch[1]) };
   const regenerateMatch = pathname.match(/^\/api\/messages\/([^/]+)\/regenerate$/);
   if (regenerateMatch) return { action: 'regenerate', messageId: decodeURIComponent(regenerateMatch[1]) };
   return null;
+}
+
+function matchMemoryFactPromoteRoute(pathname) {
+  const match = pathname.match(/^\/api\/memory\/facts\/([^/]+)\/promote$/);
+  if (!match) return null;
+  return { factId: decodeURIComponent(match[1]) };
 }
 
 async function readRequestJson(req) {
