@@ -46,7 +46,7 @@ export function normalizeFactCards(value, { now } = {}) {
   return cards;
 }
 
-export function normalizeFactCard(value, { index, now } = {}) {
+export function normalizeFactCard(value, { index = 0, now } = {}) {
   const safeNow = normalizeNow(now);
   const raw = typeof value === 'string' ? { content: value } : value;
   if (!isPlainObject(raw)) return null;
@@ -110,7 +110,7 @@ export function worldBookIdentity(entry) {
   return `${stringValue(entry.title)}\n${stringValue(entry.content)}`;
 }
 
-function autoFactId(content, index) {
+function autoFactId(content, index = 0) {
   const compact = Buffer.from(`${index}:${content}`).toString('base64url').slice(0, 18);
   return `fact-${compact}`;
 }
