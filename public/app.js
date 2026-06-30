@@ -49,11 +49,14 @@ const els = {
   savePrompt: document.querySelector('#save-prompt'),
   promptStatus: document.querySelector('#prompt-status'),
   sessionStatus: document.querySelector('#session-status'),
+  themeSelect: document.querySelector('#theme-select'),
+  stageActions: document.querySelector('.stage-actions'),
   tabButtons: Array.from(document.querySelectorAll('[data-tab]')),
   tabPanes: Array.from(document.querySelectorAll('[data-pane]'))
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+  applyTheme(loadTheme());
   bindEvents();
   loadState();
 });
@@ -70,6 +73,7 @@ function bindEvents() {
   });
 
   els.refreshState.addEventListener('click', () => loadState());
+  els.themeSelect.addEventListener('change', () => applyTheme(els.themeSelect.value));
   els.addFact.addEventListener('click', () => addFactCard());
   els.saveFacts.addEventListener('click', () => saveFacts());
   els.saveWorldbook.addEventListener('click', () => saveWorldBook());
@@ -94,6 +98,25 @@ function bindEvents() {
 
     const regenerate = event.target.closest('[data-regenerate-message]');
     if (regenerate) regenerateMessage(regenerate.dataset.regenerateMessage);
+  });
+
+  els.stageActions.addEventListener('click', (event) => {
+    const tabShortcut = event.target.closest('[data-tab-shortcut]');
+    if (tabShortcut) {
+      activateTab(tabShortcut.dataset.tabShortcut);
+      return;
+    }
+
+    const actionTemplate = event.target.closest('[data-action-template]');
+    if (actionTemplate) {
+      els.chatInput.value = actionTemplate.dataset.actionTemplate;
+      els.chatInput.focus();
+      return;
+    }
+
+    if (event.target.closest('[data-scroll-bottom]')) {
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
   });
 
   els.tabButtons.forEach((button) => {
@@ -921,6 +944,25 @@ function throwSseError(data) {
   const error = new Error(data?.error || 'STREAM_ERROR');
   error.code = data?.error;
   throw error;
+}
+
+function loadTheme() {
+  try {
+    return localStorage.getItem('local-roleplay-agent-theme') || 'wuxia-scroll';
+  } catch {
+    return 'wuxia-scroll';
+  }
+}
+
+function applyTheme(theme) {
+  const value = theme === 'default-dark' ? 'default-dark' : 'wuxia-scroll';
+  document.documentElement.dataset.theme = value;
+  try {
+    localStorage.setItem('local-roleplay-agent-theme', value);
+  } catch {
+    // Theme still applies for the current page even if storage is unavailable.
+  }
+  if (els.themeSelect) els.themeSelect.value = value;
 }
 
 function activateTab(tab) {

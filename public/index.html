@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="wuxia-scroll">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,6 +13,13 @@
           <h1>本地角色扮演 Agent</h1>
           <p id="app-status">正在载入本地状态...</p>
         </div>
+        <label class="theme-switcher">
+          <span>主题</span>
+          <select id="theme-select" aria-label="主题">
+            <option value="default-dark">极简暗黑</option>
+            <option value="wuxia-scroll">武侠卷轴</option>
+          </select>
+        </label>
         <button id="refresh-state" class="ghost-button" type="button">刷新</button>
       </header>
 
@@ -67,6 +74,12 @@
           </div>
 
           <div id="messages" class="messages" aria-live="polite"></div>
+
+          <div class="stage-actions" aria-label="场景操作">
+            <button class="tool-button" type="button" data-tab-shortcut="character">角色设定</button>
+            <button class="tool-button" type="button" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
+            <button class="tool-button" type="button" data-scroll-bottom>回到底部</button>
+          </div>
 
           <form id="chat-form" class="chat-form">
             <textarea id="chat-input" rows="3" placeholder="输入角色行动或旁白指令..." spellcheck="false"></textarea>
