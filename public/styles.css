@@ -338,7 +338,7 @@ textarea:focus {
   opacity: 0.82;
 }
 
-.chat-panel > * {
+:root[data-theme="wuxia-scroll"] .chat-panel > * {
   position: relative;
   z-index: 1;
 }

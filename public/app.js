@@ -104,6 +104,7 @@ function bindEvents() {
     const tabShortcut = event.target.closest('[data-tab-shortcut]');
     if (tabShortcut) {
       activateTab(tabShortcut.dataset.tabShortcut);
+      scrollInspectorIntoViewOnNarrowScreens();
       return;
     }
 
@@ -963,6 +964,11 @@ function applyTheme(theme) {
     // Theme still applies for the current page even if storage is unavailable.
   }
   if (els.themeSelect) els.themeSelect.value = value;
+}
+
+function scrollInspectorIntoViewOnNarrowScreens() {
+  if (!window.matchMedia('(max-width: 760px)').matches) return;
+  document.querySelector('.inspector-panel')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
 function activateTab(tab) {
