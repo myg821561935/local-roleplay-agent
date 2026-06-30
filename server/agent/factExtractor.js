@@ -10,7 +10,9 @@ export function buildFactExtractionPrompt({ worldState, messages }) {
         '你是长篇角色扮演的事实提取器。',
         '只提取对后续创作稳定有用的新事实：人物状态、地点、关系、任务、阵营、物品、伤势、承诺、旗标。',
         '不要补充对话中没有确认的设定。',
-        '只输出 JSON，不要输出解释。JSON 形如：{"worldState":{"protagonist":{},"location":{},"relationships":[],"quests":[],"factions":[],"flags":{},"timeline":[]},"memoryCards":[]}'
+        'memoryCards 用于给创作者审阅；worldBook 用于可被关键词触发的动态世界书条目。',
+        '如果新事实需要长期按关键词注入，请同时写入 worldBook。worldBook 条目至少包含 title、keywords、content、depth；depth 表示插入深度，通常为 6。',
+        '只输出 JSON，不要输出解释。JSON 形如：{"worldState":{"protagonist":{},"location":{},"relationships":[],"quests":[],"factions":[],"flags":{},"timeline":[]},"memoryCards":[],"worldBook":[{"title":"","keywords":[],"content":"","depth":6}]}'
       ].join('\n')
     },
     {

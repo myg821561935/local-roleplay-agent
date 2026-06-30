@@ -591,6 +591,18 @@ test('static / returns the HTML page', async () => {
   assert.match(response.text, /本地角色扮演 Agent/);
 });
 
+test('static PNG assets return image/png content type', async () => {
+  const rootDir = await createTestRoot();
+  await mkdir(path.join(rootDir, 'public', 'assets'), { recursive: true });
+  await writeFile(path.join(rootDir, 'public', 'assets', 'wuxia-stage.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const app = createApp({ rootDir });
+
+  const response = await request(app, { url: '/assets/wuxia-stage.png' });
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers['content-type'], /^image\/png/);
+});
+
 test('static path traversal attempt returns non-200 and does not expose files', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
 
