@@ -1,4 +1,5 @@
 import { createDefaultMemory } from './memoryUpdater.js';
+import { normalizeFactCards, worldBookIdentity } from './factCards.js';
 
 export function buildFactExtractionPrompt({ worldState, messages }) {
   const transcript = messages.map((message) => `${message.role}: ${message.content}`).join('\n');
@@ -26,7 +27,18 @@ export function applyFactExtractionResult(memory, content) {
     next.worldState = mergeWorldState(next.worldState || createDefaultMemory().worldState, payload.worldState);
   }
   if (Array.isArray(payload.memoryCards)) {
-    next.memoryCards = [...(Array.isArray(next.memoryCards) ? next.memoryCards : []), ...payload.memoryCards];
+    const safeNow = new Date().toISOString();
+    const existingCards = normalizeFactCards(next.memoryCards, { now: safeNow });
+    const incomingCards = normalizeFactCards(payload.memoryCards, { now: safeNow });
+    const seen = new Set();
+    next.memoryCards = [...existingCards, ...incomingCards]
+      .filter((card) => card && typeof card === 'object')
+      .filter((card) => {
+        const key = worldBookIdentity(card);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
   }
   next.lastFactExtractionError = '';
   return next;

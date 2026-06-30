@@ -181,6 +181,42 @@ test('assemblePrompt renders world book entries by insertion depth', () => {
   assert.match(result.messages[0].content, /六轮内仍要保留的设定/);
 });
 
+test('assemblePrompt injects enabled normalized memory facts and ignores disabled facts', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '沈观澜', enabled: true },
+    worldBook: [],
+    memory: {
+      worldState: {},
+      memoryCards: [
+        {
+          id: 'fact-enabled',
+          title: '名刀雪照',
+          keywords: ['雪照'],
+          content: '沈观澜持有名刀雪照。',
+          enabled: true
+        },
+        {
+          id: 'fact-disabled',
+          title: '错误事实',
+          keywords: ['雪照'],
+          content: '这条禁用事实不应出现。',
+          enabled: false
+        },
+        '雪照曾在镇武司旧案中出现。'
+      ]
+    },
+    messages: [],
+    userMessage: '我查看雪照刀身。',
+    options: { maxInjectedCards: 5 }
+  });
+
+  assert.match(result.messages[0].content, /沈观澜持有名刀雪照。/);
+  assert.match(result.messages[0].content, /雪照曾在镇武司旧案中出现。/);
+  assert.doesNotMatch(result.messages[0].content, /这条禁用事实不应出现。/);
+  assert.deepEqual(result.sections.injectedCardIds, ['fact-enabled']);
+});
+
 test('retrieveCards sorts equal scores by title', () => {
   const result = retrieveCards({
     query: '镇武司',
