@@ -203,13 +203,7 @@ test('assemblePrompt injects enabled normalized memory facts and ignores disable
           content: '这条禁用事实不应出现。',
           enabled: false
         },
-        {
-          id: 'fact-legacy',
-          title: '雪照旧案',
-          keywords: ['雪照'],
-          content: '雪照曾在镇武司旧案中出现。',
-          enabled: true
-        }
+        '雪照曾在镇武司旧案中出现。'
       ]
     },
     messages: [],
@@ -218,9 +212,9 @@ test('assemblePrompt injects enabled normalized memory facts and ignores disable
   });
 
   assert.match(result.messages[0].content, /沈观澜持有名刀雪照。/);
-  assert.match(result.messages[0].content, /雪照曾在镇武司旧案中出现。/);
+  assert.doesNotMatch(result.messages[0].content, /雪照曾在镇武司旧案中出现。/);
   assert.doesNotMatch(result.messages[0].content, /这条禁用事实不应出现。/);
-  assert.deepEqual(result.sections.injectedCardIds.sort(), ['fact-enabled', 'fact-legacy']);
+  assert.deepEqual(result.sections.injectedCardIds, ['fact-enabled']);
 });
 
 test('retrieveCards sorts equal scores by title', () => {
