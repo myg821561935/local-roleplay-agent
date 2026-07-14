@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地角色扮演 Agent</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260714-1">
   </head>
   <body>
     <div class="app-shell">
@@ -13,24 +13,61 @@
           <h1>本地角色扮演 Agent</h1>
           <p id="app-status">正在载入本地状态...</p>
         </div>
+        <div id="work-mode-switch" class="work-mode-switch" role="group" aria-label="工作模式">
+          <button class="work-mode-button active" type="button" data-work-mode="creative" aria-pressed="true">创作</button>
+          <button class="work-mode-button" type="button" data-work-mode="settings" aria-pressed="false">设定</button>
+          <button class="work-mode-button" type="button" data-work-mode="debug" aria-pressed="false">调试</button>
+        </div>
+        <div class="mobile-nav mobile-only">
+          <button class="ghost-button compact" type="button" data-mobile-view="provider">接口</button>
+          <button class="ghost-button compact active" type="button" data-mobile-view="chat" data-mobile-mode="creative">创作</button>
+          <button class="ghost-button compact" type="button" data-mobile-view="inspector" data-mobile-mode="settings">设定</button>
+          <button class="ghost-button compact" type="button" data-mobile-view="inspector" data-mobile-mode="debug">调试</button>
+        </div>
         <label class="theme-switcher">
           <span>主题</span>
           <select id="theme-select" aria-label="主题">
             <option value="default-dark">极简暗黑</option>
             <option value="wuxia-scroll">武侠卷轴</option>
+            <option value="xianxia-scroll">仙侠云海</option>
           </select>
         </label>
+        <span id="background-mode" class="mode-pill" aria-live="polite">场景：未设置背景</span>
         <button id="refresh-state" class="ghost-button" type="button">刷新</button>
       </header>
 
-      <main class="workspace">
-        <aside class="panel provider-panel" aria-label="Provider 配置">
+      <main class="workspace" data-active-view="chat" data-work-mode="creative">
+        <aside id="provider-panel" class="panel provider-panel collapsed" aria-label="Provider 配置">
+          <button id="open-provider-panel" class="collapsed-rail-button" type="button" aria-label="展开接口配置" aria-controls="provider-panel" aria-expanded="false" title="展开接口配置">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            <span>接口</span>
+          </button>
           <div class="panel-heading">
-            <h2>接口配置</h2>
-            <span id="provider-status" class="status-text">未保存</span>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <h2>接口配置</h2>
+              <span id="provider-status" class="status-text">未保存</span>
+            </div>
+            <button id="toggle-provider-panel" class="ghost-button compact drawer-toggle" type="button" aria-label="收缩接口配置" aria-controls="provider-panel" aria-expanded="true" title="收缩接口配置">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            </button>
           </div>
 
+          <div class="provider-scroll">
           <form id="provider-form" class="form-grid">
+            <label>
+              <span>厂商预设</span>
+              <select id="provider-preset" name="provider-preset">
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <label>
+              <span>协议</span>
+              <select id="provider-kind" name="provider-kind">
+                <option value="openai-compatible">OpenAI Compatible</option>
+                <option value="anthropic">Anthropic Claude</option>
+                <option value="gemini">Google Gemini</option>
+              </select>
+            </label>
             <label>
               <span>Provider ID</span>
               <input id="provider-id" name="provider-id" autocomplete="off" placeholder="local">
@@ -45,7 +82,11 @@
             </label>
             <label>
               <span>Model</span>
-              <input id="provider-model" name="provider-model" autocomplete="off" placeholder="model-name">
+              <select id="provider-model" name="provider-model"></select>
+            </label>
+            <label id="provider-model-custom-row" class="is-hidden">
+              <span>自定义 Model</span>
+              <input id="provider-model-custom" name="provider-model-custom" autocomplete="off" placeholder="model-name">
             </label>
             <div class="split-row">
               <label>
@@ -61,47 +102,351 @@
               <span>Headers JSON</span>
               <textarea id="provider-headers" name="provider-headers" spellcheck="false" rows="5">{}</textarea>
             </label>
-            <button id="save-provider" class="primary-button" type="submit">保存接口</button>
+            <div class="provider-form-actions">
+              <button id="test-provider" class="ghost-button" type="button">测试连接</button>
+              <button id="save-provider" class="primary-button" type="submit">保存接口</button>
+            </div>
+            <output id="provider-test-result" class="connection-test-result" aria-live="polite"></output>
           </form>
+
+          <details id="release-data-panel" class="worldbook-entries-panel release-data-panel">
+            <summary>本地备份与恢复</summary>
+            <div class="release-data-controls">
+              <div class="release-data-heading">
+                <strong id="release-version">v0.1.0 · 数据 v-</strong>
+                <span>快照包含 Provider 密钥</span>
+              </div>
+              <button id="create-backup" class="primary-button compact" type="button">立即备份</button>
+              <select id="backup-select" class="form-input" aria-label="选择备份">
+                <option value="">暂无备份</option>
+              </select>
+              <div class="release-data-actions">
+                <a id="download-backup" class="ghost-button compact button-link is-disabled" href="#" aria-disabled="true">下载</a>
+                <button id="restore-backup" class="ghost-button compact" type="button" disabled>恢复所选</button>
+              </div>
+              <output id="backup-status" class="status-text" aria-live="polite"></output>
+            </div>
+          </details>
+
+          <details id="provider-routing-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
+            <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">任务路由 & 回退链（点击展开）</summary>
+            <div style="padding: 8px 12px; font-size: 12px; line-height: 1.6;">
+              <p style="margin: 0 0 8px 0; color: var(--subtle);">为不同任务指定专用 Provider（留空则用全局默认）。主 Provider 失败时按回退链顺序重试。</p>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">对话生成 (chat)</span>
+                <select id="task-provider-chat" class="form-input"></select>
+              </label>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">事实抽取 (fact)</span>
+                <select id="task-provider-fact" class="form-input"></select>
+              </label>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">滚动摘要 (summary)</span>
+                <select id="task-provider-summary" class="form-input"></select>
+              </label>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">回退链（逗号分隔 Provider ID，主失败时按顺序尝试）</span>
+                <input id="fallback-chain-input" class="form-input" type="text" placeholder="backup1, backup2">
+              </label>
+              <button id="save-provider-routing" class="primary-button compact" type="button">保存路由配置</button>
+            </div>
+          </details>
+
+          <details id="vector-memory-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
+            <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">向量记忆 RAG（点击展开）</summary>
+            <div style="padding: 8px 12px; font-size: 12px; line-height: 1.6;">
+              <p style="margin: 0 0 8px 0; color: var(--subtle);">将历史消息向量化并按相似度检索注入上下文。需配置一个支持 /v1/embeddings 的 Provider。</p>
+              <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                <input id="vector-memory-enabled" type="checkbox">
+                <span>启用向量记忆</span>
+              </label>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">Embedding Provider（留空则用全局默认）</span>
+                <select id="vector-memory-provider" class="form-input"></select>
+              </label>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">Top-K 检索数量（1-20，默认 5）</span>
+                <input id="vector-memory-topk" class="form-input" type="number" min="1" max="20" value="5">
+              </label>
+              <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <button id="save-vector-memory" class="primary-button compact" type="button">保存配置</button>
+                <button id="rebuild-vector-index" class="ghost-button compact" type="button">重建索引</button>
+              </div>
+              <div id="vector-memory-stats" style="margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; font-size: 11px;">
+                <span style="color: var(--subtle);">索引状态：</span><span id="vector-stats-text">未查询</span>
+              </div>
+              <details style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+                <summary style="cursor: pointer; font-size: 11px; color: var(--subtle);">检索测试</summary>
+                <div style="padding-top: 8px;">
+                  <textarea id="vector-search-input" class="form-input" rows="2" placeholder="输入查询文本..."></textarea>
+                  <button id="vector-search-test" class="ghost-button compact" type="button" style="margin-top: 4px;">检索</button>
+                  <div id="vector-search-results" style="margin-top: 8px; font-size: 11px;"></div>
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <details id="image-gen-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
+            <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">图像生成（点击展开）</summary>
+            <div style="padding: 8px 12px; font-size: 12px; line-height: 1.6;">
+              <p style="margin: 0 0 8px 0; color: var(--subtle);">调用 OpenAI Compatible /v1/images/generations 接口生成图像。需配置支持文生图的 Provider。</p>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">Prompt</span>
+                <textarea id="image-gen-prompt" class="form-input" rows="3" placeholder="描述要生成的图像..."></textarea>
+              </label>
+              <label style="display: block; margin-bottom: 8px;">
+                <span style="display: block; margin-bottom: 4px; color: var(--subtle);">尺寸</span>
+                <select id="image-gen-size" class="form-input">
+                  <option value="1024x1024" selected>1024x1024 (方形)</option>
+                  <option value="1792x1024">1792x1024 (横向)</option>
+                  <option value="1024x1792">1024x1792 (纵向)</option>
+                  <option value="512x512">512x512 (小图)</option>
+                </select>
+              </label>
+              <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <button id="generate-image" class="primary-button compact" type="button">生成图像</button>
+                <button id="insert-image-to-background" class="ghost-button compact" type="button" disabled>设为背景</button>
+              </div>
+              <div id="image-gen-result" style="margin-top: 8px;"></div>
+            </div>
+          </details>
+
+          <details id="mcp-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
+            <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">MCP 工具调用（点击展开）</summary>
+            <div style="padding: 8px 12px; font-size: 12px; line-height: 1.6;">
+              <p style="margin: 0 0 8px 0; color: var(--subtle);">注册外部 MCP server（如 filesystem、web search 等）并调用其工具。仅支持 stdio transport。</p>
+              <div id="mcp-servers-list" style="margin-bottom: 12px;"></div>
+              <details style="margin-bottom: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+                <summary style="cursor: pointer; font-size: 11px; color: var(--subtle);">添加/编辑 MCP Server</summary>
+                <div style="padding-top: 8px;">
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">ID（唯一标识）</span>
+                    <input id="mcp-edit-id" class="form-input" type="text" placeholder="filesystem">
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">显示名称</span>
+                    <input id="mcp-edit-name" class="form-input" type="text" placeholder="文件系统">
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">命令</span>
+                    <input id="mcp-edit-command" class="form-input" type="text" placeholder="npx">
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">参数（空格分隔）</span>
+                    <input id="mcp-edit-args" class="form-input" type="text" placeholder="-y @modelcontextprotocol/server-filesystem /tmp">
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                    <input id="mcp-edit-enabled" type="checkbox" checked>
+                    <span>启用</span>
+                  </label>
+                  <div style="display: flex; gap: 8px;">
+                    <button id="mcp-save-server" class="primary-button compact" type="button">保存配置</button>
+                    <button id="mcp-clear-form" class="ghost-button compact" type="button">清空</button>
+                  </div>
+                </div>
+              </details>
+              <div style="margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+                <div style="margin-bottom: 6px; color: var(--subtle);">可用工具：</div>
+                <div id="mcp-tools-list" style="font-size: 11px;"></div>
+              </div>
+              <details style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+                <summary style="cursor: pointer; font-size: 11px; color: var(--subtle);">调用工具</summary>
+                <div style="padding-top: 8px;">
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">Server ID</span>
+                    <input id="mcp-call-server-id" class="form-input" type="text" placeholder="filesystem">
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">工具名</span>
+                    <input id="mcp-call-tool-name" class="form-input" type="text" placeholder="read_file">
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">参数 (JSON)</span>
+                    <textarea id="mcp-call-args" class="form-input" rows="3" placeholder='{"path": "/tmp/test.txt"}'></textarea>
+                  </label>
+                  <button id="mcp-call-execute" class="primary-button compact" type="button">调用工具</button>
+                  <div id="mcp-call-result" style="margin-top: 8px; font-size: 11px;"></div>
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <details id="voice-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
+            <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">语音 TTS / STT（点击展开）</summary>
+            <div style="padding: 8px 12px; font-size: 12px; line-height: 1.6;">
+              <p style="margin: 0 0 8px 0; color: var(--subtle);">调用 OpenAI Compatible /v1/audio/speech 与 /v1/audio/transcriptions 接口。需配置支持语音的 Provider（如 tts-1 / whisper-1）。</p>
+              <details style="margin-bottom: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+                <summary style="cursor: pointer; font-size: 11px; color: var(--subtle);">文本转语音 (TTS)</summary>
+                <div style="padding-top: 8px;">
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">Provider（留空用当前默认）</span>
+                    <select id="tts-provider" class="form-input compact-select"></select>
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">语音音色</span>
+                    <input id="tts-voice" class="form-input" type="text" placeholder="alloy" value="alloy">
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">格式</span>
+                    <select id="tts-format" class="form-input">
+                      <option value="mp3" selected>mp3</option>
+                      <option value="wav">wav</option>
+                      <option value="opus">opus (ogg)</option>
+                    </select>
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">文本</span>
+                    <textarea id="tts-text" class="form-input" rows="3" placeholder="输入要朗读的文本..."></textarea>
+                  </label>
+                  <button id="tts-speak" class="primary-button compact" type="button">生成语音</button>
+                  <div id="tts-result" style="margin-top: 8px;"></div>
+                </div>
+              </details>
+              <details style="margin-bottom: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
+                <summary style="cursor: pointer; font-size: 11px; color: var(--subtle);">语音转文本 (STT)</summary>
+                <div style="padding-top: 8px;">
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">Provider（留空用当前默认）</span>
+                    <select id="stt-provider" class="form-input compact-select"></select>
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">语言（可选，如 zh/en）</span>
+                    <input id="stt-language" class="form-input" type="text" placeholder="zh">
+                  </label>
+                  <label style="display: block; margin-bottom: 6px;">
+                    <span style="display: block; color: var(--subtle);">录音或选择音频文件</span>
+                    <input id="stt-audio-input" type="file" accept="audio/*">
+                  </label>
+                  <div style="display: flex; gap: 8px; margin-bottom: 6px;">
+                    <button id="stt-record" class="ghost-button compact" type="button">开始录音</button>
+                    <button id="stt-stop-record" class="ghost-button compact" type="button" disabled>停止</button>
+                    <button id="stt-transcribe" class="primary-button compact" type="button" disabled>转写</button>
+                  </div>
+                  <div id="stt-result" style="margin-top: 8px;"></div>
+                  <button id="stt-insert-to-input" class="ghost-button compact" type="button" disabled>插入到输入框</button>
+                </div>
+              </details>
+            </div>
+          </details>
+          </div>
         </aside>
 
         <section class="panel chat-panel" aria-label="对话工作区">
-          <div class="panel-heading">
-            <div>
-              <h2>叙事会话</h2>
+          <div class="chat-header-overlay">
+            <div class="chat-header-left">
+              <select id="session-select" class="form-input compact-select" style="max-width: 140px;"></select>
+              <button id="open-new-session" class="ghost-button compact" type="button">新建</button>
+              <button id="export-session" class="ghost-button compact" type="button">导出</button>
+              <button id="import-session" class="ghost-button compact" type="button">导入</button>
+              <input id="import-session-file" type="file" accept=".json" hidden>
+            </div>
+            <div class="chat-header-right">
+              <div id="narrative-mode-switch" class="narrative-mode-switch" role="group" aria-label="叙事路线强度">
+                <span class="narrative-mode-label">路线</span>
+                <button class="narrative-mode-button" type="button" data-narrative-mode="free" aria-pressed="false" title="自由发展，仍遵守既有世界规则">自由</button>
+                <button class="narrative-mode-button active" type="button" data-narrative-mode="stable" aria-pressed="true" title="允许辅线，最多两轮必须回流主线">稳定</button>
+                <button class="narrative-mode-button" type="button" data-narrative-mode="strict" aria-pressed="false" title="未经确认不更换题材与主线">严格</button>
+              </div>
               <span id="session-status" class="status-text">等待状态</span>
+              <select id="session-provider" class="form-input compact-select" style="max-width: 130px;"></select>
+              <button id="save-session-settings" class="ghost-button compact" type="button">绑定</button>
+              <span id="session-settings-status" class="status-text"></span>
             </div>
           </div>
 
           <div id="messages" class="messages" aria-live="polite"></div>
 
-          <div class="stage-actions" role="group" aria-label="场景操作">
-            <button class="tool-button" type="button" data-tab-shortcut="character">角色设定</button>
-            <button class="tool-button" type="button" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
-            <button class="tool-button" type="button" data-scroll-bottom>回到底部</button>
+          <div id="author-note-panel" class="author-note-panel collapsed">
+            <textarea id="author-note-input" rows="2" placeholder="作者注释：临时上下文指令，如「本回合加入暴雨」「快进三天」..." spellcheck="false"></textarea>
           </div>
 
-          <form id="chat-form" class="chat-form">
-            <textarea id="chat-input" rows="3" placeholder="输入角色行动或旁白指令..." spellcheck="false"></textarea>
-            <button class="primary-button" type="submit">发送</button>
-          </form>
+          <div id="background-panel" class="background-panel collapsed">
+            <div id="background-status" class="background-status">当前：未设置背景。主题只影响界面，不覆盖会话框。</div>
+            <div class="background-presets" id="background-presets"></div>
+            <div class="file-row">
+              <input id="background-url-input" class="form-input" type="text" placeholder="或粘贴图片 URL..." autocomplete="off">
+              <button id="apply-background-url" class="ghost-button compact" type="button">应用</button>
+            </div>
+            <button id="clear-background" class="ghost-button compact" type="button">清除背景</button>
+          </div>
+
+          <div id="quick-replies-bar" class="quick-replies-bar"></div>
+
+          <div class="composer">
+            <div class="stage-actions" role="group" aria-label="场景操作">
+              <button class="tool-button" type="button" data-tab-shortcut="character" data-help-key="character">角色设定</button>
+              <button id="continue-message" class="tool-button" type="button" data-help-key="continue">继续</button>
+              <button id="rewrite-chat-input" class="tool-button" type="button" data-help-key="rewrite">润色</button>
+              <button class="tool-button" type="button" data-help-key="format" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
+              <button id="target-speaker-btn" class="tool-button" type="button" data-help-key="targetSpeaker">指定发言</button>
+              <button id="toggle-author-note" class="tool-button" type="button" data-help-key="authorNote">注释</button>
+              <button id="toggle-background" class="tool-button" type="button" data-help-key="background">背景</button>
+              <button class="tool-button" type="button" data-help-key="scrollBottom" data-scroll-bottom>底部</button>
+            </div>
+            <form id="chat-form" class="chat-form">
+              <textarea id="chat-input" rows="1" placeholder="输入角色行动或旁白指令..." spellcheck="false"></textarea>
+              <button class="send-button" type="submit" aria-label="发送">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+              </button>
+            </form>
+          </div>
         </section>
 
-        <aside class="panel inspector-panel" aria-label="检查器">
+        <aside id="inspector-panel" class="panel inspector-panel collapsed" aria-label="检查器">
+          <button id="open-inspector-panel" class="collapsed-rail-button" type="button" aria-label="展开检查器" aria-controls="inspector-panel" aria-expanded="false" title="展开检查器">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            <span>检查</span>
+          </button>
           <div class="panel-heading">
+            <button id="toggle-inspector-panel" class="ghost-button compact drawer-toggle" type="button" aria-label="收缩检查器" aria-controls="inspector-panel" aria-expanded="true" title="收缩检查器">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            </button>
             <h2>检查器</h2>
           </div>
 
-          <div class="tabs" role="tablist" aria-label="检查器标签">
-            <button class="tab-button active" type="button" data-tab="memory" role="tab" aria-selected="true">记忆</button>
-            <button class="tab-button" type="button" data-tab="facts" role="tab" aria-selected="false">事实</button>
-            <button class="tab-button" type="button" data-tab="worldbook" role="tab" aria-selected="false">世界书</button>
-            <button class="tab-button" type="button" data-tab="character" role="tab" aria-selected="false">角色卡</button>
-            <button class="tab-button" type="button" data-tab="prompt" role="tab" aria-selected="false">Prompt</button>
+          <section id="content-stack-summary" class="content-stack-summary" aria-label="当前创作栈">
+            <div class="content-stack-heading">
+              <strong>当前创作栈</strong>
+              <span id="content-stack-status" class="stack-status">载入中</span>
+            </div>
+            <div id="content-stack-items" class="content-stack-items"></div>
+          </section>
+
+          <div class="content-pack-controls" aria-label="题材内容包" data-help-key="contentPack">
+            <label>
+              <span>题材内容包</span>
+              <select id="content-pack-select" class="form-input" data-help-key="contentPack">
+                <option value="xuanhuan">神荒玄幻内容包</option>
+                <option value="lingyi">民俗灵异内容包</option>
+                <option value="mingmo">明末风云内容包</option>
+                <option value="xianxia">太虚仙侠内容包</option>
+                <option value="yingxiongzhi">英雄志群像内容包</option>
+              </select>
+            </label>
+            <button id="apply-content-pack" class="primary-button compact" type="button" data-help-key="contentPack">应用到会话</button>
+            <span id="content-pack-status" class="status-text"></span>
           </div>
 
-          <section class="tab-pane active" data-pane="memory" role="tabpanel">
+          <div class="tabs" role="tablist" aria-label="检查器标签">
+            <button class="tab-button" type="button" data-tab="memory" data-mode-groups="debug" data-help-key="memory" role="tab" aria-selected="false">记忆</button>
+            <button class="tab-button active" type="button" data-tab="status" data-mode-groups="creative settings debug" data-help-key="status" role="tab" aria-selected="true">状态</button>
+            <button class="tab-button" type="button" data-tab="facts" data-mode-groups="debug" data-help-key="facts" role="tab" aria-selected="false">事实</button>
+            <button class="tab-button" type="button" data-tab="usage" data-mode-groups="debug" data-help-key="usage" role="tab" aria-selected="false">用量</button>
+            <button class="tab-button" type="button" data-tab="worldbook" data-mode-groups="settings" data-help-key="worldbook" role="tab" aria-selected="false">世界书</button>
+            <button class="tab-button" type="button" data-tab="character" data-mode-groups="settings" data-help-key="character" role="tab" aria-selected="false">角色卡</button>
+            <button class="tab-button" type="button" data-tab="sources" data-mode-groups="settings" data-help-key="sources" role="tab" aria-selected="false">素材源</button>
+            <button class="tab-button" type="button" data-tab="prompt" data-mode-groups="settings" data-help-key="prompt" role="tab" aria-selected="false">Prompt</button>
+            <button class="tab-button" type="button" data-tab="persona" data-mode-groups="settings" data-help-key="persona" role="tab" aria-selected="false">人设</button>
+            <button class="tab-button" type="button" data-tab="quickreplies" data-mode-groups="settings" data-help-key="quickreplies" role="tab" aria-selected="false">快捷</button>
+            <button class="tab-button" type="button" data-tab="macro" data-mode-groups="settings" data-help-key="macro" role="tab" aria-selected="false">宏</button>
+          </div>
+
+          <section class="tab-pane" data-pane="memory" role="tabpanel" hidden>
             <pre id="memory-view" class="json-view"></pre>
+          </section>
+
+          <section class="tab-pane active" data-pane="status" role="tabpanel">
+            <div id="rule-status-view" class="rule-status-view"></div>
           </section>
 
           <section class="tab-pane" data-pane="facts" role="tabpanel" hidden>
@@ -113,38 +458,352 @@
             </div>
           </section>
 
-          <section class="tab-pane" data-pane="worldbook" role="tabpanel" hidden>
+          <section class="tab-pane" data-pane="usage" role="tabpanel" aria-label="用量统计" hidden>
+            <div class="usage-controls">
+              <label>
+                <span>范围</span>
+                <select id="usage-scope" class="form-input">
+                  <option value="session">当前会话</option>
+                  <option value="all">全部会话</option>
+                </select>
+              </label>
+              <button id="refresh-usage" class="ghost-button compact" type="button">刷新</button>
+              <span id="usage-status" class="status-text"></span>
+            </div>
+            <div id="usage-view" class="usage-view"></div>
+          </section>
+
+          <section class="tab-pane worldbook-pane" data-pane="worldbook" role="tabpanel" hidden>
+            <div class="preset-controls">
+              <select id="worldbook-preset-select" class="form-input" style="flex: 1;">
+                <option value="">-- 选择预设模板 --</option>
+                <option value="tiandao">玄幻世界预设</option>
+                <option value="wuxia">硬核武侠预设</option>
+                <option value="lingyi">中式民俗灵异预设</option>
+                <option value="mingmo">明末历史预设</option>
+                <option value="xianxia">太虚仙侠预设</option>
+                <option value="default">基础框架预设</option>
+              </select>
+              <button id="apply-worldbook-preset" class="ghost-button compact" type="button">加载预设</button>
+            </div>
+            <details id="worldbook-entries-panel" class="worldbook-entries-panel">
+              <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">世界圣经浏览与编辑</summary>
+              <div class="worldbook-browser-toolbar">
+                <input id="worldbook-search" class="form-input" type="search" placeholder="搜索标题、关键词或正文..." aria-label="搜索世界书">
+                <select id="worldbook-type-filter" class="form-input" aria-label="筛选世界书类型">
+                  <option value="">全部类型</option>
+                </select>
+                <span id="worldbook-browser-count" class="worldbook-browser-count"></span>
+              </div>
+              <div id="worldbook-entries-list" class="worldbook-entries-list"></div>
+            </details>
+            <details id="worldbook-trigger-panel" class="worldbook-entries-panel">
+              <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">触发测试器（输入文本查看哪些条目会被触发）</summary>
+              <textarea id="worldbook-trigger-input" class="json-editor" style="min-height: 60px;" placeholder="输入测试文本，如：我去镇武司打听暗牢的消息"></textarea>
+              <div style="margin-top: 6px; display: flex; gap: 8px;">
+                <button id="worldbook-trigger-test" class="ghost-button compact" type="button">测试触发</button>
+                <button id="worldbook-trigger-clear" class="ghost-button compact" type="button">清空</button>
+              </div>
+              <div id="worldbook-trigger-result" class="worldbook-trigger-result"></div>
+            </details>
             <textarea id="worldbook-editor" class="json-editor" spellcheck="false"></textarea>
             <div class="editor-actions">
               <span id="worldbook-status" class="status-text"></span>
               <button id="add-worldbook-entry" class="ghost-button compact" type="button">新增条目</button>
+              <button id="export-worldbook" class="ghost-button compact" type="button">导出</button>
+              <button id="import-worldbook" class="ghost-button compact" type="button">导入</button>
+              <input type="file" id="worldbook-import-file" accept=".json,application/json" style="display: none;">
               <button id="save-worldbook" class="primary-button compact" type="button">保存世界书</button>
             </div>
           </section>
 
           <section class="tab-pane" data-pane="character" role="tabpanel" hidden>
-            <div class="file-row">
-              <input id="character-card-import" type="file" accept=".json,.png,application/json,image/png">
+            <div class="preset-controls">
+              <select id="character-preset-select" class="form-input" style="flex: 1;">
+                <option value="">-- 选择预设模板 --</option>
+                <option value="custom_protagonist">自定义主角模板</option>
+                <optgroup label="神荒玄幻">
+                  <option value="yechenzhou">叶沉舟（雁回旧案主线）</option>
+                  <option value="xuanhuan_lingshuang">凌霜（听雨楼暗桩线）</option>
+                  <option value="xuanhuan_wangshen">王慎（大雷音寺武僧线）</option>
+                  <option value="xuanhuan_youquan">幽泉（至魔宫魔女线）</option>
+                  <option value="xuanhuan_jiangwenque">江问阙（潜龙榜镜像对手）</option>
+                  <option value="xuanhuan_tieqing">铁青（镇武司千户线）</option>
+                  <option value="xuanhuan_sumubai">苏沐白（旧案暗面线）</option>
+                  <option value="xuanhuan_wubanjin">吴半斤（酒肆情报线）</option>
+                </optgroup>
+                <optgroup label="民俗灵异">
+                  <option value="lingyi_chenmo">陈默（民俗灵异调查员）</option>
+                  <option value="lingyi_tangyue">唐月（灵异女刑警线）</option>
+                  <option value="lingyi_baiqiao">白乔（纸扎铺守夜线）</option>
+                  <option value="lingyi_xuhe">许鹤（法医顾问线）</option>
+                  <option value="lingyi_linsu">林素（刑警主办线）</option>
+                  <option value="lingyi_zhaopo">赵婆（守夜人旧会线）</option>
+                  <option value="lingyi_qianshouyi">钱守义（旧楼巡夜线）</option>
+                  <option value="lingyi_shenwanqiu">沈晚秋（证词污染线）</option>
+                </optgroup>
+                <optgroup label="明末风云">
+                  <option value="mingmo_guhuaiyan">顾怀砚（明末历史线）</option>
+                  <option value="mingmo_luyiniang">陆宜娘（明末商帮线）</option>
+                  <option value="mingmo_chongzhen">崇祯（明末皇帝线）</option>
+                  <option value="mingmo_zhaotiejing">赵铁旌（辽东旧卒线）</option>
+                  <option value="mingmo_shenruoxu">沈若虚（贬谪言官线）</option>
+                  <option value="mingmo_hesanlang">何三郎（运河漕船线）</option>
+                  <option value="mingmo_cuidangtou">崔档头（锦衣旧档线）</option>
+                </optgroup>
+                <optgroup label="太虚仙侠">
+                  <option value="xianxia_wenxuezhao">闻雪照（断魂灯旧案线）</option>
+                  <option value="xianxia_chisong">赤松子（散修剑修线）</option>
+                  <option value="xianxia_suyue">苏月白（丹修医女线）</option>
+                  <option value="xianxia_yunqianhe">云千鹤（戒律堂旧情线）</option>
+                  <option value="xianxia_fengjiuyi">风九夷（灵田资源线）</option>
+                </optgroup>
+                <option value="default">基础角色模板</option>
+              </select>
+              <button id="apply-character-preset" class="ghost-button compact" type="button">加载预设</button>
+              <select id="random-protagonist-genre" class="form-input compact-select" aria-label="随机主角题材">
+                <option value="xuanhuan">玄幻</option>
+                <option value="lingyi">灵异</option>
+                <option value="mingmo">明末</option>
+                <option value="xianxia">仙侠</option>
+                <option value="yingxiongzhi">英雄志</option>
+              </select>
+              <button id="random-protagonist" class="ghost-button compact" type="button">随机主角</button>
             </div>
+            <div class="preset-controls">
+              <select id="character-preset-favorites" class="form-input" style="flex: 1;">
+                <option value="">-- 收藏的角色 --</option>
+              </select>
+              <button id="load-character-preset" class="ghost-button compact" type="button">加载</button>
+              <button id="save-character-preset" class="ghost-button compact" type="button">收藏当前</button>
+              <button id="delete-character-preset" class="ghost-button compact" type="button">删除</button>
+            </div>
+            <div class="file-row">
+              <label>
+                <span>导入角色卡 / 世界书</span>
+                <input id="character-card-import" type="file" accept=".json,.png,.yaml,.yml,.txt,application/json,image/png,text/yaml,text/plain">
+              </label>
+            </div>
+            <div id="import-preview" class="import-preview" hidden></div>
             <textarea id="character-card-editor" class="json-editor" spellcheck="false"></textarea>
             <div class="editor-actions">
               <span id="character-card-status" class="status-text"></span>
+              <button id="confirm-import" class="primary-button compact" type="button" hidden>确认导入</button>
+              <button id="cancel-import" class="ghost-button compact" type="button" hidden>取消导入</button>
               <button id="reset-character-card" class="ghost-button compact" type="button">角色模板</button>
               <button id="save-character-card" class="primary-button compact" type="button">保存角色卡</button>
+              <button id="export-character-card" class="ghost-button compact" type="button">导出 PNG</button>
             </div>
+
+            <details class="group-section inspector-subsection">
+              <summary>
+                <span>群聊参与角色</span>
+                <small>多人模式</small>
+              </summary>
+              <div class="section-heading">
+                <h4>成员列表</h4>
+                <button id="add-group-member" class="ghost-button compact" type="button">+ 添加成员</button>
+              </div>
+              <div id="group-members-list" class="group-members-list"></div>
+              <div class="editor-actions">
+                <span id="group-members-status" class="status-text"></span>
+                <button id="save-group-members" class="primary-button compact" type="button">保存群聊</button>
+              </div>
+            </details>
+          </section>
+
+          <section class="tab-pane" data-pane="sources" role="tabpanel" hidden>
+            <div class="source-search">
+              <label>
+                <span>站点</span>
+                <select id="source-select" class="form-input">
+                  <option value="chub">Chub / CharacterHub</option>
+                  <option value="aicharactercards">AICharacterCards</option>
+                  <option value="risurealm">RisuRealm</option>
+                  <option value="charavault">CharaVault</option>
+                </select>
+              </label>
+              <label>
+                <span>类型</span>
+                <select id="source-kind" class="form-input">
+                  <option value="characters">角色卡</option>
+                  <option value="lorebooks">世界书</option>
+                </select>
+              </label>
+              <label class="source-query-label">
+                <span>关键词 / URL / ID</span>
+                <input id="source-query" class="form-input" autocomplete="off" placeholder="xianxia、wuxia、角色页 URL">
+              </label>
+              <button id="source-search" class="primary-button compact" type="button">搜索</button>
+              <span id="source-status" class="status-text"></span>
+            </div>
+            <div id="source-results" class="source-results"></div>
           </section>
 
           <section class="tab-pane" data-pane="prompt" role="tabpanel" hidden>
+            <div class="preset-controls">
+              <select id="prompt-preset-select" class="form-input" style="flex: 1;">
+                <option value="">-- 选择预设模板 --</option>
+                <option value="tiandao">破甲预设：玄幻天道流</option>
+                <option value="wuxia">破甲预设：硬核武侠流</option>
+                <option value="lingyi">破甲预设：中式民俗恐怖</option>
+                <option value="mingmo">破甲预设：明末历史文字</option>
+                <option value="xianxia">破甲预设：太虚仙侠</option>
+                <option value="default">默认基础规则</option>
+              </select>
+              <button id="apply-prompt-preset" class="ghost-button compact" type="button">加载预设</button>
+            </div>
+            <div class="preset-controls">
+              <select id="prompt-preset-favorites" class="form-input" style="flex: 1;">
+                <option value="">-- 我的预设 --</option>
+              </select>
+              <button id="apply-saved-prompt-preset" class="ghost-button compact" type="button">应用</button>
+              <button id="save-prompt-preset" class="ghost-button compact" type="button">存为预设</button>
+              <button id="delete-prompt-preset" class="ghost-button compact" type="button">删除</button>
+            </div>
             <textarea id="prompt-editor" class="json-editor" spellcheck="false"></textarea>
             <div class="editor-actions">
               <span id="prompt-status" class="status-text"></span>
               <button id="save-prompt" class="primary-button compact" type="button">保存 Prompt</button>
             </div>
           </section>
+
+          <section class="tab-pane" data-pane="persona" role="tabpanel" hidden>
+            <div class="form-grid" style="gap: 10px;">
+              <label class="checkbox-row">
+                <input id="persona-enabled" type="checkbox">
+                <span>启用人设（注入到 AI 上下文）</span>
+              </label>
+              <label>
+                <span>姓名</span>
+                <input id="persona-name" class="form-input" autocomplete="off" placeholder="你在故事中的名字">
+              </label>
+              <label>
+                <span>简述</span>
+                <input id="persona-description" class="form-input" autocomplete="off" placeholder="一句话描述，如：江湖游侠、前朝遗孤">
+              </label>
+              <label>
+                <span>背景</span>
+                <textarea id="persona-background" class="json-editor" rows="4" placeholder="出身、经历、来到此处的原因"></textarea>
+              </label>
+              <label>
+                <span>性格</span>
+                <textarea id="persona-personality" class="json-editor" rows="3" placeholder="性格特点、说话风格、行为习惯"></textarea>
+              </label>
+            </div>
+            <div class="editor-actions">
+              <span id="persona-status" class="status-text"></span>
+              <button id="save-persona" class="primary-button compact" type="button">保存人设</button>
+            </div>
+          </section>
+
+          <section class="tab-pane" data-pane="quickreplies" role="tabpanel" hidden>
+            <div id="quick-replies-editor" class="quick-replies-editor"></div>
+            <div class="editor-actions">
+              <span id="quick-replies-status" class="status-text"></span>
+              <button id="add-quick-reply" class="ghost-button compact" type="button">新增</button>
+              <button id="save-quick-replies" class="primary-button compact" type="button">保存快捷回复</button>
+            </div>
+          </section>
+
+          <section class="tab-pane" data-pane="macro" role="tabpanel" hidden>
+            <details id="macro-help-panel" class="worldbook-entries-panel" style="margin-bottom: 12px;">
+              <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">可用宏速查（点击展开）</summary>
+              <div style="padding: 8px 12px; font-size: 12px; line-height: 1.8; color: var(--subtle);">
+                <div><b>{{user}}</b> — 用户姓名（来自人设）</div>
+                <div><b>{{char}}</b> / <b>{{char_name}}</b> — 主角姓名</div>
+                <div><b>{{char_role}}</b> / <b>{{char_description}}</b> / <b>{{char_personality}}</b> / <b>{{char_scenario}}</b></div>
+                <div><b>{{persona_name}}</b> / <b>{{persona_description}}</b> / <b>{{persona_background}}</b> / <b>{{persona_personality}}</b></div>
+                <div><b>{{random:a,b,c}}</b> — 随机选一个；<b>{{random:1-100}}</b> — 数字范围</div>
+                <div><b>{{roll:d6}}</b> / <b>{{roll:3d20+5}}</b> / <b>{{roll:d%}}</b> — 骰子</div>
+                <div><b>{{time}}</b> / <b>{{date}}</b> / <b>{{datetime}}</b> / <b>{{timestamp}}</b></div>
+                <div><b>{{message_count}}</b> / <b>{{word_count}}</b> / <b>{{last_user_message}}</b></div>
+                <div><b>{{get_worldbook:title:落雁夜市}}</b> — 按字段引用世界书条目</div>
+                <div><b>{{pick:数组名}}</b> — 从自定义数组随机选（在测试器中配置）</div>
+                <div><b>{{template:模板名}}</b> — 调用下方保存的模板（可嵌套）</div>
+              </div>
+            </details>
+            <div class="section-heading" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+              <h4 style="margin: 0; font-size: 13px;">宏模板</h4>
+              <button id="add-macro-template" class="ghost-button compact" type="button">+ 新增模板</button>
+            </div>
+            <div id="macro-templates-list" class="group-members-list"></div>
+            <div class="editor-actions">
+              <span id="macro-templates-status" class="status-text"></span>
+              <button id="save-macro-templates" class="primary-button compact" type="button">保存模板</button>
+            </div>
+            <details id="macro-tester-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
+              <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">宏测试器</summary>
+              <textarea id="macro-test-input" class="json-editor" style="min-height: 60px;" placeholder="输入含宏的文本，如：{{user}} 向 {{char}} 拔剑，掷 {{roll:d6}}"></textarea>
+              <div style="margin-top: 6px; display: flex; gap: 8px;">
+                <button id="macro-test-run" class="ghost-button compact" type="button">展开</button>
+                <button id="macro-test-clear" class="ghost-button compact" type="button">清空</button>
+              </div>
+              <div id="macro-test-result" class="macro-test-result" style="margin-top: 8px;"></div>
+            </details>
+          </section>
+        </aside>
+
+        <!-- Immersive Right Sidebar (Genre specific) -->
+        <aside id="immersive-right-sidebar" class="immersive-right-sidebar hidden">
+          <div id="immersive-sidebar-content" class="immersive-sidebar-content">
+            <button id="immersive-sidebar-close" class="immersive-sidebar-close">×</button>
+            <h3 id="immersive-sidebar-title" class="immersive-sidebar-title"></h3>
+            <div id="immersive-sidebar-body" class="immersive-sidebar-body"></div>
+          </div>
+          <div id="immersive-sidebar-tabs" class="immersive-sidebar-tabs">
+            <!-- Tabs injected dynamically -->
+          </div>
         </aside>
       </main>
     </div>
 
-    <script type="module" src="/app.js"></script>
+    <dialog id="new-session-dialog" class="dialog">
+      <form method="dialog" id="new-session-form" class="form-grid">
+        <h2 style="margin: 0 0 12px 0;">新建故事会话</h2>
+        <label>
+          <span>会话标题</span>
+          <input id="new-session-title" required autocomplete="off" placeholder="例如：重返神荒">
+        </label>
+        <label>
+          <span>使用题材包</span>
+          <select id="new-session-pack" class="form-input">
+            <option value="">（不使用题材包，从下方资产拼装）</option>
+            <option value="xuanhuan">神荒玄幻内容包</option>
+            <option value="lingyi">民俗灵异内容包</option>
+            <option value="mingmo">明末风云内容包</option>
+            <option value="xianxia">太虚仙侠内容包</option>
+            <option value="yingxiongzhi">英雄志群像内容包</option>
+          </select>
+        </label>
+        <div id="new-session-assets">
+          <label>
+            <span>角色卡</span>
+            <select id="new-session-character" class="form-input"><option value="">（无）</option></select>
+          </label>
+          <label>
+            <span>世界书 (按住Ctrl/Cmd多选)</span>
+            <select id="new-session-worldbook" multiple size="3" class="form-input"></select>
+          </label>
+        </div>
+        <div class="dialog-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
+          <button type="button" id="new-session-cancel" class="ghost-button">取消</button>
+          <button type="submit" class="primary-button">创建</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="speaker-picker-dialog" class="dialog">
+      <div class="dialog-content" style="padding: 16px;">
+        <h3 style="margin: 0 0 12px 0; color: var(--gold, #f5d58d); font-size: 14px;">选择本轮发言者</h3>
+        <p style="margin: 0 0 12px 0; font-size: 11px; color: var(--subtle);">留空则由 AI 自由发挥</p>
+        <div id="speaker-picker-list" style="display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; min-width: 240px;"></div>
+        <div class="dialog-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
+          <button type="button" id="speaker-picker-auto" class="ghost-button compact">由 AI 自由发挥</button>
+          <button type="button" id="speaker-picker-cancel" class="ghost-button compact">取消</button>
+        </div>
+      </div>
+    </dialog>
+    <script type="module" src="/app.js?v=20260714-1"></script>
   </body>
 </html>

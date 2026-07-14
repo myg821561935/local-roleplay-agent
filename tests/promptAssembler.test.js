@@ -53,13 +53,39 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
   assert.match(result.messages[0].content, /沈观澜/);
   assert.match(result.messages[0].content, /正在调查镇武司旧案/);
   assert.match(result.messages[0].content, /<recommended_actions>/);
-  assert.match(result.messages[0].content, /镇武司负责约束江湖武人/);
+  assert.ok(result.messages.some(m => /镇武司负责约束江湖武人/.test(m.content)));
   assert.match(result.messages[0].content, /云州城/);
   assert.match(result.messages[0].content, /主角刚到城中。/);
   assert.ok(result.messages.some((message) => message.content === '我走进云州城。'));
   assert.ok(result.messages.some((message) => message.content === '城门外风雪未歇。'));
   assert.deepEqual(result.sections.promptModules, ['core']);
   assert.equal(result.sections.hasCharacterCard, true);
+});
+
+test('assemblePrompt injects the persistent narrative route before story content', () => {
+  const result = assemblePrompt({
+    promptModules: [{ id: 'core', title: '核心', enabled: true, content: '保持仙侠。' }],
+    characterCard: { name: '闻雪照', enabled: true },
+    worldBook: [],
+    memory: {
+      worldState: {
+        flags: { genre: 'xianxia' },
+        quests: [{ title: '补全断魂灯并查清师门旧案', status: 'active' }]
+      },
+      ruleSystem: { contentPackId: 'xianxia', boundary: '只使用太虚仙侠规则。' },
+      narrativeState: { activeArc: '补全断魂灯并查清师门旧案' },
+      memoryCards: []
+    },
+    messages: [],
+    userMessage: '我先去荒野寻找灯芯。',
+    options: { narrativeMode: 'stable' }
+  });
+
+  assert.match(result.messages[0].content, /^# 叙事路线锁（稳定模式）/);
+  assert.match(result.messages[0].content, /纯荒野探险取代修行和宗门\/家族主线/);
+  assert.equal(result.sections.narrativeMode, 'stable');
+  assert.equal(result.sections.narrativeGenre, 'xianxia');
+  assert.equal(result.sections.narrativeArc, '补全断魂灯并查清师门旧案');
 });
 
 test('retrieveCards ignores cards without keyword matches', () => {
@@ -136,6 +162,26 @@ test('retrieveCards supports regex matching', () => {
   assert.deepEqual(result.map((card) => card.id), ['regex-card']);
 });
 
+test('retrieveCards supports mixed keyword and regex triggers', () => {
+  const mixedCard = cardFixture({
+    id: 'mixed-card',
+    title: '武道境界',
+    matchMode: 'keyword',
+    keywords: ['境界', '突破'],
+    regex: ['第[一二三四五六七八九十]+境'],
+    content: '境界体系会影响战力判断。'
+  });
+
+  assert.deepEqual(
+    retrieveCards({ query: '我想打听境界划分。', worldBook: [mixedCard] }).map((card) => card.id),
+    ['mixed-card']
+  );
+  assert.deepEqual(
+    retrieveCards({ query: '对方似乎已入第七境。', worldBook: [mixedCard] }).map((card) => card.id),
+    ['mixed-card']
+  );
+});
+
 test('retrieveCards supports selective secondary-key logic', () => {
   const selective = cardFixture({
     id: 'selective-card',
@@ -161,6 +207,89 @@ test('retrieveCards always returns constant entries', () => {
   assert.deepEqual(result.map((card) => card.id), ['constant-card']);
 });
 
+test('retrieveCards logic=NOT triggers when keyword absent', () => {
+  const card = cardFixture({
+    id: 'not-card',
+    title: '非战斗场景',
+    keywords: ['战斗', '厮杀'],
+    logic: 'not',
+    content: '未发生战斗时触发。'
+  });
+
+  // 关键词未出现 → 触发
+  assert.deepEqual(
+    retrieveCards({ query: '我在茶馆喝茶。', worldBook: [card] }).map((c) => c.id),
+    ['not-card']
+  );
+  // 关键词出现 → 不触发
+  assert.deepEqual(retrieveCards({ query: '茶馆爆发了战斗。', worldBook: [card] }), []);
+});
+
+test('retrieveCards logic=NOT ALL triggers unless all keywords hit', () => {
+  const card = cardFixture({
+    id: 'not-all-card',
+    title: '非完整组合',
+    keywords: ['甲', '乙'],
+    logic: 'not all',
+    content: '未同时命中甲和乙时触发。'
+  });
+
+  // 仅命中甲 → 触发
+  assert.deepEqual(
+    retrieveCards({ query: '只有甲。', worldBook: [card] }).map((c) => c.id),
+    ['not-all-card']
+  );
+  // 同时命中 → 不触发
+  assert.deepEqual(retrieveCards({ query: '甲和乙都在。', worldBook: [card] }), []);
+});
+
+test('retrieveCards logic=ALL requires all keywords', () => {
+  const card = cardFixture({
+    id: 'all-card',
+    title: '组合触发',
+    keywords: ['甲', '乙'],
+    logic: 'all',
+    content: '需甲乙同时命中。'
+  });
+
+  assert.deepEqual(retrieveCards({ query: '只有甲。', worldBook: [card] }), []);
+  assert.deepEqual(
+    retrieveCards({ query: '甲和乙都在。', worldBook: [card] }).map((c) => c.id),
+    ['all-card']
+  );
+});
+
+test('retrieveCards regex mode with caseSensitive', () => {
+  const card = cardFixture({
+    id: 'case-regex',
+    title: '英文大小写',
+    matchMode: 'regex',
+    regex: ['^[A-Z]'],
+    caseSensitive: true,
+    keywords: [],
+    content: '以大写字母开头时触发。'
+  });
+
+  assert.deepEqual(
+    retrieveCards({ query: 'Hello', worldBook: [card] }).map((c) => c.id),
+    ['case-regex']
+  );
+  assert.deepEqual(retrieveCards({ query: 'hello', worldBook: [card] }), []);
+});
+
+test('retrieveCards invalid regex does not crash', () => {
+  const card = cardFixture({
+    id: 'bad-regex',
+    title: '无效正则',
+    matchMode: 'regex',
+    regex: ['[未闭合'],
+    keywords: [],
+    content: '正则不合法时应安全跳过。'
+  });
+
+  assert.deepEqual(retrieveCards({ query: '任何文本', worldBook: [card] }), []);
+});
+
 test('assemblePrompt renders world book entries by insertion depth', () => {
   const result = assemblePrompt({
     promptModules: [],
@@ -175,10 +304,10 @@ test('assemblePrompt renders world book entries by insertion depth', () => {
     options: { maxInjectedCards: 4 }
   });
 
-  assert.match(result.messages[0].content, /Depth 2/);
-  assert.match(result.messages[0].content, /两轮内要记得的伏笔/);
-  assert.match(result.messages[0].content, /Depth 6/);
-  assert.match(result.messages[0].content, /六轮内仍要保留的设定/);
+  assert.ok(result.messages.some(m => /Depth 2/.test(m.content)));
+  assert.ok(result.messages.some(m => /两轮内要记得的伏笔/.test(m.content)));
+  assert.ok(result.messages.some(m => /Depth 6/.test(m.content)));
+  assert.ok(result.messages.some(m => /六轮内仍要保留的设定/.test(m.content)));
 });
 
 test('assemblePrompt injects enabled normalized memory facts and ignores disabled facts', () => {
@@ -211,9 +340,9 @@ test('assemblePrompt injects enabled normalized memory facts and ignores disable
     options: { maxInjectedCards: 5 }
   });
 
-  assert.match(result.messages[0].content, /沈观澜持有名刀雪照。/);
-  assert.doesNotMatch(result.messages[0].content, /雪照曾在镇武司旧案中出现。/);
-  assert.doesNotMatch(result.messages[0].content, /这条禁用事实不应出现。/);
+  assert.ok(result.messages.some(m => /沈观澜持有名刀雪照。/.test(m.content)));
+  assert.ok(!result.messages.some(m => /雪照曾在镇武司旧案中出现。/.test(m.content)));
+  assert.ok(!result.messages.some(m => /这条禁用事实不应出现。/.test(m.content)));
   assert.deepEqual(result.sections.injectedCardIds, ['fact-enabled']);
 });
 

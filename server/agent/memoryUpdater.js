@@ -12,7 +12,19 @@ export function createDefaultMemory() {
       timeline: []
     },
     memoryCards: [],
-    eventLedger: []
+    eventLedger: [],
+    ruleSystem: null,
+    narrativeState: {
+      activeArc: '',
+      corePillars: [],
+      supportingElements: [],
+      forbiddenDominance: [],
+      supportingArcs: [],
+      routeReturnRule: '',
+      lockedGenre: '',
+      referenceFocus: [],
+      lastConfirmedBy: ''
+    }
   };
 }
 
@@ -38,10 +50,17 @@ export function rebuildMemoryFromMessages({ memory, messages }) {
     ...createDefaultMemory(),
     rollingSummary: previous.rollingSummary || '',
     worldState: structuredClone(previous.worldState || createDefaultMemory().worldState),
-    memoryCards: Array.isArray(previous.memoryCards) ? structuredClone(previous.memoryCards) : []
+    memoryCards: Array.isArray(previous.memoryCards) ? structuredClone(previous.memoryCards) : [],
+    ruleSystem: previous.ruleSystem ? structuredClone(previous.ruleSystem) : null,
+    narrativeState: previous.narrativeState
+      ? structuredClone(previous.narrativeState)
+      : structuredClone(createDefaultMemory().narrativeState),
+    consecutiveSummaryFailures: Number(previous.consecutiveSummaryFailures || 0),
+    lastSummaryError: String(previous.lastSummaryError || ''),
+    lastFactExtractionError: String(previous.lastFactExtractionError || '')
   };
 
-  const safeMessages = Array.isArray(messages) ? messages : [];
+  const safeMessages = Array.isArray(messages) ? messages.filter((message) => !message.excluded) : [];
   for (let index = 0; index < safeMessages.length - 1; index += 1) {
     const userMessage = safeMessages[index];
     const assistantMessage = safeMessages[index + 1];

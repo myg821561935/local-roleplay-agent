@@ -17,6 +17,87 @@ test('AgentService runs one chat turn and records memory metadata', async () => 
   assert.equal(result.debug.injectedCards.length, 1);
 });
 
+test('AgentService records estimated usage on assistant messages', async () => {
+  const { service, sessionService } = await createHarness();
+
+  const result = await service.sendMessage({ sessionId: 'main', content: '我去镇武司。' });
+  const assistant = result.reply;
+  const readback = await sessionService.getSession('main');
+
+  assert.equal(assistant.usage.providerId, 'fake');
+  assert.equal(assistant.usage.model, 'fake-model');
+  assert.equal(assistant.usage.promptTokens, result.debug.tokenEstimate);
+  assert.equal(assistant.usage.completionTokens > 0, true);
+  assert.equal(assistant.usage.totalTokens, assistant.usage.promptTokens + assistant.usage.completionTokens);
+  assert.deepEqual(readback.messages[1].usage, assistant.usage);
+});
+
+test('AgentService prefers a session provider over the global active provider', async () => {
+  const usedProviders = [];
+  const { service, configService, sessionService } = await createHarness({
+    providerClient: {
+      complete: async ({ provider, messages }) => {
+        usedProviders.push(provider.id);
+        return { content: `回应：${messages.at(-1).content}`, raw: { providerId: provider.id } };
+      }
+    }
+  });
+  await configService.saveProviders({
+    activeProviderId: 'fake',
+    providers: [
+      createFakeProvider({ id: 'fake', model: 'global-model' }),
+      createFakeProvider({ id: 'scene', model: 'scene-model' })
+    ]
+  });
+  const session = await sessionService.getSession('main');
+  session.settings.providerId = 'scene';
+  await sessionService.saveSession(session);
+
+  const result = await service.sendMessage({ sessionId: 'main', content: '换一个场景模型。' });
+
+  assert.deepEqual(usedProviders, ['scene']);
+  assert.equal(result.reply.usage.providerId, 'scene');
+  assert.equal(result.reply.usage.model, 'scene-model');
+});
+
+test('AgentService rewrites text with the session provider without saving chat', async () => {
+  const usedProviders = [];
+  const { service, configService, sessionService } = await createHarness({
+    providerClient: {
+      complete: async ({ provider, messages }) => {
+        usedProviders.push(provider.id);
+        assert.match(messages[0].content, /改写/);
+        assert.match(messages.at(-1).content, /我推门进去/);
+        return { content: '我放轻脚步，缓缓推开那扇门。', raw: { providerId: provider.id } };
+      }
+    }
+  });
+  await configService.saveProviders({
+    activeProviderId: 'fake',
+    providers: [
+      createFakeProvider({ id: 'fake', model: 'global-model' }),
+      createFakeProvider({ id: 'scene', model: 'scene-model' })
+    ]
+  });
+  const session = await sessionService.getSession('main');
+  session.settings.providerId = 'scene';
+  await sessionService.saveSession(session);
+
+  const result = await service.rewriteText({
+    sessionId: 'main',
+    target: 'chat-input',
+    text: '我推门进去',
+    instruction: '更有画面感'
+  });
+  const readback = await sessionService.getSession('main');
+
+  assert.deepEqual(usedProviders, ['scene']);
+  assert.equal(result.text, '我放轻脚步，缓缓推开那扇门。');
+  assert.equal(result.providerId, 'scene');
+  assert.equal(result.model, 'scene-model');
+  assert.equal(readback.messages.length, 0);
+});
+
 test('AgentService extracts recommended actions from assistant reply', async () => {
   const { service, sessionService } = await createHarness({
     providerClient: {
@@ -60,6 +141,41 @@ test('AgentService edits a user message and regenerates from that point', async 
   assert.equal(result.session.messages[0].content, '我改去听雨楼。');
   assert.match(result.session.messages[1].content, /回应：我改去听雨楼。/);
   assert.equal(result.session.memory.eventLedger.length, 1);
+});
+
+test('AgentService drops vector index before rebuilding after a user message edit', async () => {
+  const vectorEvents = [];
+  const vectorMemoryService = {
+    isEnabled: async () => true,
+    indexMessages: async ({ sessionId, messages }) => {
+      vectorEvents.push(`index:${sessionId}:${messages.map((message) => message.content).join('|')}`);
+      return { indexed: messages.length };
+    },
+    getTopK: async () => 5,
+    search: async () => {
+      vectorEvents.push('search');
+      return [];
+    },
+    dropIndex: (sessionId) => {
+      vectorEvents.push(`drop:${sessionId}`);
+    }
+  };
+  const { service, sessionService } = await createHarness({ vectorMemoryService });
+
+  await service.sendMessage({ sessionId: 'main', content: '我去镇武司。' });
+  await service.sendMessage({ sessionId: 'main', content: '我继续往里走。' });
+  const beforeEdit = await sessionService.getSession('main');
+
+  vectorEvents.length = 0;
+  await service.editMessage({
+    sessionId: 'main',
+    messageId: beforeEdit.messages[0].id,
+    content: '我改去听雨楼。'
+  });
+
+  assert.equal(vectorEvents[0], 'drop:main');
+  assert.match(vectorEvents[1], /我改去听雨楼。/);
+  assert.doesNotMatch(vectorEvents[1], /我继续往里走。/);
 });
 
 test('AgentService regenerates an assistant message as a new swipe', async () => {
@@ -205,6 +321,38 @@ test('AgentService summary retry includes every unsummarized turn', async () => 
   assert.match(summaryPrompts[1], /第5轮行动。/);
 });
 
+test('AgentService pauses summary maintenance after repeated summary failures', async () => {
+  let summaryCalls = 0;
+  let chatCalls = 0;
+  const { service } = await createHarness({
+    providerClient: {
+      complete: async ({ messages }) => {
+        if (isSummaryRequest(messages)) {
+          summaryCalls += 1;
+          throw new Error('summary down');
+        }
+        if (isFactExtractionRequest(messages)) {
+          return { content: '{}', raw: { maintenance: true } };
+        }
+        chatCalls += 1;
+        return { content: `回应：${messages.at(-1).content}`, raw: { fake: true } };
+      }
+    }
+  });
+
+  for (let turn = 1; turn <= 8; turn += 1) {
+    await service.sendMessage({ sessionId: 'main', content: `第${turn}轮行动。` });
+  }
+
+  assert.ok(summaryCalls >= 1 && summaryCalls < 4, `summaryCalls should be limited, got ${summaryCalls}`);
+  const lastSummaryCalls = summaryCalls;
+  for (let turn = 9; turn <= 12; turn += 1) {
+    await service.sendMessage({ sessionId: 'main', content: `第${turn}轮行动。` });
+  }
+  assert.equal(summaryCalls, lastSummaryCalls);
+  assert.equal(chatCalls, 12);
+});
+
 test('AgentService dynamic memory trigger extracts new facts into world state', async () => {
   const { service } = await createHarness({
     providerClient: {
@@ -253,7 +401,13 @@ test('AgentService dynamic memory trigger appends stable facts to world book', a
                 keywords: ['雪照', '名刀'],
                 content: '沈观澜获得名刀雪照，刀身寒白，疑似与镇武司旧案有关。',
                 priority: 85,
-                depth: 6
+                depth: 6,
+                extensions: {
+                  stability: 'confirmed',
+                  genre: 'custom',
+                  narrativeRole: 'core',
+                  returnsToPillar: '推进镇武司旧案与主角物品线'
+                }
               }]
             }),
             raw: { facts: true }
@@ -268,8 +422,8 @@ test('AgentService dynamic memory trigger appends stable facts to world book', a
   for (let turn = 1; turn <= 4; turn += 1) {
     await service.sendMessage({ sessionId: 'main', content: `第${turn}轮行动。` });
   }
-  const config = await configService.getAll();
-  const entry = config.worldBook.find((item) => item.title === '名刀雪照');
+  const session = await service.sessionService.getSession('main');
+  const entry = session.config.worldBook.find((item) => item.title === '名刀雪照');
 
   assert.ok(entry);
   assert.deepEqual(entry.keywords, ['雪照', '名刀']);
@@ -320,7 +474,28 @@ test('SessionService lists saved session ids', async () => {
   assert.deepEqual((await sessionService.listSessions()).sort(), ['alpha', 'beta_2']);
 });
 
-async function createHarness({ configureProvider = true, providerClient = createEchoProviderClient() } = {}) {
+test('SessionService enriches legacy genre sessions without overwriting a custom active arc', async () => {
+  const { sessionService } = await createHarness({ configureProvider: false });
+  const legacy = await sessionService.getSession('legacy_lingyi');
+  legacy.memory.worldState.flags.genre = 'lingyi';
+  legacy.memory.narrativeState = {
+    activeArc: '追查白事街失踪案',
+    supportingArcs: [],
+    lockedGenre: '',
+    lastConfirmedBy: 'user'
+  };
+  await sessionService.saveSession(legacy);
+
+  const readback = await sessionService.getSession('legacy_lingyi');
+  assert.equal(readback.memory.narrativeState.activeArc, '追查白事街失踪案');
+  assert.equal(readback.memory.narrativeState.lockedGenre, 'lingyi');
+  assert.equal(readback.memory.narrativeState.corePillars.length >= 4, true);
+  assert.equal(readback.memory.narrativeState.referenceFocus.length >= 4, true);
+  assert.match(readback.memory.narrativeState.routeReturnRule, /证据|假设/);
+  assert.equal(readback.memory.narrativeState.lastConfirmedBy, 'user');
+});
+
+async function createHarness({ configureProvider = true, providerClient = createEchoProviderClient(), vectorMemoryService } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'agent-loop-'));
   const store = new JsonStore(root);
   const configService = new ConfigService(store);
@@ -341,12 +516,13 @@ async function createHarness({ configureProvider = true, providerClient = create
     service: new AgentService({
       configService,
       sessionService,
-      providerClient
+      providerClient,
+      vectorMemoryService
     })
   };
 }
 
-function createFakeProvider() {
+function createFakeProvider(overrides = {}) {
   return {
     id: 'fake',
     kind: 'openai-compatible',
@@ -355,7 +531,8 @@ function createFakeProvider() {
     model: 'fake-model',
     temperature: 0.9,
     maxTokens: 2000,
-    headers: {}
+    headers: {},
+    ...overrides
   };
 }
 

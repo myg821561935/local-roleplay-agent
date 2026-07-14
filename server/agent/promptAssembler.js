@@ -1,6 +1,8 @@
 import { estimateTokens } from './token.js';
 import { normalizeFactCards } from './factCards.js';
 import { retrieveCards } from './memoryRetriever.js';
+import { expandMacros } from './macroEngine.js';
+import { buildNarrativeControlPrompt, resolveNarrativeContext } from './narrativeControl.js';
 
 export function assemblePrompt({
   promptModules,
@@ -9,37 +11,138 @@ export function assemblePrompt({
   memory,
   messages,
   userMessage,
+  persona,
+  groupMembers,
+  targetSpeaker,
+  templates,
+  customArrays,
+  vectorHits,
   options = {}
 }) {
   const safePromptModules = Array.isArray(promptModules) ? promptModules : [];
   const safeWorldBook = Array.isArray(worldBook) ? worldBook : [];
   const safeMessages = Array.isArray(messages) ? messages : [];
   const recentPairs = Number(options.recentPairs ?? 8);
-  const maxInjectedCards = Number(options.maxInjectedCards ?? 5);
+  const maxInjectedCards = Number(options.maxInjectedCards ?? 15);
+  const maxRecursionDepth = Number(options.maxRecursionDepth ?? 1);
   const memoryCards = normalizeFactCards(Array.isArray(memory?.memoryCards) ? memory.memoryCards : []);
-  const query = [userMessage, ...safeMessages.slice(-recentPairs * 2).map((message) => message.content)].join('\n');
-  const injectedCards = retrieveCards({ query, worldBook: safeWorldBook, memoryCards, maxCards: maxInjectedCards });
+  const query = [userMessage, ...safeMessages.filter((message) => !message.excluded).slice(-recentPairs * 2).map((message) => message.content)].join('\n');
+  const injectedCards = retrieveCards({ query, worldBook: safeWorldBook, memoryCards, maxCards: maxInjectedCards, maxRecursionDepth });
   const renderedPromptModules = getRenderablePromptModules(safePromptModules);
+  const narrativeContext = resolveNarrativeContext({ memory, mode: options.narrativeMode });
+  const narrativeControlPrompt = buildNarrativeControlPrompt({ memory, mode: narrativeContext.mode });
+
+  // 宏展开上下文
+  const macroContext = {
+    user: persona?.enabled ? (persona.name || '用户') : '用户',
+    characterCard,
+    persona,
+    groupMembers,
+    messages: safeMessages,
+    userMessage,
+    worldBook: safeWorldBook,
+    templates,
+    customArrays
+  };
+
+  const cardsByDepth = new Map();
+  injectedCards.forEach((card) => {
+    let depth;
+    if (card.constant === true && (card.depth ?? card.scanDepth ?? card.scan_depth) === undefined) {
+      depth = 0;
+    } else {
+      depth = normalizeDepth(card.depth ?? card.scanDepth ?? card.scan_depth);
+    }
+    if (!cardsByDepth.has(depth)) cardsByDepth.set(depth, []);
+    // 对世界书条目内容展开宏
+    cardsByDepth.get(depth).push({ ...card, content: expandMacros(card.content, macroContext) });
+  });
+
+  const topCards = cardsByDepth.get(0) || [];
+  cardsByDepth.delete(0);
+
+  const topCardsText = topCards.length
+    ? ['# 常驻世界书和记忆', ...topCards.map(c => `## ${c.title}\n${c.content}`)].join('\n\n')
+    : '';
+
+  // 对角色卡和提示词模块展开宏
+  const expandedCharacterCard = expandCharacterCard(characterCard, macroContext);
+  const expandedPersona = expandPersona(persona, macroContext);
+  const expandedGroupMembers = expandGroupMembers(groupMembers, macroContext);
+  const expandedPromptModules = renderedPromptModules.map((m) => ({ ...m, content: expandMacros(m.content, macroContext) }));
 
   const systemSections = [
-    renderCharacterCard(characterCard),
-    renderPromptModules(renderedPromptModules),
+    narrativeControlPrompt,
+    renderCharacterCard(expandedCharacterCard),
+    renderGroupMembers(expandedGroupMembers),
+    renderPersona(expandedPersona),
+    renderPromptModules(expandedPromptModules),
     renderWorldState(memory?.worldState),
     renderRollingSummary(memory?.rollingSummary),
-    renderCards(injectedCards),
+    topCardsText,
+    renderVectorMemory(vectorHits),
+    renderSpeakerInstruction({ groupMembers, targetSpeaker, characterCard }),
     renderRecommendationInstruction()
   ].filter(Boolean);
 
-  const recentMessages = safeMessages.slice(-recentPairs * 2).map((message) => ({
-    role: message.role,
-    content: String(message.content || '')
-  }));
+  const recentMessages = safeMessages
+    .filter((message) => !message.excluded)
+    .slice(-recentPairs * 2)
+    .map((message) => ({
+      role: message.role,
+      content: message.speaker ? `[${message.speaker}] ${String(message.content || '')}` : String(message.content || '')
+    }));
+
+  // 对最新用户消息展开宏
+  const expandedUserMessage = expandMacros(String(userMessage || ''), macroContext);
+  const historyWithUser = [...recentMessages, { role: 'user', content: expandedUserMessage }];
+  const totalHistory = historyWithUser.length;
+
+  const injections = [];
+  for (const [depth, cards] of cardsByDepth.entries()) {
+    const text = [`# 触发的世界书与记忆 (Depth ${depth})`, ...cards.map(c => `## ${c.title}\n${c.content}`)].join('\n\n');
+    let insertIndex = totalHistory - depth;
+    if (insertIndex < 0) insertIndex = 0;
+    injections.push({ index: insertIndex, message: { role: 'system', content: text } });
+  }
+
+  injections.sort((a, b) => a.index - b.index);
+
+  const interleavedHistory = [];
+  let currentHistoryIndex = 0;
+
+  for (const injection of injections) {
+    while (currentHistoryIndex < injection.index) {
+      interleavedHistory.push(historyWithUser[currentHistoryIndex]);
+      currentHistoryIndex++;
+    }
+    interleavedHistory.push(injection.message);
+  }
+
+  while (currentHistoryIndex < totalHistory) {
+    interleavedHistory.push(historyWithUser[currentHistoryIndex]);
+    currentHistoryIndex++;
+  }
+
+  const finalUserMessage = interleavedHistory.pop();
 
   const assembledMessages = [
     { role: 'system', content: systemSections.join('\n\n') },
-    ...recentMessages,
-    { role: 'user', content: String(userMessage || '') }
+    ...interleavedHistory
   ];
+
+  if (expandedCharacterCard && expandedCharacterCard.enabled !== false && expandedCharacterCard.postHistoryInstructions) {
+    assembledMessages.push({ role: 'system', content: expandMacros(expandedCharacterCard.postHistoryInstructions, macroContext) });
+  }
+
+  const authorNote = expandMacros(String(options.authorNote || '').trim(), macroContext);
+  if (authorNote) {
+    assembledMessages.push({ role: 'system', content: `# 作者注释\n${authorNote}` });
+  }
+
+  if (finalUserMessage) {
+    assembledMessages.push(finalUserMessage);
+  }
 
   const tokenEstimate = estimateTokens(assembledMessages.map((message) => `${message.role}: ${message.content}`).join('\n'));
   return {
@@ -51,9 +154,51 @@ export function assemblePrompt({
       hasCharacterCard: Boolean(characterCard?.enabled !== false && String(characterCard?.name || '').trim()),
       hasWorldState: Boolean(memory?.worldState),
       hasRollingSummary: Boolean(memory?.rollingSummary),
+      narrativeMode: narrativeContext.mode,
+      narrativeGenre: narrativeContext.genre,
+      narrativeArc: narrativeContext.activeArc,
       injectedCardIds: injectedCards.map((card) => card.id)
     }
   };
+}
+
+function expandCharacterCard(card, ctx) {
+  if (!card) return card;
+  const fields = ['name', 'role', 'description', 'personality', 'scenario', 'firstMessage', 'systemPrompt', 'postHistoryInstructions'];
+  const expanded = { ...card };
+  fields.forEach((f) => {
+    if (typeof expanded[f] === 'string') expanded[f] = expandMacros(expanded[f], ctx);
+  });
+  if (Array.isArray(expanded.alternateGreetings)) {
+    expanded.alternateGreetings = expanded.alternateGreetings.map((g) => expandMacros(String(g || ''), ctx));
+  }
+  if (Array.isArray(expanded.exampleDialog)) {
+    expanded.exampleDialog = expanded.exampleDialog.map((d) => expandMacros(String(d || ''), ctx));
+  }
+  return expanded;
+}
+
+function expandPersona(persona, ctx) {
+  if (!persona) return persona;
+  const fields = ['name', 'description', 'background', 'personality'];
+  const expanded = { ...persona };
+  fields.forEach((f) => {
+    if (typeof expanded[f] === 'string') expanded[f] = expandMacros(expanded[f], ctx);
+  });
+  return expanded;
+}
+
+function expandGroupMembers(groupMembers, ctx) {
+  if (!Array.isArray(groupMembers)) return groupMembers;
+  const fields = ['name', 'role', 'description', 'personality', 'systemPrompt'];
+  return groupMembers.map((m) => {
+    if (!m) return m;
+    const expanded = { ...m };
+    fields.forEach((f) => {
+      if (typeof expanded[f] === 'string') expanded[f] = expandMacros(expanded[f], ctx);
+    });
+    return expanded;
+  });
 }
 
 function renderCharacterCard(card) {
@@ -68,7 +213,6 @@ function renderCharacterCard(card) {
   ];
   if (card.firstMessage) lines.push(`开场语：${card.firstMessage}`);
   if (card.systemPrompt) lines.push(`角色系统提示：${card.systemPrompt}`);
-  if (card.postHistoryInstructions) lines.push(`历史后置指令：${card.postHistoryInstructions}`);
   if (Array.isArray(card.alternateGreetings) && card.alternateGreetings.length) {
     lines.push(`备用开场：\n${card.alternateGreetings.join('\n')}`);
   }
@@ -77,6 +221,45 @@ function renderCharacterCard(card) {
   }
   if (Array.isArray(card.tags) && card.tags.length) lines.push(`标签：${card.tags.join('、')}`);
   return lines.filter((line) => !line.endsWith('：')).join('\n');
+}
+
+function renderPersona(persona) {
+  if (!persona || persona.enabled !== true) return '';
+  const lines = ['# 用户人设'];
+  if (persona.name) lines.push(`姓名：${persona.name}`);
+  if (persona.description) lines.push(`描述：${persona.description}`);
+  if (persona.background) lines.push(`背景：${persona.background}`);
+  if (persona.personality) lines.push(`性格：${persona.personality}`);
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+function renderGroupMembers(groupMembers) {
+  const members = Array.isArray(groupMembers) ? groupMembers.filter((m) => m && m.enabled !== false && String(m.name || '').trim()) : [];
+  if (!members.length) return '';
+  const lines = ['# 群聊参与角色'];
+  members.forEach((m, idx) => {
+    const segments = [`## ${m.name}`];
+    if (m.role) segments.push(`身份：${m.role}`);
+    if (m.description) segments.push(`描述：${m.description}`);
+    if (m.personality) segments.push(`性格：${m.personality}`);
+    if (m.systemPrompt) segments.push(`专属指令：${m.systemPrompt}`);
+    lines.push(segments.join('\n'));
+  });
+  lines.push('对话可由任一参与角色发起，回复正文开头请用「【角色名】」标注当前发言者。');
+  return lines.join('\n\n');
+}
+
+function renderSpeakerInstruction({ groupMembers, targetSpeaker, characterCard }) {
+  const members = Array.isArray(groupMembers) ? groupMembers.filter((m) => m && m.enabled !== false && String(m.name || '').trim()) : [];
+  const hasGroup = members.length > 0;
+  if (!hasGroup && !targetSpeaker) return '';
+  if (targetSpeaker) {
+    const isMember = members.some((m) => m.name === targetSpeaker);
+    const isMain = characterCard && characterCard.name === targetSpeaker;
+    if (!isMember && !isMain) return '';
+    return `# 当前发言角色\n本轮请由「${targetSpeaker}」发言，回复正文以「【${targetSpeaker}】」开头，体现其身份、性格与语气。`;
+  }
+  return '# 发言规则\n可在每轮自然轮换发言者，回复正文以「【角色名】」开头标注当前发言者。';
 }
 
 function renderPromptModules(promptModules = []) {
@@ -98,29 +281,21 @@ function renderRollingSummary(summary) {
   return `# 滚动摘要\n${summary}`;
 }
 
-function renderCards(cards) {
-  if (!cards.length) return '';
-  const groups = new Map();
-  cards.forEach((card) => {
-    const depth = normalizeDepth(card.depth ?? card.scanDepth ?? card.scan_depth);
-    const key = `Depth ${depth}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(card);
+function renderVectorMemory(hits) {
+  const safeHits = Array.isArray(hits) ? hits.filter((h) => h && h.content && typeof h.content === 'string' && h.content.trim()) : [];
+  if (!safeHits.length) return '';
+  const lines = ['# 相关历史片段（向量检索）'];
+  safeHits.forEach((hit, idx) => {
+    const role = String(hit.role || 'user');
+    lines.push(`## 片段 ${idx + 1} [${role}]\n${String(hit.content).trim()}`);
   });
-
-  const sections = ['# 本轮注入的世界书和记忆'];
-  for (const [depthLabel, depthCards] of groups.entries()) {
-    sections.push([
-      `## ${depthLabel}`,
-      ...depthCards.map((card) => `### ${card.title}\n${card.content}`)
-    ].join('\n\n'));
-  }
-  return sections.join('\n\n');
+  lines.push('以上为基于当前输入检索到的历史相关片段，可用于参考但不要直接复制。');
+  return lines.join('\n\n');
 }
 
 function normalizeDepth(depth) {
   const number = Number(depth);
-  if (!Number.isFinite(number) || number <= 0) return 4;
+  if (!Number.isFinite(number) || number < 0) return 4;
   return Math.floor(number);
 }
 

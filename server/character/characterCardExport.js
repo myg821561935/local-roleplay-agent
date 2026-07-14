@@ -1,0 +1,128 @@
+import { deflateSync } from 'node:zlib';
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buffer.length; i += 1) {
+    crc = CRC_TABLE[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const crc = crc32(Buffer.concat([typeBuffer, data]));
+  const crcBuffer = Buffer.alloc(4);
+  crcBuffer.writeUInt32BE(crc, 0);
+  return Buffer.concat([length, typeBuffer, data, crcBuffer]);
+}
+
+function createTextChunk(keyword, value) {
+  const data = Buffer.concat([
+    Buffer.from(keyword, 'latin1'),
+    Buffer.from([0]),
+    Buffer.from(value, 'latin1')
+  ]);
+  return createChunk('tEXt', data);
+}
+
+function createPlaceholderPng(width, height, [r, g, b]) {
+  const ihdrData = Buffer.alloc(13);
+  ihdrData.writeUInt32BE(width, 0);
+  ihdrData.writeUInt32BE(height, 4);
+  ihdrData[8] = 8;
+  ihdrData[9] = 2;
+  const ihdr = createChunk('IHDR', ihdrData);
+
+  const rowSize = 1 + width * 3;
+  const rawData = Buffer.alloc(rowSize * height);
+  for (let y = 0; y < height; y += 1) {
+    const offset = y * rowSize;
+    rawData[offset] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const px = offset + 1 + x * 3;
+      rawData[px] = r;
+      rawData[px + 1] = g;
+      rawData[px + 2] = b;
+    }
+  }
+  const idat = createChunk('IDAT', deflateSync(rawData));
+  const iend = createChunk('IEND', Buffer.alloc(0));
+
+  return Buffer.concat([PNG_SIGNATURE, ihdr, idat, iend]);
+}
+
+export function exportCharacterCardPng(characterCard, worldBook = []) {
+  const v2Card = toV2CharacterCard(characterCard, worldBook);
+  const json = JSON.stringify(v2Card);
+  const base64 = Buffer.from(json, 'utf8').toString('base64');
+
+  const png = createPlaceholderPng(256, 256, [45, 42, 58]);
+  const textChunk = createTextChunk('chara', base64);
+
+  const ihdrEnd = PNG_SIGNATURE.length + 25;
+  return Buffer.concat([png.subarray(0, ihdrEnd), textChunk, png.subarray(ihdrEnd)]);
+}
+
+function toV2CharacterCard(characterCard, worldBook = []) {
+  const card = characterCard || {};
+  return {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: card.name || '',
+      description: card.description || '',
+      personality: card.personality || '',
+      scenario: card.scenario || '',
+      first_mes: card.firstMessage || '',
+      mes_example: Array.isArray(card.exampleDialog) ? card.exampleDialog.join('\n') : '',
+      creator_notes: card.creatorNotes || '',
+      system_prompt: card.systemPrompt || '',
+      post_history_instructions: card.postHistoryInstructions || '',
+      alternate_greetings: Array.isArray(card.alternateGreetings) ? card.alternateGreetings : [],
+      tags: Array.isArray(card.tags) ? card.tags : [],
+      creator: card.creator || '',
+      character_version: card.characterVersion || '1.0',
+      extensions: card.extensions || {},
+      character_book: toV2CharacterBook(worldBook)
+    }
+  };
+}
+
+function toV2CharacterBook(worldBook) {
+  if (!Array.isArray(worldBook) || !worldBook.length) return undefined;
+  return {
+    entries: worldBook.map((entry, index) => ({
+      id: index,
+      name: entry.title || '',
+      comment: entry.title || '',
+      keys: Array.isArray(entry.keywords) ? entry.keywords : [],
+      secondary_keys: Array.isArray(entry.secondaryKeywords) ? entry.secondaryKeywords : [],
+      content: entry.content || '',
+      priority: entry.priority ?? 80,
+      scan_depth: entry.depth ?? 4,
+      insertion_order: entry.insertionOrder ?? index,
+      selective: entry.logic === 'selective',
+      constant: entry.constant === true,
+      case_sensitive: entry.caseSensitive === true,
+      position: entry.position || 'after_character',
+      enabled: entry.enabled !== false,
+      extensions: entry.extensions || {}
+    }))
+  };
+}

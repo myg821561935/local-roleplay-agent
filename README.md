@@ -6,16 +6,28 @@
 
 ```bash
 npm test
-npm run dev
+npm run start:local
 ```
 
 访问：
 
 ```text
-http://127.0.0.1:5177
+http://127.0.0.1:5178
 ```
 
 默认只监听 `127.0.0.1`，用于本机访问。
+
+也可以直接双击项目根目录的 `启动本地角色扮演.command`。运行日志与 PID 保存在 `.runtime/`。
+
+## v0.1 发布加固
+
+- `npm run release:check`：执行完整测试并核对 Node、应用版本、数据版本和启动文件。
+- 启动时自动把本地数据迁移到当前 schema，健康接口会返回应用版本和数据版本。
+- 接口配置抽屉提供 Provider 测试连接，不保存即可验证 URL、Key 与模型。
+- “本地备份与恢复”生成带 SHA-256 校验的完整数据快照，恢复前自动创建安全备份。
+- 命令行可使用 `npm run backup`、`npm run backup:list` 和 `npm run restore -- <backup-id> --yes`。
+
+完整发布与恢复说明见 `docs/release-v0.1.md`。
 
 ## Provider 配置
 

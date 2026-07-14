@@ -5,3 +5,8 @@ data/sessions/
 data/exports/
 .superpowers/
 work/
+backups/
+.runtime/
+.data-restore-*/
+.data-rollback-*/
+data/.schema.json

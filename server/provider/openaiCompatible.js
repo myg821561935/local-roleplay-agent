@@ -82,18 +82,22 @@ export async function streamOpenAICompatible({ provider, messages, onToken, fetc
   let buffer = '';
   let content = '';
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split('\n\n');
-    buffer = events.pop() || '';
-    for (const eventText of events) {
-      const token = readStreamToken(eventText);
-      if (!token) continue;
-      content += token;
-      await onToken?.(token);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+      for (const eventText of events) {
+        const token = readStreamToken(eventText);
+        if (!token) continue;
+        content += token;
+        await onToken?.(token);
+      }
     }
+  } finally {
+    await reader.cancel().catch(() => {});
   }
 
   return { content, raw: null };

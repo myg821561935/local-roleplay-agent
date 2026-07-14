@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 export class JsonStore {
@@ -29,7 +29,9 @@ export class JsonStore {
     const filePath = this.resolve(relativePath);
     await mkdir(path.dirname(filePath), { recursive: true });
     const body = `${JSON.stringify(value, null, 2)}\n`;
-    await writeFile(filePath, body, 'utf8');
+    const tmpPath = `${filePath}.tmp`;
+    await writeFile(tmpPath, body, 'utf8');
+    await rename(tmpPath, filePath);
     return value;
   }
 

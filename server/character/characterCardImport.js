@@ -16,8 +16,12 @@ function readCardJson(payload) {
   try {
     return JSON.parse(text);
   } catch {
-    const decoded = Buffer.from(text.trim(), 'base64').toString('utf8');
-    return JSON.parse(decoded);
+    try {
+      const decoded = Buffer.from(text.trim(), 'base64').toString('utf8');
+      return JSON.parse(decoded);
+    } catch {
+      return parseYamlLikeCharacterCard(text);
+    }
   }
 }
 
@@ -100,7 +104,9 @@ function readInternationalTextChunk(data) {
 }
 
 function normalizeImportedCard(rawCard) {
-  const data = rawCard?.spec === 'chara_card_v2' ? rawCard.data || {} : rawCard || {};
+  const data = rawCard?.spec === 'chara_card_v2' || rawCard?.spec === 'yaml-character-card'
+    ? rawCard.data || {}
+    : rawCard || {};
   const characterCard = {
     name: stringValue(data.name),
     role: stringValue(data.role || data.creator),
@@ -125,6 +131,102 @@ function normalizeImportedCard(rawCard) {
   return {
     characterCard,
     worldBook: normalizeCharacterBook(data.character_book)
+  };
+}
+
+function parseYamlLikeCharacterCard(text) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (!/^\s*character\s*[:：]/im.test(normalized)) {
+    throw new Error('UNSUPPORTED_CHARACTER_CARD_PAYLOAD');
+  }
+
+  const name = extractScalar(normalized, ['name', '姓名']);
+  if (!name) throw new Error('UNSUPPORTED_CHARACTER_CARD_PAYLOAD');
+
+  const identity = extractNamedBlock(normalized, ['identity', '身份', '身份层'], [
+    'psychology',
+    '心理',
+    '心理层',
+    'behavior',
+    '行为',
+    '行为层',
+    'relationships',
+    'relations',
+    '关系',
+    '关系层',
+    'speech',
+    'language',
+    '语言',
+    '语言层',
+    'anti_ooc',
+    'meta',
+    '元控制'
+  ]);
+  const psychology = extractNamedBlock(normalized, ['psychology', '心理', '心理层'], [
+    'behavior',
+    '行为',
+    '行为层',
+    'relationships',
+    'relations',
+    '关系',
+    '关系层',
+    'speech',
+    'language',
+    '语言',
+    '语言层',
+    'anti_ooc',
+    'meta',
+    '元控制'
+  ]);
+  const behavior = extractNamedBlock(normalized, ['behavior', '行为', '行为层'], [
+    'relationships',
+    'relations',
+    '关系',
+    '关系层',
+    'speech',
+    'language',
+    '语言',
+    '语言层',
+    'anti_ooc',
+    'meta',
+    '元控制'
+  ]);
+  const relationships = extractNamedBlock(normalized, ['relationships', 'relations', '关系', '关系层'], [
+    'speech',
+    'language',
+    '语言',
+    '语言层',
+    'anti_ooc',
+    'meta',
+    '元控制'
+  ]);
+  const speech = extractNamedBlock(normalized, ['speech', 'language', '语言', '语言层'], [
+    'anti_ooc',
+    'meta',
+    '元控制'
+  ]);
+  const meta = extractNamedBlock(normalized, ['anti_ooc', 'meta', '元控制'], []);
+  const firstMessage = extractScalar(normalized, ['first_message', 'first_mes', 'firstMessage', '开场白']);
+
+  return {
+    spec: 'yaml-character-card',
+    data: {
+      name,
+      description: identity || normalized,
+      personality: [psychology, behavior].filter(Boolean).join('\n\n'),
+      scenario: relationships,
+      first_mes: firstMessage,
+      system_prompt: meta,
+      post_history_instructions: extractNamedBlock(normalized, ['unknown_handling', '未知情况处理'], []),
+      alternate_greetings: [],
+      tags: parseTagList(extractScalar(normalized, ['tags', '标签'])),
+      creator_notes: 'Imported from YAML-like roleplay character text.',
+      extensions: {
+        import_format: 'yaml-like',
+        speech
+      },
+      raw_yaml: normalized
+    }
   };
 }
 
@@ -163,6 +265,67 @@ function normalizeExampleDialog(value) {
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => stringValue(item)).filter(Boolean);
+}
+
+function extractScalar(text, keys) {
+  for (const key of keys) {
+    const escaped = escapeRegExp(key);
+    const match = text.match(new RegExp(`(?:^|\\n)\\s*${escaped}\\s*[:：]\\s*(.+)`, 'i'));
+    if (match) return cleanScalar(match[1]);
+  }
+  return '';
+}
+
+function extractNamedBlock(text, startKeys, stopKeys) {
+  const lines = String(text || '').split('\n');
+  const collected = [];
+  let active = false;
+
+  for (const line of lines) {
+    const startValue = matchKeyLine(line, startKeys);
+    if (!active && startValue !== null) {
+      active = true;
+      if (startValue) collected.push(startValue);
+      continue;
+    }
+
+    if (!active) continue;
+    if (matchKeyLine(line, stopKeys) !== null) break;
+    collected.push(line);
+  }
+
+  return collected.join('\n').trim();
+}
+
+function matchKeyLine(line, keys) {
+  const text = String(line || '').trim();
+  for (const key of keys) {
+    const escaped = escapeRegExp(key);
+    const match = text.match(new RegExp(`^${escaped}\\s*[:：]\\s*(.*)$`, 'i'));
+    if (match) return match[1].trim();
+  }
+  return null;
+}
+
+function parseTagList(value) {
+  const text = stringValue(value);
+  if (!text) return [];
+  return text
+    .replace(/^\[|\]$/g, '')
+    .split(/[,，、;；/|]/)
+    .map(cleanScalar)
+    .filter(Boolean);
+}
+
+function cleanScalar(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function normalizePositiveNumber(value, fallback) {

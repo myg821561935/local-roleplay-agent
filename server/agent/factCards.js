@@ -109,7 +109,17 @@ export function createWorldBookEntryFromFact(fact, { now } = {}) {
 
 export function worldBookIdentity(entry) {
   if (!entry) return '\n';
-  return `${stringValue(entry.title)}\n${stringValue(entry.content)}`;
+  return `${stringValue(entry.title).toLowerCase()}\n${stringValue(entry.content).toLowerCase()}`;
+}
+
+export function dedupeWorldBookEntries(existing, incoming) {
+  const existingKeys = new Set((Array.isArray(existing) ? existing : []).map(worldBookIdentity));
+  return incoming.filter((entry) => {
+    const identity = worldBookIdentity(entry);
+    if (existingKeys.has(identity)) return false;
+    existingKeys.add(identity);
+    return true;
+  });
 }
 
 function autoFactId(content, index = 0) {

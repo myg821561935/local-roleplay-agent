@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "node server/index.js",
     "start": "node server/index.js",
-    "test": "node --test tests/*.test.js"
+    "start:local": "zsh scripts/start-local.sh",
+    "backup": "node scripts/data-cli.mjs backup",
+    "backup:list": "node scripts/data-cli.mjs list",
+    "restore": "node scripts/data-cli.mjs restore",
+    "test": "node --test tests/*.test.js",
+    "release:check": "node --test tests/*.test.js && node scripts/release-check.mjs"
   },
   "engines": {
     "node": ">=20"

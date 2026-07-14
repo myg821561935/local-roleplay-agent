@@ -18,7 +18,14 @@ test('ConfigService returns seeded prompt modules and world book', async () => {
   const creativeMode = state.promptModules.find((module) => module.id === 'personal-creative-mode');
   assert.ok(creativeMode);
   assert.match(creativeMode.content, /不增加限制词/);
+  const adultMode = state.promptModules.find((module) => module.id === 'adult-creative-mode');
+  assert.ok(adultMode);
+  assert.match(adultMode.content, /成人创作沙盒/);
+  assert.ok(state.promptModules.find((module) => module.id === 'relationship-arc-engine'));
+  assert.ok(state.promptModules.find((module) => module.id === 'fact-extraction-standards'));
   assert.ok(state.worldBook.find((entry) => entry.id === 'faction-zhenwusi'));
+  assert.ok(state.worldBook.find((entry) => entry.id === 'location-luoyan-nightmarket'));
+  assert.ok(state.worldBook.length >= 12);
 });
 
 test('ConfigService saves character card', async () => {
@@ -62,6 +69,29 @@ test('ConfigService saves provider config without touching prompt modules', asyn
   const state = await service.getAll();
   assert.equal(state.providers.activeProviderId, 'local');
   assert.equal(state.promptModules.length >= 5, true);
+});
+
+test('ConfigService preserves native provider kind and preset metadata', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-config-'));
+  const service = new ConfigService(new JsonStore(root));
+  await service.saveProviders({
+    activeProviderId: 'claude',
+    providers: [{
+      id: 'claude',
+      kind: 'anthropic',
+      preset: 'anthropic',
+      baseUrl: '',
+      apiKey: 'secret',
+      model: 'claude-3-5-sonnet-latest',
+      temperature: 0.9,
+      maxTokens: 2000,
+      headers: {}
+    }]
+  });
+
+  const state = await service.getAll();
+  assert.equal(state.providers.providers[0].kind, 'anthropic');
+  assert.equal(state.providers.providers[0].preset, 'anthropic');
 });
 
 test('ConfigService falls back for invalid temperature string', async () => {

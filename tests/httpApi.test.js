@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../server/app.js';
+import { migrateData } from '../server/data/migrations.js';
 
 test('GET /api/state returns config and session', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
@@ -80,9 +81,567 @@ test('POST /api/character-card/import saves Character Card V2 and imports charac
 
   assert.equal(response.status, 200);
   assert.equal(payload.characterCard.name, '沈观澜');
-  assert.equal(payload.importedWorldBookCount, 1);
-  assert.equal(state.config.characterCard.name, '沈观澜');
-  assert.ok(state.config.worldBook.find((entry) => entry.title === '镇武司暗线'));
+  assert.equal(payload.worldBook.length, 1);
+  assert.ok(payload.worldBook.find((entry) => entry.title === '镇武司暗线'));
+});
+
+test('preset creation routes use UUID-backed ids', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const characterResponse = await request(app, {
+    method: 'POST',
+    url: '/api/character-presets',
+    headers: { 'content-type': 'application/json' },
+    body: { name: '夜雨刀客' }
+  });
+  const promptResponse = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-presets',
+    headers: { 'content-type': 'application/json' },
+    body: { name: '叙事预设', promptModules: [] }
+  });
+
+  assert.equal(characterResponse.status, 200);
+  assert.equal(promptResponse.status, 200);
+  assert.match(characterResponse.json().preset.id, /^preset-[0-9a-f-]{36}$/);
+  assert.match(promptResponse.json().preset.id, /^prompt-preset-[0-9a-f-]{36}$/);
+});
+
+test('POST /api/import/preview parses Character Card V2 without saving state', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/import/preview',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      fileName: 'shen.json',
+      mimeType: 'application/json',
+      data: JSON.stringify(createV2CardPayload())
+    }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.preview.kind, 'character-card');
+  assert.equal(payload.preview.summary.characterName, '沈观澜');
+  assert.equal(payload.preview.summary.worldBookCount, 1);
+  assert.equal(state.config.characterCard.name, '未命名主角');
+});
+
+test('GET /api/import-sources lists online material sources', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, { url: '/api/import-sources' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.ok(payload.sources.find((source) => source.id === 'chub'));
+  assert.ok(payload.sources.find((source) => source.id === 'aicharactercards'));
+});
+
+test('GET /api/import-sources/search searches source cards with injected fetch', async () => {
+  const app = createApp({
+    rootDir: await createTestRoot(),
+    fetchImpl: async (url) => {
+      const requestUrl = new URL(String(url));
+      assert.equal(requestUrl.hostname, 'gateway.chub.ai');
+      assert.equal(requestUrl.searchParams.get('search'), 'wuxia');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({
+          results: [{
+            name: '沈观澜',
+            fullPath: 'liufeng/shen-guanlan',
+            nTokens: 2048,
+            topics: ['wuxia'],
+            max_res_url: 'https://avatars.charhub.io/characters/liufeng/shen-guanlan/chara_card_v2.png'
+          }]
+        })
+      };
+    }
+  });
+
+  const response = await request(app, { url: '/api/import-sources/search?source=chub&kind=characters&q=wuxia' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.source.id, 'chub');
+  assert.equal(payload.items[0].title, '沈观澜');
+  assert.equal(payload.items[0].downloadable, true);
+});
+
+test('POST /api/import-sources/download previews downloaded PNG cards', async () => {
+  const png = createPngWithTextChunk(
+    'Chara',
+    Buffer.from(JSON.stringify(createV2CardPayload()), 'utf8').toString('base64')
+  );
+  const app = createApp({
+    rootDir: await createTestRoot(),
+    fetchImpl: async (url) => {
+      assert.equal(String(url), 'https://avatars.charhub.io/characters/liufeng/shen-guanlan/chara_card_v2.png');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'image/png' },
+        arrayBuffer: async () => png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength)
+      };
+    }
+  });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/import-sources/download',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      source: 'chub',
+      downloadUrl: 'https://avatars.charhub.io/characters/liufeng/shen-guanlan/chara_card_v2.png',
+      fileName: 'shen-guanlan.png'
+    }
+  });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.preview.kind, 'character-card');
+  assert.equal(payload.preview.summary.characterName, '沈观澜');
+  assert.equal(payload.payload.mimeType, 'image/png');
+});
+
+test('POST /api/import/commit saves standalone world book import', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'world.json',
+        mimeType: 'application/json',
+        data: JSON.stringify({
+          entries: {
+            '1': {
+              comment: '听雨楼',
+              key: ['听雨楼'],
+              content: '听雨楼贩卖秘密。',
+              enabled: true
+            }
+          }
+        })
+      }
+    }
+  });
+  const payload = response.json();
+  const imported = payload.worldBook.entries.filter((entry) => entry.source === 'sillytavern-worldbook');
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.preview.kind, 'world-book');
+  assert.equal(imported.length, 1);
+  assert.equal(imported[0].title, '听雨楼');
+});
+
+test('GET /api/content-packs lists linked genre packs', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, { url: '/api/content-packs' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.ok(payload.contentPacks.find((pack) => pack.id === 'xuanhuan'));
+  const lingyi = payload.contentPacks.find((pack) => pack.id === 'lingyi');
+  assert.ok(lingyi);
+  assert.equal(lingyi.title, '民俗灵异内容包');
+  assert.equal(lingyi.counts.promptModules >= 10, true);
+  assert.equal(lingyi.counts.worldBook >= 16, true);
+  assert.equal(lingyi.counts.memoryCards >= 4, true);
+  assert.equal(lingyi.ruleSystem.id, 'lingyi-rule-system');
+  assert.match(lingyi.ruleSystem.boundary, /不引入玄幻修炼/);
+  const mingmo = payload.contentPacks.find((pack) => pack.id === 'mingmo');
+  assert.ok(mingmo);
+  assert.equal(mingmo.title, '明末风云内容包');
+  assert.equal(mingmo.counts.promptModules >= 10, true);
+  assert.equal(mingmo.counts.worldBook >= 18, true);
+  assert.equal(mingmo.counts.memoryCards >= 4, true);
+  assert.equal(mingmo.ruleSystem.id, 'mingmo-rule-system');
+  assert.match(mingmo.ruleSystem.boundary, /银粮/);
+  const yingxiongzhi = payload.contentPacks.find((pack) => pack.id === 'yingxiongzhi');
+  assert.ok(yingxiongzhi);
+  assert.equal(yingxiongzhi.characterName, '卢云');
+  assert.equal(yingxiongzhi.counts.worldBook >= 148, true);
+  assert.equal(yingxiongzhi.counts.characterPresets, 12);
+});
+
+test('GET /api/content-packs/:packId/characters exposes curated Hero presets', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, { url: '/api/content-packs/yingxiongzhi/characters' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.characterPresets.length, 12);
+  assert.ok(payload.characterPresets.find((preset) => preset.characterCard.name === '卢云'));
+  assert.ok(payload.characterPresets.find((preset) => preset.characterCard.name === '杨肃观'));
+  assert.ok(payload.characterPresets.every((preset) => preset.characterCard.extensions.contentPack === 'yingxiongzhi'));
+});
+
+test('POST /api/content-packs/:packId/apply synchronizes prompt world character and facts', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/content-packs/lingyi/apply',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.appliedPack.id, 'lingyi');
+  assert.ok(payload.promptModules.find((module) => module.id === 'lingyi-fear-pacing'));
+  assert.ok(payload.worldBook.find((entry) => entry.id === 'location-yongan-building'));
+  assert.equal(payload.characterCard.name, '陈默');
+  assert.equal(payload.session.memory.worldState.protagonist.name, '陈默');
+  assert.equal(payload.session.memory.ruleSystem.id, 'lingyi-rule-system');
+  assert.ok(payload.session.memory.memoryCards.find((fact) => fact.id === 'fact-lingyi-current-case'));
+  assert.equal(state.config.characterCard.name, '陈默');
+  assert.ok(state.config.worldBook.find((entry) => entry.id === 'quest-smile-murders'));
+  assert.equal(state.session.memory.worldState.flags.genre, 'lingyi');
+});
+
+test('POST /api/content-packs/:packId/apply synchronizes Mingmo historical pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/content-packs/mingmo/apply',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.appliedPack.id, 'mingmo');
+  assert.ok(payload.promptModules.find((module) => module.id === 'mingmo-history-pacing'));
+  assert.ok(payload.worldBook.find((entry) => entry.id === 'event-chongzhen-last-years'));
+  assert.equal(payload.characterCard.name, '顾怀砚');
+  assert.equal(payload.session.memory.worldState.protagonist.name, '顾怀砚');
+  assert.equal(payload.session.memory.ruleSystem.id, 'mingmo-rule-system');
+  assert.ok(payload.session.memory.memoryCards.find((fact) => fact.id === 'fact-mingmo-current-crisis'));
+  assert.equal(state.config.characterCard.name, '顾怀砚');
+  assert.ok(state.config.worldBook.find((entry) => entry.id === 'quest-secret-edict'));
+  assert.equal(state.session.memory.worldState.flags.genre, 'mingmo');
+});
+
+test('POST /api/content-packs/:packId/apply synchronizes Hero multi-agent pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/content-packs/yingxiongzhi/apply',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.appliedPack.id, 'yingxiongzhi');
+  assert.equal(payload.characterCard.name, '卢云');
+  assert.equal(payload.worldBook.filter((entry) => entry.type === 'story-node').length, 45);
+  assert.ok(payload.worldBook.find((entry) => entry.extensions?.agentId === 'wu_chonghua'));
+  assert.equal(payload.session.memory.ruleSystem.id, 'yingxiongzhi-rules');
+  assert.equal(state.session.memory.worldState.flags.currentNode, 'E02');
+  assert.equal(state.config.worldBook.length >= 148, true);
+});
+
+test('applying a content pack replaces stale session-scoped character and world book', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      id: 'story_pack_switch',
+      title: '题材切换验证',
+      packId: 'yingxiongzhi'
+    }
+  });
+  const before = (await request(app, { url: '/api/state?sessionId=story_pack_switch' })).json();
+  const applyResponse = await request(app, {
+    method: 'POST',
+    url: '/api/content-packs/xianxia/apply',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'story_pack_switch' }
+  });
+  const payload = applyResponse.json();
+  const after = (await request(app, { url: '/api/state?sessionId=story_pack_switch' })).json();
+
+  assert.equal(createResponse.status, 200);
+  assert.equal(before.config.characterCard.extensions.contentPack, 'yingxiongzhi');
+  assert.ok(before.config.worldBook.find((entry) => entry.id === 'constant-yingxiongzhi-premise'));
+  assert.equal(applyResponse.status, 200);
+  assert.equal(payload.session.config.characterCard.extensions.contentPack, 'xianxia');
+  assert.equal(after.config.characterCard.extensions.contentPack, 'xianxia');
+  assert.ok(after.config.worldBook.find((entry) => entry.id === 'constant-xianxia-premise'));
+  assert.equal(after.config.worldBook.some((entry) => entry.id === 'constant-yingxiongzhi-premise'), false);
+  assert.equal(after.session.memory.worldState.flags.genre, 'xianxia');
+});
+
+test('POST /api/content-packs/:packId/apply rejects missing pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/content-packs/missing/apply',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(response.json(), { error: 'CONTENT_PACK_NOT_FOUND' });
+});
+
+test('GET /api/state returns selected session scoped config', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      id: 'story_lingyi',
+      title: '灵异支线',
+      packId: 'lingyi'
+    }
+  });
+  const response = await request(app, { url: '/api/state?sessionId=story_lingyi' });
+  const payload = response.json();
+
+  assert.equal(createResponse.status, 200);
+  assert.equal(response.status, 200);
+  assert.equal(payload.session.id, 'story_lingyi');
+  assert.equal(payload.config.characterCard.name, '陈默');
+  assert.ok(payload.config.worldBook.find((entry) => entry.id === 'quest-smile-murders'));
+  assert.ok(payload.config.promptModules.find((module) => module.id === 'lingyi-fear-pacing'));
+  assert.ok(payload.config.providers);
+  assert.equal(payload.session.memory.ruleSystem.id, 'lingyi-rule-system');
+});
+
+test('session scoped editors initialize config for legacy sessions', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const worldResponse = await request(app, {
+    method: 'PUT',
+    url: '/api/world-book',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'main',
+      worldBook: [{
+        id: 'manual-town',
+        title: '雾镇',
+        keywords: ['雾镇'],
+        content: '雾镇三更后无人点灯。',
+        enabled: true
+      }]
+    }
+  });
+  const characterResponse = await request(app, {
+    method: 'PUT',
+    url: '/api/character-card',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'main',
+      characterCard: {
+        name: '周闻灯',
+        role: '守夜人',
+        enabled: true
+      }
+    }
+  });
+  const promptResponse = await request(app, {
+    method: 'PUT',
+    url: '/api/prompt-modules',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'main',
+      promptModules: [{
+        id: 'local-rule',
+        title: '本会话规则',
+        content: '保持民俗悬疑氛围。',
+        enabled: true
+      }]
+    }
+  });
+  const state = (await request(app, { url: '/api/state?sessionId=main' })).json();
+
+  assert.equal(worldResponse.status, 200);
+  assert.equal(characterResponse.status, 200);
+  assert.equal(promptResponse.status, 200);
+  assert.equal(state.config.characterCard.name, '周闻灯');
+  assert.equal(state.config.worldBook[0].title, '雾镇');
+  assert.equal(state.config.promptModules[0].title, '本会话规则');
+});
+
+test('PUT /api/session/settings saves per-session provider settings', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/session/settings',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'main',
+      settings: {
+        providerId: 'scene',
+        recentPairs: 12,
+        maxInjectedCards: 7,
+        maxPromptTokens: 12000,
+        narrativeMode: 'strict',
+        backgroundImage: '/assets/wuxia-stage.png',
+        theme: 'default-dark',
+        visualContentPack: 'yingxiongzhi'
+      }
+    }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.session.settings.providerId, 'scene');
+  assert.equal(payload.session.settings.recentPairs, 12);
+  assert.equal(payload.session.settings.maxInjectedCards, 7);
+  assert.equal(payload.session.settings.maxPromptTokens, 12000);
+  assert.equal(payload.session.settings.narrativeMode, 'strict');
+  assert.equal(payload.session.settings.backgroundImage, '/assets/wuxia-stage.png');
+  assert.equal(payload.session.settings.theme, 'default-dark');
+  assert.equal(payload.session.settings.visualContentPack, 'yingxiongzhi');
+  assert.equal(state.session.settings.narrativeMode, 'strict');
+  assert.deepEqual(state.session.settings, payload.session.settings);
+});
+
+test('POST /api/rewrite returns a Magic Rewrite suggestion without mutating chat', async () => {
+  const app = createApp({
+    rootDir: await createTestRoot(),
+    providerClient: {
+      complete: async ({ messages }) => {
+        assert.match(messages[0].content, /Magic Rewrite/);
+        assert.match(messages.at(-1).content, /我推门进去/);
+        return { content: '我放轻脚步，缓缓推开那扇门。', raw: { rewrite: true } };
+      }
+    }
+  });
+  await request(app, {
+    method: 'PUT',
+    url: '/api/providers',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      activeProviderId: 'local',
+      providers: [{
+        id: 'local',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'secret',
+        model: 'rewrite-model',
+        temperature: 0.5,
+        maxTokens: 1024,
+        headers: {}
+      }]
+    }
+  });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/rewrite',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'main',
+      target: 'chat-input',
+      text: '我推门进去',
+      instruction: '更有画面感'
+    }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.text, '我放轻脚步，缓缓推开那扇门。');
+  assert.equal(payload.providerId, 'local');
+  assert.equal(payload.model, 'rewrite-model');
+  assert.equal(state.session.messages.length, 0);
+});
+
+test('GET /api/usage returns live session token usage', async () => {
+  const app = createApp({
+    rootDir: await createTestRoot(),
+    providerClient: {
+      complete: async () => ({
+        content: '一段回应。',
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120
+        }
+      })
+    }
+  });
+  await saveHttpProvider(app);
+  await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main', content: '开始' }
+  });
+
+  const response = await request(app, { url: '/api/usage?sessionId=main' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.usage.scope, 'session');
+  assert.equal(payload.usage.sessionId, 'main');
+  assert.equal(payload.usage.totals.calls, 1);
+  assert.equal(payload.usage.totals.totalTokens, 120);
+  assert.equal(payload.usage.byProvider[0].providerId, 'local');
+});
+
+test('GET /api/usage can aggregate all sessions', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({
+    rootDir,
+    providerClient: createHttpEchoProviderClient()
+  });
+  await saveHttpProvider(app);
+  await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main', content: '主线' }
+  });
+  await request(app, {
+    method: 'POST',
+    url: '/api/sessions',
+    headers: { 'content-type': 'application/json' },
+    body: { id: 'side_story', title: '支线' }
+  });
+  await request(app, {
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'side_story', content: '支线' }
+  });
+
+  const response = await request(app, { url: '/api/usage?scope=all' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.usage.scope, 'all');
+  assert.equal(payload.usage.totals.calls, 2);
+  assert.deepEqual(new Set(payload.usage.recent.map((row) => row.sessionId)), new Set(['main', 'side_story']));
 });
 
 test('PUT /api/providers saves provider and GET /api/state masks apiKey and sensitive headers', async () => {
@@ -213,13 +772,85 @@ test('PUT /api/providers normalizes non-object headers to empty object', async (
 });
 
 test('GET /api/health returns ok', async () => {
-  const app = createApp({ rootDir: await createTestRoot() });
+  const rootDir = await createTestRoot();
+  await migrateData({ rootDir });
+  const app = createApp({ rootDir });
 
   const response = await request(app, { url: '/api/health' });
   const payload = response.json();
 
   assert.equal(response.status, 200);
-  assert.deepEqual(payload, { ok: true, app: 'local-roleplay-agent' });
+  assert.deepEqual(payload, {
+    ok: true,
+    app: 'local-roleplay-agent',
+    version: '0.1.0',
+    releaseChannel: 'stable-local',
+    dataSchemaVersion: 1,
+    targetDataSchemaVersion: 1
+  });
+});
+
+test('POST /api/providers/test verifies masked saved credentials without changing config', async () => {
+  const rootDir = await createTestRoot();
+  let testedProvider;
+  const app = createApp({
+    rootDir,
+    providerClient: {
+      complete: async ({ provider }) => {
+        testedProvider = provider;
+        return { content: 'OK' };
+      }
+    }
+  });
+  await saveHttpProvider(app);
+  const state = (await request(app, { url: '/api/state' })).json();
+  const provider = state.config.providers.providers[0];
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/providers/test',
+    headers: { 'content-type': 'application/json' },
+    body: { provider }
+  });
+  const saved = JSON.parse(await readFile(path.join(rootDir, 'data', 'config', 'providers.local.json'), 'utf8'));
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().result.ok, true);
+  assert.equal(response.json().result.responsePreview, 'OK');
+  assert.equal(testedProvider.apiKey, 'secret');
+  assert.equal(testedProvider.maxTokens <= 16, true);
+  assert.equal(saved.providers[0].apiKey, 'secret');
+});
+
+test('POST /api/providers/test redacts the API key from connection errors', async () => {
+  const app = createApp({
+    rootDir: await createTestRoot(),
+    providerClient: {
+      complete: async ({ provider }) => {
+        throw new Error(`upstream rejected ${provider.apiKey}`);
+      }
+    }
+  });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/providers/test',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      provider: {
+        id: 'test',
+        kind: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'top-secret-key',
+        model: 'model-a'
+      }
+    }
+  });
+
+  assert.equal(response.status, 502);
+  assert.equal(response.json().error, 'PROVIDER_TEST_FAILED');
+  assert.doesNotMatch(response.text, /top-secret-key/);
+  assert.match(response.json().detail, /\*{8}/);
 });
 
 test('unknown API route returns JSON 404', async () => {
@@ -278,6 +909,34 @@ test('mutating API route rejects forbidden origin', async () => {
 
   assert.equal(response.status, 403);
   assert.deepEqual(payload, { error: 'FORBIDDEN_ORIGIN' });
+});
+
+test('MCP connect and disconnect routes reject forbidden origin', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const connectResponse = await request(app, {
+    method: 'POST',
+    url: '/api/mcp/servers/filesystem/connect',
+    headers: {
+      origin: 'https://evil.example',
+      'content-type': 'application/json'
+    },
+    body: {}
+  });
+  const disconnectResponse = await request(app, {
+    method: 'POST',
+    url: '/api/mcp/servers/filesystem/disconnect',
+    headers: {
+      origin: 'https://evil.example',
+      'content-type': 'application/json'
+    },
+    body: {}
+  });
+
+  assert.equal(connectResponse.status, 403);
+  assert.deepEqual(connectResponse.json(), { error: 'FORBIDDEN_ORIGIN' });
+  assert.equal(disconnectResponse.status, 403);
+  assert.deepEqual(disconnectResponse.json(), { error: 'FORBIDDEN_ORIGIN' });
 });
 
 test('PUT /api/prompt-modules rejects non-array payload', async () => {
@@ -588,7 +1247,55 @@ test('static / returns the HTML page', async () => {
 
   assert.equal(response.status, 200);
   assert.match(response.headers['content-type'], /^text\/html/);
+  assert.equal(response.headers['cache-control'], 'no-store');
   assert.match(response.text, /本地角色扮演 Agent/);
+});
+
+test('GET /api/proxy-image rejects forbidden origin', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    url: '/api/proxy-image?url=https://example.com/image.png',
+    headers: { origin: 'https://evil.example' }
+  });
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(response.json(), { error: 'FORBIDDEN_ORIGIN' });
+});
+
+test('GET /api/proxy-image rejects non-https protocols', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, { url: '/api/proxy-image?url=http://example.com/image.png' });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_URL' });
+});
+
+test('GET /api/proxy-image rejects private network addresses', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const targets = [
+    'https://127.0.0.1/image.png',
+    'https://localhost/image.png',
+    'https://169.254.169.254/latest/meta-data/',
+    'https://10.0.0.1/image.png',
+    'https://192.168.1.1/image.png'
+  ];
+  for (const target of targets) {
+    const response = await request(app, { url: `/api/proxy-image?url=${encodeURIComponent(target)}` });
+    assert.equal(response.status, 400, `${target} should be blocked`);
+    assert.deepEqual(response.json(), { error: 'INVALID_URL' });
+  }
+});
+
+test('GET /api/proxy-image rejects malformed url', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, { url: '/api/proxy-image?url=not-a-url' });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_URL' });
 });
 
 test('static PNG assets return image/png content type', async () => {
@@ -601,6 +1308,7 @@ test('static PNG assets return image/png content type', async () => {
 
   assert.equal(response.status, 200);
   assert.match(response.headers['content-type'], /^image\/png/);
+  assert.equal(response.headers['cache-control'], 'public, max-age=86400');
 });
 
 test('static path traversal attempt returns non-200 and does not expose files', async () => {
@@ -731,4 +1439,23 @@ function createV2CardPayload() {
       }
     }
   };
+}
+
+function createPngWithTextChunk(keyword, text) {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    createChunk('tEXt', Buffer.from(`${keyword}\0${text}`, 'latin1')),
+    createChunk('IEND', Buffer.alloc(0))
+  ]);
+}
+
+function createChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  return Buffer.concat([
+    length,
+    Buffer.from(type, 'ascii'),
+    data,
+    Buffer.alloc(4)
+  ]);
 }
