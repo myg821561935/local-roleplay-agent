@@ -19,6 +19,24 @@ http://127.0.0.1:5178
 
 也可以直接双击项目根目录的 `启动本地角色扮演.command`。运行日志与 PID 保存在 `.runtime/`。
 
+## v0.2 资源库与剧本工坊
+
+- 角色卡、世界书和 Prompt 导入后先进入本地资源库，不会直接覆盖当前会话。
+- 导入体检会显示格式适配器、完整度、重复项、同名冲突和仅与可执行配置有关的风险提示。
+- 资源保留来源、作者、链接、许可证、标签与内容指纹，便于回溯类脑社区等外部素材。
+- 剧本工坊可选择一个内置剧本作为规则与视觉基底，再组合角色、世界书和 Prompt，生成独立自定义剧本。
+- 自定义剧本沿用基底的主题和背景，但会话中的世界书、角色卡和规则身份保持独立。
+- 当前内置 Character Card V2、SillyTavern Lorebook、文本/YAML 和社区通用 JSON 适配器；后续可按真实样本继续增加专用适配器。
+
+资源库数据保存在：
+
+```text
+data/library/resources/
+data/library/packs/
+```
+
+完整说明见 `docs/release-v0.2.md`。
+
 ## v0.1 发布加固
 
 - `npm run release:check`：执行完整测试并核对 Node、应用版本、数据版本和启动文件。
@@ -27,7 +45,7 @@ http://127.0.0.1:5178
 - “本地备份与恢复”生成带 SHA-256 校验的完整数据快照，恢复前自动创建安全备份。
 - 命令行可使用 `npm run backup`、`npm run backup:list` 和 `npm run restore -- <backup-id> --yes`。
 
-完整发布与恢复说明见 `docs/release-v0.1.md`。
+基础发布与恢复说明见 `docs/release-v0.1.md`。
 
 ## Provider 配置
 

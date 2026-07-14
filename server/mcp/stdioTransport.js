@@ -4,6 +4,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { APP_VERSION } from '../releaseInfo.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -42,7 +43,7 @@ export class StdioMcpClient {
           params: {
             protocolVersion: PROTOCOL_VERSION,
             capabilities: {},
-            clientInfo: { name: 'local-roleplay-agent', version: '0.1.0' }
+            clientInfo: { name: 'local-roleplay-agent', version: APP_VERSION }
           }
         }).then(() => {
           this.sendNotification({ jsonrpc: '2.0', method: 'notifications/initialized' });

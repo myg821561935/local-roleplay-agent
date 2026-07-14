@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地角色扮演 Agent</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/styles.css?v=20260714-1">
   </head>
   <body>
@@ -113,7 +114,7 @@
             <summary>本地备份与恢复</summary>
             <div class="release-data-controls">
               <div class="release-data-heading">
-                <strong id="release-version">v0.1.0 · 数据 v-</strong>
+                <strong id="release-version">v0.2.0 · 数据 v-</strong>
                 <span>快照包含 Provider 密钥</span>
               </div>
               <button id="create-backup" class="primary-button compact" type="button">立即备份</button>
@@ -434,7 +435,7 @@
             <button class="tab-button" type="button" data-tab="usage" data-mode-groups="debug" data-help-key="usage" role="tab" aria-selected="false">用量</button>
             <button class="tab-button" type="button" data-tab="worldbook" data-mode-groups="settings" data-help-key="worldbook" role="tab" aria-selected="false">世界书</button>
             <button class="tab-button" type="button" data-tab="character" data-mode-groups="settings" data-help-key="character" role="tab" aria-selected="false">角色卡</button>
-            <button class="tab-button" type="button" data-tab="sources" data-mode-groups="settings" data-help-key="sources" role="tab" aria-selected="false">素材源</button>
+            <button class="tab-button" type="button" data-tab="sources" data-mode-groups="settings" data-help-key="sources" role="tab" aria-selected="false">资源库</button>
             <button class="tab-button" type="button" data-tab="prompt" data-mode-groups="settings" data-help-key="prompt" role="tab" aria-selected="false">Prompt</button>
             <button class="tab-button" type="button" data-tab="persona" data-mode-groups="settings" data-help-key="persona" role="tab" aria-selected="false">人设</button>
             <button class="tab-button" type="button" data-tab="quickreplies" data-mode-groups="settings" data-help-key="quickreplies" role="tab" aria-selected="false">快捷</button>
@@ -612,32 +613,118 @@
             </details>
           </section>
 
-          <section class="tab-pane" data-pane="sources" role="tabpanel" hidden>
-            <div class="source-search">
-              <label>
-                <span>站点</span>
-                <select id="source-select" class="form-input">
-                  <option value="chub">Chub / CharacterHub</option>
-                  <option value="aicharactercards">AICharacterCards</option>
-                  <option value="risurealm">RisuRealm</option>
-                  <option value="charavault">CharaVault</option>
-                </select>
-              </label>
-              <label>
-                <span>类型</span>
-                <select id="source-kind" class="form-input">
-                  <option value="characters">角色卡</option>
-                  <option value="lorebooks">世界书</option>
-                </select>
-              </label>
-              <label class="source-query-label">
-                <span>关键词 / URL / ID</span>
-                <input id="source-query" class="form-input" autocomplete="off" placeholder="xianxia、wuxia、角色页 URL">
-              </label>
-              <button id="source-search" class="primary-button compact" type="button">搜索</button>
-              <span id="source-status" class="status-text"></span>
+          <section class="tab-pane resource-workbench" data-pane="sources" role="tabpanel" hidden>
+            <header class="resource-workbench-header">
+              <div>
+                <strong>创作资源库</strong>
+                <span id="resource-adapter-summary">正在载入适配器</span>
+              </div>
+              <button id="refresh-resource-library" class="ghost-button compact" type="button">刷新</button>
+            </header>
+
+            <div class="resource-metrics" aria-label="资源库摘要">
+              <div><strong id="resource-count-all">0</strong><span>素材</span></div>
+              <div><strong id="resource-count-character">0</strong><span>角色</span></div>
+              <div><strong id="resource-count-worldbook">0</strong><span>世界书</span></div>
+              <div><strong id="resource-count-pack">0</strong><span>自定义剧本</span></div>
             </div>
-            <div id="source-results" class="source-results"></div>
+
+            <div class="resource-view-switch" role="tablist" aria-label="资源工作台视图">
+              <button class="resource-view-button active" type="button" data-resource-view="library" role="tab" aria-selected="true">本地素材</button>
+              <button class="resource-view-button" type="button" data-resource-view="online" role="tab" aria-selected="false">在线采集</button>
+              <button class="resource-view-button" type="button" data-resource-view="composer" role="tab" aria-selected="false">剧本工坊</button>
+            </div>
+
+            <section class="resource-view active" data-resource-pane="library">
+              <div class="resource-library-toolbar">
+                <select id="resource-kind-filter" class="form-input" aria-label="筛选素材类型">
+                  <option value="">全部类型</option>
+                  <option value="character">角色卡</option>
+                  <option value="worldbook">世界书</option>
+                  <option value="prompt">Prompt</option>
+                </select>
+                <input id="resource-query" class="form-input" type="search" autocomplete="off" placeholder="搜索标题、标签或作者">
+              </div>
+              <div id="resource-library-status" class="resource-inline-status status-text"></div>
+              <div id="resource-library-list" class="resource-library-list"></div>
+            </section>
+
+            <section class="resource-view" data-resource-pane="online" hidden>
+              <div class="source-search">
+                <label>
+                  <span>站点</span>
+                  <select id="source-select" class="form-input">
+                    <option value="chub">Chub / CharacterHub</option>
+                    <option value="aicharactercards">AICharacterCards</option>
+                    <option value="risurealm">RisuRealm</option>
+                    <option value="charavault">CharaVault</option>
+                  </select>
+                </label>
+                <label>
+                  <span>类型</span>
+                  <select id="source-kind" class="form-input">
+                    <option value="characters">角色卡</option>
+                    <option value="lorebooks">世界书</option>
+                  </select>
+                </label>
+                <label class="source-query-label">
+                  <span>关键词 / URL / ID</span>
+                  <input id="source-query" class="form-input" autocomplete="off" placeholder="xianxia、wuxia、角色页 URL">
+                </label>
+                <button id="source-search" class="primary-button compact" type="button">搜索</button>
+                <span id="source-status" class="status-text"></span>
+              </div>
+              <div id="source-results" class="source-results"></div>
+            </section>
+
+            <section class="resource-view resource-composer" data-resource-pane="composer" hidden>
+              <form id="resource-pack-form" class="resource-pack-form">
+                <div class="resource-form-heading">
+                  <strong>组合自定义剧本</strong>
+                  <span>继承题材规则，再叠加本地素材</span>
+                </div>
+                <label>
+                  <span>剧本名称</span>
+                  <input id="resource-pack-title" class="form-input" required maxlength="80" placeholder="例如：听雨仙途">
+                </label>
+                <label>
+                  <span>题材基线</span>
+                  <select id="resource-pack-base" class="form-input">
+                    <option value="xuanhuan">神荒玄幻</option>
+                    <option value="lingyi">民俗灵异</option>
+                    <option value="mingmo">明末风云</option>
+                    <option value="xianxia">太虚仙侠</option>
+                    <option value="yingxiongzhi">英雄志群像</option>
+                  </select>
+                </label>
+                <label>
+                  <span>主角色卡</span>
+                  <select id="resource-pack-character" class="form-input">
+                    <option value="">沿用题材角色</option>
+                  </select>
+                </label>
+                <label>
+                  <span>剧本说明</span>
+                  <textarea id="resource-pack-description" class="form-input" rows="2" maxlength="300" placeholder="记录这套组合的创作方向"></textarea>
+                </label>
+                <label class="resource-toggle-row">
+                  <input id="resource-pack-include-base" type="checkbox" checked>
+                  <span>保留基线世界书与 Prompt</span>
+                </label>
+                <fieldset class="resource-picker-fieldset">
+                  <legend>追加世界书</legend>
+                  <div id="resource-pack-worldbooks" class="resource-picker-list"></div>
+                </fieldset>
+                <fieldset class="resource-picker-fieldset">
+                  <legend>追加 Prompt</legend>
+                  <div id="resource-pack-prompts" class="resource-picker-list"></div>
+                </fieldset>
+                <button id="create-resource-pack" class="primary-button" type="submit">生成剧本</button>
+                <span id="resource-pack-status" class="status-text"></span>
+              </form>
+              <div class="resource-pack-divider"><span>已组合剧本</span></div>
+              <div id="resource-pack-list" class="resource-pack-list"></div>
+            </section>
           </section>
 
           <section class="tab-pane" data-pane="prompt" role="tabpanel" hidden>

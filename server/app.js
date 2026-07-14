@@ -23,6 +23,8 @@ import { BackupError, BackupService } from './services/backupService.js';
 import { readDataSchemaStatus } from './data/migrations.js';
 import { APP_NAME, APP_VERSION, DATA_SCHEMA_VERSION, RELEASE_CHANNEL } from './releaseInfo.js';
 import { sanitizeProviderTestError, testProviderConnection } from './services/providerTestService.js';
+import { ResourceLibraryService } from './services/resourceLibraryService.js';
+import { listResourceAdapters } from './resources/resourceAdapters.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -59,6 +61,7 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   const configService = new ConfigService(store);
   const sessionService = new SessionService(store);
   const assetService = new AssetService(store);
+  const resourceLibraryService = new ResourceLibraryService(store);
   const importSourceService = new ImportSourceService({ fetchImpl });
   const providerClient = providerClientOverride || buildProviderClient();
   const agentService = new AgentService({ configService, sessionService, providerClient });
@@ -98,6 +101,7 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
           sessionService,
           agentService,
           assetService,
+          resourceLibraryService,
           importSourceService,
           mcpRegistry,
           backupService,
@@ -114,7 +118,7 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   };
 }
 
-async function handleApi({ req, res, url, appRoot, configService, sessionService, agentService, assetService, importSourceService, mcpRegistry, backupService, providerClient, fetchImpl }) {
+async function handleApi({ req, res, url, appRoot, configService, sessionService, agentService, assetService, resourceLibraryService, importSourceService, mcpRegistry, backupService, providerClient, fetchImpl }) {
   if (req.method === 'GET' && url.pathname === '/api/health') {
     const dataSchema = await readDataSchemaStatus(appRoot);
     writeJson(res, 200, {
@@ -208,6 +212,74 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/resource-library/adapters') {
+    writeJson(res, 200, { adapters: listResourceAdapters() });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/resource-library/resources') {
+    const resources = await resourceLibraryService.listResources({
+      kind: url.searchParams.get('kind') || '',
+      query: url.searchParams.get('q') || ''
+    });
+    writeJson(res, 200, { resources });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/resource-library/packs') {
+    writeJson(res, 200, { packs: await resourceLibraryService.listPacks() });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/resource-library/resources/prompt') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    try {
+      const result = await resourceLibraryService.savePromptResource(body);
+      writeJson(res, 200, result);
+    } catch (error) {
+      throw new ApiError(400, 'RESOURCE_PROMPT_INVALID', error.message);
+    }
+    return;
+  }
+
+  const resourceDeleteRoute = matchResourceLibraryDeleteRoute(url.pathname);
+  if (resourceDeleteRoute && req.method === 'DELETE') {
+    validateMutatingRequest(req);
+    const removed = await resourceLibraryService.removeResource(resourceDeleteRoute.resourceId);
+    if (!removed) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
+    writeJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/resource-library/packs') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const basePack = body.basePackId
+      ? await resolveContentPack(resourceLibraryService, body.basePackId)
+      : null;
+    if (body.basePackId && !basePack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    try {
+      const pack = await resourceLibraryService.createPack(body, { basePack });
+      writeJson(res, 200, { pack, summary: summarizeResolvedPack(pack) });
+    } catch (error) {
+      if (String(error.message || '').startsWith('RESOURCE_NOT_FOUND:')) {
+        throw new ApiError(404, 'RESOURCE_NOT_FOUND', error.message.split(':').slice(1).join(':'));
+      }
+      throw new ApiError(400, 'RESOURCE_PACK_INVALID', error.message);
+    }
+    return;
+  }
+
+  const customPackDeleteRoute = matchCustomPackDeleteRoute(url.pathname);
+  if (customPackDeleteRoute && req.method === 'DELETE') {
+    validateMutatingRequest(req);
+    const removed = await resourceLibraryService.removePack(customPackDeleteRoute.packId);
+    if (!removed) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    writeJson(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
     const sessions = await sessionService.listSessions();
     writeJson(res, 200, { sessions });
@@ -255,7 +327,7 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     let title = body.title || '新的故事';
 
     if (body.packId) {
-       const pack = getContentPack(body.packId);
+       const pack = await resolveContentPack(resourceLibraryService, body.packId);
        if (pack) {
          config.characterCard = pack.characterCard;
          config.worldBook = pack.worldBook;
@@ -295,13 +367,25 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
   }
 
   if (req.method === 'GET' && url.pathname === '/api/content-packs') {
-    writeJson(res, 200, { contentPacks: listContentPackSummaries() });
+    const customPacks = await resourceLibraryService.listPacks();
+    writeJson(res, 200, { contentPacks: [...listContentPackSummaries(), ...customPacks] });
     return;
   }
 
   const contentPackCharactersRoute = matchContentPackCharactersRoute(url.pathname);
   if (contentPackCharactersRoute && req.method === 'GET') {
-    const characterPresets = listContentPackCharacters(contentPackCharactersRoute.packId);
+    let characterPresets = listContentPackCharacters(contentPackCharactersRoute.packId);
+    if (!characterPresets) {
+      const pack = await resourceLibraryService.getPack(contentPackCharactersRoute.packId);
+      if (pack) {
+        characterPresets = [{
+          id: `${pack.id}_default_character`,
+          name: pack.characterCard?.name || '未命名角色',
+          role: pack.characterCard?.role || '',
+          characterCard: pack.characterCard
+        }];
+      }
+    }
     if (!characterPresets) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
     writeJson(res, 200, { characterPresets });
     return;
@@ -331,7 +415,8 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
       configService,
       sessionService,
       body,
-      packId: contentPackApplyRoute.packId
+      packId: contentPackApplyRoute.packId,
+      resourceLibraryService
     });
     writeJson(res, 200, result);
     return;
@@ -785,6 +870,7 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
     const preview = previewImport(body.payload ?? body);
+    preview.inspection = await resourceLibraryService.inspectPreview(preview, body.source || {});
     writeJson(res, 200, { preview });
     return;
   }
@@ -792,7 +878,7 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
   if (req.method === 'POST' && url.pathname === '/api/import/commit') {
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
-    const result = await commitImport({ assetService, body });
+    const result = await commitImport({ assetService, resourceLibraryService, body });
     writeJson(res, 200, result);
     return;
   }
@@ -1079,9 +1165,11 @@ function previewImport(payload) {
   }
 }
 
-async function commitImport({ assetService, body }) {
+async function commitImport({ assetService, resourceLibraryService, body }) {
   const payload = body.payload ?? body;
   const preview = previewImport(payload);
+  const libraryResult = await resourceLibraryService.savePreview(preview, body.source || {});
+  preview.inspection = libraryResult.inspection;
   if (preview.kind === 'character-card') {
     const characterCard = await assetService.saveCharacter(preview.importData.characterCard);
     let worldBook = [];
@@ -1093,12 +1181,23 @@ async function commitImport({ assetService, body }) {
        );
        worldBook = wbAsset.entries;
     }
-    return { preview, characterCard, worldBook, importedWorldBookCount: worldBook.length };
+    return {
+      preview,
+      characterCard,
+      worldBook,
+      importedWorldBookCount: worldBook.length,
+      libraryResources: libraryResult.resources
+    };
   }
 
   if (preview.kind === 'world-book') {
     const worldBook = await assetService.saveWorldBook(null, preview.title || '导入的世界书', preview.importData.worldBook);
-    return { preview, worldBook, importedWorldBookCount: worldBook.entries?.length || 0 };
+    return {
+      preview,
+      worldBook,
+      importedWorldBookCount: worldBook.entries?.length || 0,
+      libraryResources: libraryResult.resources
+    };
   }
 
   throw new ApiError(400, 'INVALID_IMPORT_PAYLOAD');
@@ -1235,8 +1334,8 @@ async function saveMemoryFacts({ sessionService, body }) {
   return { facts, session };
 }
 
-async function applyContentPack({ configService, sessionService, body, packId }) {
-  const pack = getContentPack(packId);
+async function applyContentPack({ configService, sessionService, body, packId, resourceLibraryService }) {
+  const pack = await resolveContentPack(resourceLibraryService, packId);
   if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
 
   const [promptModules, worldBook, characterCard, session] = await Promise.all([
@@ -1272,12 +1371,38 @@ async function applyContentPack({ configService, sessionService, body, packId })
       id: pack.id,
       title: pack.title,
       description: pack.description,
-      ruleSystem: pack.ruleSystem
+      ruleSystem: pack.ruleSystem,
+      custom: pack.custom === true,
+      visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
+      basePackId: pack.resourceManifest?.basePackId || ''
     },
     promptModules,
     worldBook,
     characterCard,
     session: nextSession
+  };
+}
+
+async function resolveContentPack(resourceLibraryService, packId) {
+  return getContentPack(packId) || await resourceLibraryService.getPack(packId);
+}
+
+function summarizeResolvedPack(pack) {
+  return {
+    id: pack.id,
+    title: pack.title,
+    description: pack.description,
+    sessionTitle: pack.sessionTitle,
+    characterName: pack.characterCard?.name || '',
+    custom: pack.custom === true,
+    visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
+    basePackId: pack.resourceManifest?.basePackId || '',
+    counts: {
+      promptModules: pack.promptModules?.length || 0,
+      worldBook: pack.worldBook?.length || 0,
+      memoryCards: pack.memory?.memoryCards?.length || 0,
+      characterPresets: 1
+    }
   };
 }
 
@@ -1454,6 +1579,18 @@ function matchContentPackApplyRoute(pathname) {
 
 function matchContentPackCharactersRoute(pathname) {
   const match = pathname.match(/^\/api\/content-packs\/([^/]+)\/characters$/);
+  if (!match) return null;
+  return { packId: decodeURIComponent(match[1]) };
+}
+
+function matchResourceLibraryDeleteRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)$/);
+  if (!match) return null;
+  return { resourceId: decodeURIComponent(match[1]) };
+}
+
+function matchCustomPackDeleteRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/packs\/([^/]+)$/);
   if (!match) return null;
   return { packId: decodeURIComponent(match[1]) };
 }

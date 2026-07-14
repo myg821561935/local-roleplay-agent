@@ -20,7 +20,7 @@ test('backup service restores data and creates a pre-restore safety snapshot', a
   assert.equal(restored.name, '旧角色');
   assert.equal(result.restored.id, backup.id);
   assert.match(result.safetyBackup.reason, /^pre-restore:/);
-  assert.equal(result.dataSchemaVersion, 1);
+  assert.equal(result.dataSchemaVersion, 2);
   assert.equal(listed.backups.length, 2);
   assert.ok(listed.backups.find((item) => item.id === result.safetyBackup.id));
 });

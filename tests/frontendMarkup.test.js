@@ -193,7 +193,7 @@ test('chat background customization is explicit and not owned by themes', async 
   assert.match(app, /function syncSessionVisualState/);
   assert.match(app, /const visualContentPack = state\.session\?\.settings\?\.visualContentPack/);
   assert.match(app, /const candidates = \[selectedPack, visualContentPack, sessionGenre/);
-  assert.match(app, /const visualPreset = await linkContentPackVisuals\(packId, \{ persist: true \}\)/);
+  assert.match(app, /const visualPreset = await linkContentPackVisuals\(visualPackId, \{ persist: true \}\)/);
   assert.match(app, /已应用到会话：\$\{payload\.appliedPack\?\.title \|\| packId\} · 视觉：\$\{visualPreset\.label\}/);
   assert.match(app, /preset\.url\s*\|\|/);
   assert.match(app, /updateBackgroundModeUi/);
@@ -208,6 +208,30 @@ test('chat background customization is explicit and not owned by themes', async 
   assert.doesNotMatch(css, /\.chat-panel::before\s*\{[\s\S]*background-image:\s*var\(--chat-bg-image,\s*none\);/);
   assert.match(css, /grid-template-rows:\s*minmax\(320px,\s*45vh\)\s*minmax\(0,\s*1fr\);/);
   assert.match(css, /\.provider-scroll\s*\{[\s\S]*overflow-y:\s*auto;/);
+});
+
+test('v0.2 resource workbench keeps community imports, diagnostics and script composition in one adaptive panel', async () => {
+  const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(html, /data-tab="sources"[^>]*>资源库</);
+  assert.match(html, /data-resource-view="library"/);
+  assert.match(html, /data-resource-view="online"/);
+  assert.match(html, /data-resource-view="composer"/);
+  assert.match(html, /id="resource-pack-form"/);
+  assert.match(html, /id="resource-pack-worldbooks"/);
+  assert.match(html, /id="resource-pack-prompts"/);
+  assert.match(app, /\/api\/resource-library\/resources/);
+  assert.match(app, /\/api\/resource-library\/packs/);
+  assert.match(app, /function renderResourceWorkbench/);
+  assert.match(app, /function createResourcePack/);
+  assert.match(app, /preview\.inspection/);
+  assert.match(app, /payload\.appliedPack\?\.visualPackId \|\| packId/);
+  assert.match(css, /\.inspector-panel\.resource-workbench-open:not\(\.collapsed\)\s*\{[\s\S]*width:\s*420px/);
+  assert.match(css, /\.resource-view\s*\{[\s\S]*min-height:\s*0;[\s\S]*overflow:\s*hidden/);
+  assert.match(css, /\.resource-library-list[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.inspector-panel\.resource-workbench-open:not\(\.collapsed\)[\s\S]*width:\s*auto/);
 });
 
 test('provider configuration uses an internal scroll body for expandable tools', async () => {

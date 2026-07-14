@@ -16,9 +16,11 @@ const requiredFiles = [
   'server/app.js',
   'server/data/migrations.js',
   'server/services/backupService.js',
+  'server/services/resourceLibraryService.js',
+  'server/resources/resourceAdapters.js',
   'scripts/start-local.sh',
   '启动本地角色扮演.command',
-  'docs/release-v0.1.md'
+  'docs/release-v0.2.md'
 ];
 
 assert(nodeMajor >= MIN_NODE_MAJOR, `Node.js ${MIN_NODE_MAJOR}+ required; current ${process.versions.node}`);

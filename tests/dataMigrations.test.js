@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { migrateData, readDataSchemaStatus } from '../server/data/migrations.js';
 
-test('data migrations establish the v0.1 schema and are idempotent', async () => {
+test('data migrations establish the v0.2 schema and are idempotent', async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), 'agent-migration-'));
   await mkdir(path.join(rootDir, 'data', 'config'), { recursive: true });
   await writeFile(path.join(rootDir, 'data', 'config', 'example.json'), '{"ok":true}\n', 'utf8');
@@ -14,11 +14,11 @@ test('data migrations establish the v0.1 schema and are idempotent', async () =>
   const second = await migrateData({ rootDir });
   const status = await readDataSchemaStatus(rootDir);
 
-  assert.deepEqual(first.applied, ['0001-v0.1-release-baseline']);
+  assert.deepEqual(first.applied, ['0001-v0.1-release-baseline', '0002-v0.2-resource-library']);
   assert.deepEqual(second.applied, []);
-  assert.equal(status.currentVersion, 1);
+  assert.equal(status.currentVersion, 2);
   assert.equal(status.ready, true);
-  assert.equal(JSON.parse(await readFile(path.join(rootDir, 'data', '.schema.json'), 'utf8')).schemaVersion, 1);
+  assert.equal(JSON.parse(await readFile(path.join(rootDir, 'data', '.schema.json'), 'utf8')).schemaVersion, 2);
 });
 
 test('data migration stops before versioning invalid JSON', async () => {
@@ -39,5 +39,5 @@ test('data migration refuses a schema newer than the application', async () => {
   await mkdir(path.join(rootDir, 'data'), { recursive: true });
   await writeFile(path.join(rootDir, 'data', '.schema.json'), '{"schemaVersion":99}\n', 'utf8');
 
-  await assert.rejects(() => migrateData({ rootDir }), /DATA_SCHEMA_NEWER_THAN_APP:99>1/);
+  await assert.rejects(() => migrateData({ rootDir }), /DATA_SCHEMA_NEWER_THAN_APP:99>2/);
 });

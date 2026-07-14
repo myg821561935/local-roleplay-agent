@@ -127,6 +127,8 @@ test('POST /api/import/preview parses Character Card V2 without saving state', a
   assert.equal(payload.preview.kind, 'character-card');
   assert.equal(payload.preview.summary.characterName, '沈观澜');
   assert.equal(payload.preview.summary.worldBookCount, 1);
+  assert.equal(payload.preview.inspection.adapter.id, 'character-card-v2');
+  assert.equal(payload.preview.inspection.resources.length, 2);
   assert.equal(state.config.characterCard.name, '未命名主角');
 });
 
@@ -241,6 +243,83 @@ test('POST /api/import/commit saves standalone world book import', async () => {
   assert.equal(payload.preview.kind, 'world-book');
   assert.equal(imported.length, 1);
   assert.equal(imported[0].title, '听雨楼');
+  assert.equal(payload.libraryResources.length, 1);
+  const library = (await request(app, { url: '/api/resource-library/resources' })).json();
+  assert.equal(library.resources.length, 1);
+  assert.equal(library.resources[0].title, '导入的世界书');
+});
+
+test('v0.2 resource library deduplicates imports and composes an applicable custom pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const importBody = {
+    payload: {
+      fileName: 'shen.json',
+      mimeType: 'application/json',
+      data: JSON.stringify(createV2CardPayload())
+    },
+    source: {
+      adapterId: 'liunao-community-generic',
+      site: '类脑社区',
+      author: '社区作者',
+      fileName: 'shen.json'
+    }
+  };
+  const firstImport = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: importBody
+  });
+  const secondImport = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: importBody
+  });
+  const firstPayload = firstImport.json();
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const character = resources.find((item) => item.kind === 'character');
+  const worldBook = resources.find((item) => item.kind === 'worldbook');
+
+  assert.equal(firstImport.status, 200);
+  assert.equal(firstPayload.preview.inspection.adapter.id, 'liunao-community-generic');
+  assert.equal(secondImport.json().libraryResources.every((item) => item.importStatus === 'duplicate'), true);
+  assert.equal(resources.length, 2);
+  assert.equal(character.source.site, '类脑社区');
+
+  const createPackResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '听雨仙途',
+      basePackId: 'xianxia',
+      characterResourceId: character.id,
+      worldBookResourceIds: [worldBook.id]
+    }
+  });
+  const createdPack = createPackResponse.json().pack;
+  assert.equal(createPackResponse.status, 200);
+  assert.equal(createdPack.characterCard.name, '沈观澜');
+  assert.equal(createdPack.visualPackId, 'xianxia');
+
+  const listedPacks = (await request(app, { url: '/api/content-packs' })).json().contentPacks;
+  assert.ok(listedPacks.find((pack) => pack.id === createdPack.id && pack.custom === true));
+
+  const applyResponse = await request(app, {
+    method: 'POST',
+    url: `/api/content-packs/${createdPack.id}/apply`,
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const applied = applyResponse.json();
+  assert.equal(applyResponse.status, 200);
+  assert.equal(applied.appliedPack.visualPackId, 'xianxia');
+  assert.equal(applied.characterCard.name, '沈观澜');
+  assert.equal(applied.session.memory.resourcePackId, createdPack.id);
+  assert.equal(applied.session.memory.ruleSystem.contentPackId, createdPack.id);
+  assert.ok(applied.worldBook.find((entry) => entry.title === '镇武司暗线'));
+  assert.equal((await request(app, { url: '/api/state' })).json().config.characterCard.name, '沈观澜');
 });
 
 test('GET /api/content-packs lists linked genre packs', async () => {
@@ -783,10 +862,10 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.1.0',
-    releaseChannel: 'stable-local',
-    dataSchemaVersion: 1,
-    targetDataSchemaVersion: 1
+    version: '0.2.0',
+    releaseChannel: 'preview-local',
+    dataSchemaVersion: 2,
+    targetDataSchemaVersion: 2
   });
 });
 

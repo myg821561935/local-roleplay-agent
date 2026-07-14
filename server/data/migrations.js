@@ -17,6 +17,18 @@ const migrations = [
       ]);
       await validateJsonFiles(dataDir);
     }
+  },
+  {
+    id: '0002-v0.2-resource-library',
+    from: 1,
+    to: 2,
+    async up({ dataDir }) {
+      await Promise.all([
+        mkdir(path.join(dataDir, 'library', 'resources'), { recursive: true }),
+        mkdir(path.join(dataDir, 'library', 'packs'), { recursive: true })
+      ]);
+      await validateJsonFiles(dataDir);
+    }
   }
 ];
 
