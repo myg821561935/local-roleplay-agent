@@ -8,6 +8,7 @@ import { VectorMemoryService } from '../agent/vectorMemory.js';
 import { resolveNarrativeContext } from '../agent/narrativeControl.js';
 
 const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
+const INTERACTIVE_PROVIDER_TASKS = new Set(['chat', 'rewrite']);
 
 export class AgentService {
   constructor({ configService, sessionService, providerClient, vectorMemoryService }) {
@@ -60,7 +61,7 @@ export class AgentService {
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
     const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider).slice(1);
+    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
 
     const userMessage = createMessage('user', content);
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
@@ -106,7 +107,7 @@ export class AgentService {
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
     const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider).slice(1);
+    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
     const userMessage = createMessage('user', content);
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
@@ -128,15 +129,28 @@ export class AgentService {
       options: session.settings
     });
 
-    const assistantResult = await this.completeAssistantContentStream({ provider, messages: assembled.messages, onToken, fallbackChain });
+    const assistantResult = await this.completeAssistantContentStream({
+      provider,
+      messages: assembled.messages,
+      onToken,
+      fallbackChain,
+      taskKey: 'chat'
+    });
     const assistantContent = assistantResult.content;
     const speaker = extractSpeaker(assistantContent);
     const parsedReply = extractRecommendedActions(assistantContent);
+    const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
     const assistantMessage = createMessage('assistant', parsedReply.content, {
       recommendedActions: parsedReply.recommendedActions,
-      usage: buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult })
+      usage
     });
     if (speaker) assistantMessage.speaker = speaker;
+    appendUsageLedgerEntry(session, {
+      taskKey: 'chat',
+      messageId: assistantMessage.id,
+      usage,
+      routing: assistantResult.routing
+    });
 
     session.messages.push(userMessage, assistantMessage);
     session.memory = appendTurnEvent({
@@ -152,13 +166,14 @@ export class AgentService {
     return { session, reply: assistantMessage, debug: assembled };
   }
 
-  async completeAssistantContentStream({ provider, messages, onToken, fallbackChain = [] }) {
+  async completeAssistantContentStream({ provider, messages, onToken, fallbackChain = [], taskKey = 'chat' }) {
     if (typeof this.providerClient.stream === 'function') {
       const result = await this.streamWithFallback({
         primaryProvider: provider,
         fallbackChain,
         messages,
-        onToken
+        onToken,
+        taskKey
       });
       return result;
     }
@@ -166,7 +181,8 @@ export class AgentService {
     const result = await this.completeWithFallback({
       primaryProvider: provider,
       fallbackChain,
-      messages
+      messages,
+      taskKey
     });
     const parsed = extractRecommendedActions(result.content);
     for (const token of chunkText(parsed.content)) {
@@ -202,7 +218,7 @@ export class AgentService {
     if (message.role !== 'user') throw new Error('UNSUPPORTED_MESSAGE_ROLE');
 
     const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider).slice(1);
+    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
     message.swipes = normalizeSwipes(message.swipes, message.content);
     const newContent = String(content || '');
     if (!message.swipes.includes(newContent)) message.swipes.push(newContent);
@@ -264,7 +280,7 @@ export class AgentService {
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
     const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider).slice(1);
+    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
     const index = findMessageIndex(session, messageId);
     const assistantMessage = session.messages[index];
     if (assistantMessage.role !== 'assistant') throw new Error('MESSAGE_NOT_ASSISTANT');
@@ -295,6 +311,8 @@ export class AgentService {
     assistantMessage.content = nextSwipe;
     assistantMessage.swipes = swipes;
     assistantMessage.activeSwipeIndex = swipes.length - 1;
+    assistantMessage.usage = result.assistantMessage.usage;
+    linkUsageLedgerEntry(session, assistantMessage.usage?.callId, assistantMessage.id);
     assistantMessage.updatedAt = new Date().toISOString();
     session.messages.push(assistantMessage);
     session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
@@ -325,15 +343,23 @@ export class AgentService {
     const assistantResult = await this.completeWithFallback({
       primaryProvider: provider,
       fallbackChain,
-      messages: assembled.messages
+      messages: assembled.messages,
+      taskKey: 'chat'
     });
     const speaker = extractSpeaker(assistantResult.content);
     const parsedReply = extractRecommendedActions(assistantResult.content);
+    const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
     const assistantMessage = createMessage('assistant', parsedReply.content, {
       recommendedActions: parsedReply.recommendedActions,
-      usage: buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult })
+      usage
     });
     if (speaker) assistantMessage.speaker = speaker;
+    appendUsageLedgerEntry(session, {
+      taskKey: 'chat',
+      messageId: assistantMessage.id,
+      usage,
+      routing: assistantResult.routing
+    });
 
     return { assistantMessage, assembled };
   }
@@ -346,23 +372,35 @@ export class AgentService {
       this.configService.getAll(),
       this.sessionService.getSession(sessionId)
     ]);
-    const provider = getActiveProvider(config, session);
-    const fallbackChain = getProviderChain(config, session, provider).slice(1);
+    const provider = getProviderForTask(config, session, 'rewrite');
+    const fallbackChain = getProviderChain(config, session, provider, 'rewrite').slice(1);
+    const messages = buildRewriteMessages({
+      target,
+      text: sourceText,
+      instruction
+    });
     const result = await this.completeWithFallback({
       primaryProvider: provider,
       fallbackChain,
-      messages: buildRewriteMessages({
-        target,
-        text: sourceText,
-        instruction
-      })
+      messages,
+      taskKey: 'rewrite'
     });
+    const usage = buildUsageSnapshot({ provider, messages, content: result.content, providerResult: result });
+    appendUsageLedgerEntry(session, {
+      taskKey: 'rewrite',
+      usage,
+      routing: result.routing
+    });
+    session.updatedAt = new Date().toISOString();
+    await this.sessionService.saveSession(session);
 
     return {
       target: normalizeRewriteTarget(target),
       text: cleanRewriteText(result.content),
-      providerId: String(provider.id || ''),
-      model: String(provider.model || '')
+      providerId: usage.providerId,
+      model: usage.model,
+      routing: result.routing,
+      usage
     };
   }
 
@@ -403,7 +441,7 @@ export class AgentService {
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
     const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider).slice(1);
+    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
 
     const messages = Array.isArray(session.messages) ? session.messages : [];
     const lastMessage = messages[messages.length - 1];
@@ -434,7 +472,25 @@ export class AgentService {
 
     assembled.messages.push({ role: 'assistant', content: continuationContent });
 
-    const assistantResult = await this.completeAssistantContentStream({ provider, messages: assembled.messages, onToken, fallbackChain });
+    const assistantResult = await this.completeAssistantContentStream({
+      provider,
+      messages: assembled.messages,
+      onToken,
+      fallbackChain,
+      taskKey: 'chat'
+    });
+    const usage = buildUsageSnapshot({
+      provider,
+      assembled,
+      content: assistantResult.content,
+      providerResult: assistantResult
+    });
+    appendUsageLedgerEntry(session, {
+      taskKey: 'chat',
+      messageId: lastMessage.id,
+      usage,
+      routing: assistantResult.routing
+    });
     const continuedContent = continuationContent + '\n' + String(assistantResult.content || '').trim();
     const parsedReply = extractRecommendedActions(continuedContent);
 
@@ -465,12 +521,12 @@ export class AgentService {
       return;
     }
 
-    // fact/summary 可使用独立 provider（任务路由），失败时回退到 chat provider
+    // fact/summary 可使用独立 provider，并按任务回退链或全局回退链重试。
     const config = globalConfig || await this.configService.getAll();
     const factProvider = getProviderForTask(config, session, 'fact');
-    const factFallback = getProviderChain(config, session, factProvider).slice(1);
+    const factFallback = getProviderChain(config, session, factProvider, 'fact').slice(1);
     const summaryProvider = getProviderForTask(config, session, 'summary');
-    const summaryFallback = getProviderChain(config, session, summaryProvider).slice(1);
+    const summaryFallback = getProviderChain(config, session, summaryProvider, 'summary').slice(1);
     const narrativeContext = resolveNarrativeContext({
       memory: session.memory,
       mode: session.settings?.narrativeMode
@@ -484,14 +540,22 @@ export class AgentService {
     const messageWindow = Math.min(40, Math.max(8, unsummarizedTurnCount * 2));
     const recent = session.messages.slice(-messageWindow);
     try {
+      const messages = buildFactExtractionPrompt({
+        worldState: session.memory.worldState,
+        messages: recent,
+        narrativeContext
+      });
       const result = await this.completeWithFallback({
         primaryProvider: provider,
         fallbackChain,
-        messages: buildFactExtractionPrompt({
-          worldState: session.memory.worldState,
-          messages: recent,
-          narrativeContext
-        })
+        messages,
+        taskKey: 'fact'
+      });
+      const usage = buildUsageSnapshot({ provider, messages, content: result.content, providerResult: result });
+      appendUsageLedgerEntry(session, {
+        taskKey: 'fact',
+        usage,
+        routing: result.routing
       });
       session.memory = applyFactExtractionResult(session.memory, result.content, { narrativeContext });
       await this.appendDynamicWorldBookEntries({ session, content: result.content, narrativeContext });
@@ -517,14 +581,22 @@ export class AgentService {
     const messageWindow = Math.min(40, Math.max(8, unsummarizedTurnCount * 2));
     const recent = session.messages.slice(-messageWindow);
     try {
+      const messages = buildSummaryPrompt({
+        rollingSummary: session.memory.rollingSummary,
+        messages: recent,
+        narrativeContext
+      });
       const result = await this.completeWithFallback({
         primaryProvider: provider,
         fallbackChain,
-        messages: buildSummaryPrompt({
-          rollingSummary: session.memory.rollingSummary,
-          messages: recent,
-          narrativeContext
-        })
+        messages,
+        taskKey: 'summary'
+      });
+      const usage = buildUsageSnapshot({ provider, messages, content: result.content, providerResult: result });
+      appendUsageLedgerEntry(session, {
+        taskKey: 'summary',
+        usage,
+        routing: result.routing
       });
       session.memory.rollingSummary = result.content;
       session.memory.unsummarizedTurnCount = 0;
@@ -540,15 +612,39 @@ export class AgentService {
    * 带回退的 complete 调用：主 provider 失败时按顺序尝试 fallbackChain
    * 全部失败时抛出最后一个错误
    */
-  async completeWithFallback({ primaryProvider, fallbackChain = [], messages }) {
+  async completeWithFallback({ primaryProvider, fallbackChain = [], messages, taskKey = 'chat' }) {
     const chain = [primaryProvider, ...fallbackChain].filter(Boolean);
+    const startedAt = Date.now();
+    const attempts = [];
     let lastError;
-    for (const provider of chain) {
+    for (let index = 0; index < chain.length; index += 1) {
+      const provider = chain[index];
+      const attemptStartedAt = Date.now();
       try {
-        return await this.providerClient.complete({ provider, messages });
+        const result = await this.providerClient.complete({ provider, messages });
+        attempts.push(buildRoutingAttempt({ provider, status: 'success', startedAt: attemptStartedAt }));
+        return attachRoutingMetadata(result, {
+          taskKey,
+          primaryProvider,
+          selectedProvider: provider,
+          fallbackUsed: index > 0,
+          attempts,
+          startedAt
+        });
       } catch (error) {
         lastError = error;
+        attempts.push(buildRoutingAttempt({ provider, status: 'error', startedAt: attemptStartedAt, error }));
       }
+    }
+    if (lastError && typeof lastError === 'object') {
+      lastError.routing = buildRoutingMetadata({
+        taskKey,
+        primaryProvider,
+        selectedProvider: null,
+        fallbackUsed: attempts.length > 1,
+        attempts,
+        startedAt
+      });
     }
     throw lastError || new Error('ALL_PROVIDERS_FAILED');
   }
@@ -556,15 +652,39 @@ export class AgentService {
   /**
    * 带回退的 stream 调用
    */
-  async streamWithFallback({ primaryProvider, fallbackChain = [], messages, onToken }) {
+  async streamWithFallback({ primaryProvider, fallbackChain = [], messages, onToken, taskKey = 'chat' }) {
     const chain = [primaryProvider, ...fallbackChain].filter(Boolean);
+    const startedAt = Date.now();
+    const attempts = [];
     let lastError;
-    for (const provider of chain) {
+    for (let index = 0; index < chain.length; index += 1) {
+      const provider = chain[index];
+      const attemptStartedAt = Date.now();
       try {
-        return await this.providerClient.stream({ provider, messages, onToken });
+        const result = await this.providerClient.stream({ provider, messages, onToken });
+        attempts.push(buildRoutingAttempt({ provider, status: 'success', startedAt: attemptStartedAt }));
+        return attachRoutingMetadata(result, {
+          taskKey,
+          primaryProvider,
+          selectedProvider: provider,
+          fallbackUsed: index > 0,
+          attempts,
+          startedAt
+        });
       } catch (error) {
         lastError = error;
+        attempts.push(buildRoutingAttempt({ provider, status: 'error', startedAt: attemptStartedAt, error }));
       }
+    }
+    if (lastError && typeof lastError === 'object') {
+      lastError.routing = buildRoutingMetadata({
+        taskKey,
+        primaryProvider,
+        selectedProvider: null,
+        fallbackUsed: attempts.length > 1,
+        attempts,
+        startedAt
+      });
     }
     throw lastError || new Error('ALL_PROVIDERS_FAILED');
   }
@@ -573,6 +693,37 @@ export class AgentService {
     if (typeof this.vectorMemoryService?.dropIndex !== 'function') return;
     this.vectorMemoryService.dropIndex(session?.id || 'main');
   }
+}
+
+function attachRoutingMetadata(result, options) {
+  const normalizedResult = isPlainObject(result) ? result : { content: String(result || '') };
+  return {
+    ...normalizedResult,
+    routing: buildRoutingMetadata(options)
+  };
+}
+
+function buildRoutingMetadata({ taskKey, primaryProvider, selectedProvider, fallbackUsed, attempts, startedAt }) {
+  return {
+    callId: `call-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    taskKey: String(taskKey || 'chat'),
+    requestedProviderId: String(primaryProvider?.id || ''),
+    providerId: String(selectedProvider?.id || ''),
+    model: String(selectedProvider?.model || ''),
+    fallbackUsed: fallbackUsed === true,
+    attempts: Array.isArray(attempts) ? attempts.map((attempt) => ({ ...attempt })) : [],
+    durationMs: Math.max(0, Date.now() - Number(startedAt || Date.now()))
+  };
+}
+
+function buildRoutingAttempt({ provider, status, startedAt, error }) {
+  return {
+    providerId: String(provider?.id || ''),
+    model: String(provider?.model || ''),
+    status: status === 'success' ? 'success' : 'error',
+    durationMs: Math.max(0, Date.now() - Number(startedAt || Date.now())),
+    error: error ? String(error.message || error).slice(0, 300) : ''
+  };
 }
 
 function createMessage(role, content, extras = {}) {
@@ -640,14 +791,26 @@ function getProviderForTask(config, session = {}, taskKey = 'chat') {
   const providersConfig = config.providers || {};
   const providers = Array.isArray(providersConfig.providers) ? providersConfig.providers : [];
 
-  const sessionProviderId = String(session.settings?.providerId || '').trim();
   const taskProviders = isPlainObject(providersConfig.taskProviders) ? providersConfig.taskProviders : {};
-  const taskProviderId = String(taskProviders[taskKey] || '').trim();
+  const sessionTaskProviders = isPlainObject(session.settings?.taskProviderOverrides)
+    ? session.settings.taskProviderOverrides
+    : {};
+  const sessionTaskProviderId = String(sessionTaskProviders[taskKey] || '').trim();
+  const sessionProviderId = INTERACTIVE_PROVIDER_TASKS.has(taskKey)
+    ? String(session.settings?.providerId || '').trim()
+    : '';
+  const taskProviderId = String(
+    taskProviders[taskKey]
+    || (taskKey === 'rewrite' ? taskProviders.chat : '')
+    || ''
+  ).trim();
   const activeProviderId = String(providersConfig.activeProviderId || '').trim();
 
-  // 优先级：会话覆盖 > 任务专用 > 全局默认 > 列表首位
-  const preferredId = sessionProviderId || taskProviderId || activeProviderId;
-  const provider = providers.find((p) => p.id === preferredId) || providers[0];
+  // 会话模型只覆盖交互任务；后台 fact/summary 仍使用各自的任务路由。
+  const preferredId = sessionTaskProviderId || sessionProviderId || taskProviderId || activeProviderId;
+  const provider = providers.find((p) => p.id === preferredId)
+    || providers.find((p) => p.id === activeProviderId)
+    || providers[0];
   if (!provider) throw new Error('NO_ACTIVE_PROVIDER');
   return provider;
 }
@@ -655,10 +818,23 @@ function getProviderForTask(config, session = {}, taskKey = 'chat') {
 /**
  * 获取 provider 回退链：[主, ...回退]，去重
  */
-function getProviderChain(config, session, primaryProvider) {
+function getProviderChain(config, session, primaryProvider, taskKey = 'chat') {
   const providersConfig = config.providers || {};
   const providers = Array.isArray(providersConfig.providers) ? providersConfig.providers : [];
-  const fallbackIds = Array.isArray(providersConfig.fallbackChain) ? providersConfig.fallbackChain : [];
+  const sessionTaskFallbacks = isPlainObject(session.settings?.taskFallbackOverrides)
+    ? session.settings.taskFallbackOverrides
+    : {};
+  const taskFallbackChains = isPlainObject(providersConfig.taskFallbackChains)
+    ? providersConfig.taskFallbackChains
+    : {};
+  const taskFallbackIds = Array.isArray(sessionTaskFallbacks[taskKey]) && sessionTaskFallbacks[taskKey].length
+    ? sessionTaskFallbacks[taskKey]
+    : (Array.isArray(taskFallbackChains[taskKey]) && taskFallbackChains[taskKey].length
+        ? taskFallbackChains[taskKey]
+        : (taskKey === 'rewrite' && Array.isArray(taskFallbackChains.chat) ? taskFallbackChains.chat : []));
+  const fallbackIds = taskFallbackIds.length
+    ? taskFallbackIds
+    : (Array.isArray(providersConfig.fallbackChain) ? providersConfig.fallbackChain : []);
   const chain = [primaryProvider];
   fallbackIds.forEach((id) => {
     const p = providers.find((x) => x.id === id);
@@ -671,16 +847,25 @@ function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function buildUsageSnapshot({ provider, assembled, content, providerResult }) {
+function buildUsageSnapshot({ provider, assembled = {}, messages = [], content, providerResult }) {
   const providerUsage = providerResult?.usage || providerResult?.raw?.usage || {};
-  const promptTokens = normalizeTokenCount(providerUsage.prompt_tokens ?? providerUsage.promptTokens, assembled.tokenEstimate);
+  const routing = isPlainObject(providerResult?.routing) ? providerResult.routing : {};
+  const promptEstimate = Number.isFinite(Number(assembled?.tokenEstimate))
+    ? Number(assembled.tokenEstimate)
+    : estimateMessageTokens(messages);
+  const promptTokens = normalizeTokenCount(providerUsage.prompt_tokens ?? providerUsage.promptTokens, promptEstimate);
   const completionTokens = normalizeTokenCount(
     providerUsage.completion_tokens ?? providerUsage.completionTokens,
     estimateTokens(content)
   );
   return {
-    providerId: String(provider?.id || ''),
-    model: String(provider?.model || ''),
+    callId: String(routing.callId || ''),
+    taskKey: String(routing.taskKey || 'chat'),
+    requestedProviderId: String(routing.requestedProviderId || provider?.id || ''),
+    providerId: String(routing.providerId || provider?.id || ''),
+    model: String(routing.model || provider?.model || ''),
+    fallbackUsed: routing.fallbackUsed === true,
+    durationMs: normalizeTokenCount(routing.durationMs, 0),
     promptTokens,
     completionTokens,
     totalTokens: normalizeTokenCount(
@@ -691,6 +876,46 @@ function buildUsageSnapshot({ provider, assembled, content, providerResult }) {
     promptModules: Array.isArray(assembled.sections?.promptModules) ? assembled.sections.promptModules.length : 0,
     estimated: !hasNumericUsage(providerUsage)
   };
+}
+
+function appendUsageLedgerEntry(session, { taskKey, messageId = '', usage, routing }) {
+  if (!session || !isPlainObject(usage)) return;
+  if (!Array.isArray(session.usageLedger)) session.usageLedger = [];
+  const callId = String(usage.callId || routing?.callId || `call-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  if (session.usageLedger.some((entry) => entry?.callId === callId)) return;
+
+  session.usageLedger.push({
+    callId,
+    messageId: String(messageId || ''),
+    taskKey: String(taskKey || usage.taskKey || 'chat'),
+    createdAt: new Date().toISOString(),
+    requestedProviderId: String(usage.requestedProviderId || routing?.requestedProviderId || ''),
+    providerId: String(usage.providerId || routing?.providerId || ''),
+    model: String(usage.model || routing?.model || ''),
+    fallbackUsed: usage.fallbackUsed === true || routing?.fallbackUsed === true,
+    attempts: Array.isArray(routing?.attempts) ? routing.attempts.map((attempt) => ({ ...attempt })) : [],
+    durationMs: normalizeTokenCount(usage.durationMs ?? routing?.durationMs, 0),
+    promptTokens: normalizeTokenCount(usage.promptTokens, 0),
+    completionTokens: normalizeTokenCount(usage.completionTokens, 0),
+    totalTokens: normalizeTokenCount(usage.totalTokens, 0),
+    injectedCards: normalizeTokenCount(usage.injectedCards, 0),
+    promptModules: normalizeTokenCount(usage.promptModules, 0),
+    estimated: usage.estimated !== false,
+    status: 'success'
+  });
+}
+
+function linkUsageLedgerEntry(session, callId, messageId) {
+  if (!Array.isArray(session?.usageLedger) || !callId || !messageId) return;
+  const entry = session.usageLedger.find((item) => item?.callId === callId);
+  if (entry) entry.messageId = String(messageId);
+}
+
+function estimateMessageTokens(messages) {
+  const text = (Array.isArray(messages) ? messages : [])
+    .map((message) => String(message?.content || ''))
+    .join('\n');
+  return estimateTokens(text);
 }
 
 function normalizeTokenCount(value, fallback) {

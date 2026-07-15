@@ -19,9 +19,16 @@ export function summarizeAllUsage(sessions = []) {
 function usageRowsFromSession(session = {}) {
   const sessionId = String(session.id || 'main');
   const messages = Array.isArray(session.messages) ? session.messages : [];
-  return messages
+  const ledger = Array.isArray(session.usageLedger) ? session.usageLedger : [];
+  const ledgerRows = ledger
+    .filter((entry) => isPlainObject(entry))
+    .map((entry, index) => normalizeLedgerRow({ sessionId, entry, index }));
+  const ledgerMessageIds = new Set(ledgerRows.map((row) => row.messageId).filter(Boolean));
+  const legacyMessageRows = messages
     .filter((message) => message?.role === 'assistant' && isPlainObject(message.usage))
+    .filter((message) => !ledgerMessageIds.has(String(message.id || '')))
     .map((message, index) => normalizeUsageRow({ sessionId, message, index }));
+  return [...legacyMessageRows, ...ledgerRows];
 }
 
 function normalizeUsageRow({ sessionId, message, index }) {
@@ -31,15 +38,43 @@ function normalizeUsageRow({ sessionId, message, index }) {
   const totalTokens = normalizeTokenNumber(usage.totalTokens ?? usage.total_tokens, promptTokens + completionTokens);
   return {
     sessionId,
+    callId: String(usage.callId || ''),
     messageId: String(message.id || `assistant-${index}`),
     createdAt: String(message.createdAt || ''),
+    taskKey: String(usage.taskKey || 'chat'),
+    requestedProviderId: String(usage.requestedProviderId || usage.providerId || usage.provider_id || ''),
     providerId: String(usage.providerId || usage.provider_id || ''),
     model: String(usage.model || ''),
+    fallbackUsed: usage.fallbackUsed === true,
+    durationMs: normalizeTokenNumber(usage.durationMs),
     promptTokens,
     completionTokens,
     totalTokens,
     injectedCards: normalizeTokenNumber(usage.injectedCards),
     estimated: usage.estimated !== false
+  };
+}
+
+function normalizeLedgerRow({ sessionId, entry, index }) {
+  const promptTokens = normalizeTokenNumber(entry.promptTokens ?? entry.prompt_tokens);
+  const completionTokens = normalizeTokenNumber(entry.completionTokens ?? entry.completion_tokens);
+  const totalTokens = normalizeTokenNumber(entry.totalTokens ?? entry.total_tokens, promptTokens + completionTokens);
+  return {
+    sessionId,
+    callId: String(entry.callId || `ledger-${index}`),
+    messageId: String(entry.messageId || ''),
+    createdAt: String(entry.createdAt || ''),
+    taskKey: String(entry.taskKey || 'chat'),
+    requestedProviderId: String(entry.requestedProviderId || entry.providerId || ''),
+    providerId: String(entry.providerId || ''),
+    model: String(entry.model || ''),
+    fallbackUsed: entry.fallbackUsed === true,
+    durationMs: normalizeTokenNumber(entry.durationMs),
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    injectedCards: normalizeTokenNumber(entry.injectedCards),
+    estimated: entry.estimated !== false
   };
 }
 
@@ -60,8 +95,33 @@ function buildUsageSummary({ scope, sessionId, rows }) {
     generatedAt: new Date().toISOString(),
     totals,
     byProvider: aggregateByProvider(rows),
+    byTask: aggregateByTask(rows),
     recent: rows.slice().sort(compareRecentUsage).slice(0, 20)
   };
+}
+
+function aggregateByTask(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const taskKey = row.taskKey || 'chat';
+    if (!groups.has(taskKey)) {
+      groups.set(taskKey, {
+        taskKey,
+        calls: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        fallbackCalls: 0
+      });
+    }
+    const group = groups.get(taskKey);
+    group.calls += 1;
+    group.promptTokens += row.promptTokens;
+    group.completionTokens += row.completionTokens;
+    group.totalTokens += row.totalTokens;
+    if (row.fallbackUsed) group.fallbackCalls += 1;
+  }
+  return Array.from(groups.values()).sort((a, b) => b.totalTokens - a.totalTokens || b.calls - a.calls);
 }
 
 function aggregateByProvider(rows) {

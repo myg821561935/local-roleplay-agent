@@ -129,6 +129,37 @@ test('POST /api/import/preview parses Character Card V2 without saving state', a
   assert.equal(payload.preview.summary.worldBookCount, 1);
   assert.equal(payload.preview.inspection.adapter.id, 'character-card-v2');
   assert.equal(payload.preview.inspection.resources.length, 2);
+  assert.equal(payload.preview.inspection.dimensions.length, 5);
+  assert.equal(payload.preview.inspection.verdict, 'recommended');
+  assert.ok(payload.preview.inspection.estimatedTokens > 0);
+  assert.equal(state.config.characterCard.name, '未命名主角');
+});
+
+test('POST /api/import/commit can store a resource without changing active creative config', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'shen.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(createV2CardPayload())
+      },
+      source: { site: 'local-file', fileName: 'shen.json' },
+      applyToActiveConfig: false
+    }
+  });
+  const payload = response.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+  const library = (await request(app, { url: '/api/resource-library/resources' })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.applyMode, 'library-only');
+  assert.equal(payload.libraryResources.length, 2);
+  assert.equal(library.resources.length, 2);
   assert.equal(state.config.characterCard.name, '未命名主角');
 });
 
@@ -582,6 +613,8 @@ test('PUT /api/session/settings saves per-session provider settings', async () =
         maxInjectedCards: 7,
         maxPromptTokens: 12000,
         narrativeMode: 'strict',
+        taskProviderOverrides: { fact: 'fact-local', unknown: 'ignored' },
+        taskFallbackOverrides: { summary: ['summary-backup'], unknown: ['ignored'] },
         backgroundImage: '/assets/wuxia-stage.png',
         theme: 'default-dark',
         visualContentPack: 'yingxiongzhi'
@@ -597,6 +630,8 @@ test('PUT /api/session/settings saves per-session provider settings', async () =
   assert.equal(payload.session.settings.maxInjectedCards, 7);
   assert.equal(payload.session.settings.maxPromptTokens, 12000);
   assert.equal(payload.session.settings.narrativeMode, 'strict');
+  assert.deepEqual(payload.session.settings.taskProviderOverrides, { fact: 'fact-local' });
+  assert.deepEqual(payload.session.settings.taskFallbackOverrides, { summary: ['summary-backup'] });
   assert.equal(payload.session.settings.backgroundImage, '/assets/wuxia-stage.png');
   assert.equal(payload.session.settings.theme, 'default-dark');
   assert.equal(payload.session.settings.visualContentPack, 'yingxiongzhi');
@@ -653,6 +688,8 @@ test('POST /api/rewrite returns a Magic Rewrite suggestion without mutating chat
   assert.equal(payload.providerId, 'local');
   assert.equal(payload.model, 'rewrite-model');
   assert.equal(state.session.messages.length, 0);
+  assert.equal(state.session.usageLedger.length, 1);
+  assert.equal(state.session.usageLedger[0].taskKey, 'rewrite');
 });
 
 test('GET /api/usage returns live session token usage', async () => {
@@ -684,6 +721,7 @@ test('GET /api/usage returns live session token usage', async () => {
   assert.equal(payload.usage.scope, 'session');
   assert.equal(payload.usage.sessionId, 'main');
   assert.equal(payload.usage.totals.calls, 1);
+  assert.equal(payload.usage.byTask[0].taskKey, 'chat');
   assert.equal(payload.usage.totals.totalTokens, 120);
   assert.equal(payload.usage.byProvider[0].providerId, 'local');
 });
@@ -862,7 +900,7 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.2.0',
+    version: '0.2.1',
     releaseChannel: 'preview-local',
     dataSchemaVersion: 2,
     targetDataSchemaVersion: 2

@@ -21,7 +21,10 @@ test('resource library inspects provenance, completeness and execution-only risk
   assert.equal(inspection.adapter.id, 'liunao-community-generic');
   assert.equal(inspection.resources.length, 2);
   assert.ok(inspection.resources[0].diagnostics.riskFlags.find((item) => item.code === 'script-tag'));
-  assert.equal(inspection.resources[1].diagnostics.score, 100);
+  assert.ok(inspection.resources[1].diagnostics.score >= 95);
+  assert.equal(inspection.dimensions.length, 5);
+  assert.ok(inspection.estimatedTokens > 0);
+  assert.equal(inspection.canImport, true);
 });
 
 test('resource library stores semantic resources once and reports exact duplicates', async () => {

@@ -30,6 +30,9 @@ test('AgentService records estimated usage on assistant messages', async () => {
   assert.equal(assistant.usage.completionTokens > 0, true);
   assert.equal(assistant.usage.totalTokens, assistant.usage.promptTokens + assistant.usage.completionTokens);
   assert.deepEqual(readback.messages[1].usage, assistant.usage);
+  assert.equal(readback.usageLedger.length, 1);
+  assert.equal(readback.usageLedger[0].messageId, assistant.id);
+  assert.equal(readback.usageLedger[0].taskKey, 'chat');
 });
 
 test('AgentService prefers a session provider over the global active provider', async () => {
@@ -58,6 +61,39 @@ test('AgentService prefers a session provider over the global active provider', 
   assert.deepEqual(usedProviders, ['scene']);
   assert.equal(result.reply.usage.providerId, 'scene');
   assert.equal(result.reply.usage.model, 'scene-model');
+});
+
+test('AgentService attributes usage to the provider that actually succeeds after fallback', async () => {
+  const usedProviders = [];
+  const { service, configService } = await createHarness({
+    providerClient: {
+      complete: async ({ provider, messages }) => {
+        usedProviders.push(provider.id);
+        if (provider.id === 'primary') throw new Error('primary down');
+        return {
+          content: `回退回应：${messages.at(-1).content}`,
+          usage: { prompt_tokens: 90, completion_tokens: 10, total_tokens: 100 }
+        };
+      }
+    }
+  });
+  await configService.saveProviders({
+    activeProviderId: 'primary',
+    fallbackChain: ['backup'],
+    providers: [
+      createFakeProvider({ id: 'primary', model: 'primary-model' }),
+      createFakeProvider({ id: 'backup', model: 'backup-model' })
+    ]
+  });
+
+  const result = await service.sendMessage({ sessionId: 'main', content: '测试回退。' });
+
+  assert.deepEqual(usedProviders, ['primary', 'backup']);
+  assert.equal(result.reply.usage.requestedProviderId, 'primary');
+  assert.equal(result.reply.usage.providerId, 'backup');
+  assert.equal(result.reply.usage.model, 'backup-model');
+  assert.equal(result.reply.usage.fallbackUsed, true);
+  assert.equal(result.session.usageLedger[0].attempts.length, 2);
 });
 
 test('AgentService rewrites text with the session provider without saving chat', async () => {
@@ -96,6 +132,8 @@ test('AgentService rewrites text with the session provider without saving chat',
   assert.equal(result.providerId, 'scene');
   assert.equal(result.model, 'scene-model');
   assert.equal(readback.messages.length, 0);
+  assert.equal(readback.usageLedger.length, 1);
+  assert.equal(readback.usageLedger[0].taskKey, 'rewrite');
 });
 
 test('AgentService extracts recommended actions from assistant reply', async () => {
@@ -202,6 +240,8 @@ test('AgentService regenerates an assistant message as a new swipe', async () =>
   assert.equal(assistant.content, '第2版回应：我推门进去。');
   assert.deepEqual(assistant.swipes, ['第1版回应：我推门进去。', '第2版回应：我推门进去。']);
   assert.equal(assistant.activeSwipeIndex, 1);
+  assert.equal(regenerated.session.usageLedger.length, 2);
+  assert.equal(regenerated.session.usageLedger.every((entry) => entry.messageId === assistantId), true);
 });
 
 test('SessionService rejects unsafe session id on read', async () => {

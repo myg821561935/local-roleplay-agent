@@ -35,6 +35,7 @@ const contentTypes = new Map([
 ]);
 
 const MASKED_SECRET = '********';
+const PROVIDER_TASK_KEYS = new Set(['chat', 'rewrite', 'fact', 'summary']);
 const LOCAL_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const SENSITIVE_HEADER_PATTERNS = [
   'authorization',
@@ -1168,8 +1169,23 @@ function previewImport(payload) {
 async function commitImport({ assetService, resourceLibraryService, body }) {
   const payload = body.payload ?? body;
   const preview = previewImport(payload);
-  const libraryResult = await resourceLibraryService.savePreview(preview, body.source || {});
+  const source = body.source || {};
+  const inspection = await resourceLibraryService.inspectPreview(preview, source);
+  if (inspection.verdict === 'blocked') {
+    throw new ApiError(422, 'RESOURCE_IMPORT_NOT_READY');
+  }
+  const libraryResult = await resourceLibraryService.savePreview(preview, source, { inspection });
   preview.inspection = libraryResult.inspection;
+  const applyToActiveConfig = body.applyToActiveConfig !== false;
+  if (!applyToActiveConfig) {
+    return {
+      preview,
+      applyMode: 'library-only',
+      importedWorldBookCount: 0,
+      parsedWorldBookCount: Number(preview.summary?.worldBookCount || 0),
+      libraryResources: libraryResult.resources
+    };
+  }
   if (preview.kind === 'character-card') {
     const characterCard = await assetService.saveCharacter(preview.importData.characterCard);
     let worldBook = [];
@@ -1183,6 +1199,7 @@ async function commitImport({ assetService, resourceLibraryService, body }) {
     }
     return {
       preview,
+      applyMode: 'active-config',
       characterCard,
       worldBook,
       importedWorldBookCount: worldBook.length,
@@ -1194,6 +1211,7 @@ async function commitImport({ assetService, resourceLibraryService, body }) {
     const worldBook = await assetService.saveWorldBook(null, preview.title || '导入的世界书', preview.importData.worldBook);
     return {
       preview,
+      applyMode: 'active-config',
       worldBook,
       importedWorldBookCount: worldBook.entries?.length || 0,
       libraryResources: libraryResult.resources
@@ -1472,6 +1490,8 @@ function normalizeSessionSettings(settings = {}) {
     maxInjectedCards: normalizePositiveInteger(settings.maxInjectedCards, 5),
     narrativeMode: normalizeSessionSettingChoice(settings.narrativeMode, ['free', 'stable', 'strict']) || 'stable',
     providerId: String(settings.providerId || '').trim(),
+    taskProviderOverrides: normalizeSessionTaskProviderOverrides(settings.taskProviderOverrides),
+    taskFallbackOverrides: normalizeSessionTaskFallbackOverrides(settings.taskFallbackOverrides),
     authorNote: String(settings.authorNote || ''),
     backgroundImage: String(settings.backgroundImage || '').trim(),
     theme: normalizeSessionSettingChoice(settings.theme, ['default-dark', 'wuxia-scroll', 'xianxia-scroll']),
@@ -1483,6 +1503,23 @@ function normalizeSessionSettings(settings = {}) {
       'yingxiongzhi'
     ])
   };
+}
+
+function normalizeSessionTaskProviderOverrides(value) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(Object.entries(source)
+    .map(([taskKey, providerId]) => [String(taskKey || '').trim(), String(providerId || '').trim()])
+    .filter(([taskKey, providerId]) => PROVIDER_TASK_KEYS.has(taskKey) && providerId));
+}
+
+function normalizeSessionTaskFallbackOverrides(value) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(Object.entries(source)
+    .map(([taskKey, providerIds]) => [
+      String(taskKey || '').trim(),
+      Array.isArray(providerIds) ? providerIds.map((id) => String(id || '').trim()).filter(Boolean) : []
+    ])
+    .filter(([taskKey, providerIds]) => PROVIDER_TASK_KEYS.has(taskKey) && providerIds.length));
 }
 
 function normalizeSessionSettingChoice(value, choices) {

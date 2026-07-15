@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地角色扮演 Agent</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/styles.css?v=20260714-1">
+    <link rel="stylesheet" href="/styles.css?v=20260715-3">
   </head>
   <body>
     <div class="app-shell">
@@ -16,26 +16,30 @@
         </div>
         <div id="work-mode-switch" class="work-mode-switch" role="group" aria-label="工作模式">
           <button class="work-mode-button active" type="button" data-work-mode="creative" aria-pressed="true">创作</button>
+          <button class="work-mode-button" type="button" data-work-mode="immersive" aria-pressed="false">沉浸</button>
           <button class="work-mode-button" type="button" data-work-mode="settings" aria-pressed="false">设定</button>
           <button class="work-mode-button" type="button" data-work-mode="debug" aria-pressed="false">调试</button>
         </div>
         <div class="mobile-nav mobile-only">
           <button class="ghost-button compact" type="button" data-mobile-view="provider">接口</button>
           <button class="ghost-button compact active" type="button" data-mobile-view="chat" data-mobile-mode="creative">创作</button>
+          <button class="ghost-button compact" type="button" data-mobile-view="chat" data-mobile-mode="immersive">沉浸</button>
           <button class="ghost-button compact" type="button" data-mobile-view="inspector" data-mobile-mode="settings">设定</button>
           <button class="ghost-button compact" type="button" data-mobile-view="inspector" data-mobile-mode="debug">调试</button>
         </div>
         <label class="theme-switcher">
-          <span>主题</span>
-          <select id="theme-select" aria-label="主题">
+          <span>界面皮肤</span>
+          <select id="theme-select" aria-label="界面皮肤">
             <option value="default-dark">极简暗黑</option>
             <option value="wuxia-scroll">武侠卷轴</option>
             <option value="xianxia-scroll">仙侠云海</option>
           </select>
         </label>
-        <span id="background-mode" class="mode-pill" aria-live="polite">场景：未设置背景</span>
+        <span id="background-mode" class="mode-pill" aria-live="polite">舞台背景：未设置</span>
         <button id="refresh-state" class="ghost-button" type="button">刷新</button>
       </header>
+
+      <button id="exit-immersive-mode" class="exit-immersive-button" type="button" aria-label="退出沉浸模式">退出沉浸</button>
 
       <main class="workspace" data-active-view="chat" data-work-mode="creative">
         <aside id="provider-panel" class="panel provider-panel collapsed" aria-label="Provider 配置">
@@ -114,7 +118,7 @@
             <summary>本地备份与恢复</summary>
             <div class="release-data-controls">
               <div class="release-data-heading">
-                <strong id="release-version">v0.2.0 · 数据 v-</strong>
+                <strong id="release-version">v0.2.1 · 数据 v-</strong>
                 <span>快照包含 Provider 密钥</span>
               </div>
               <button id="create-backup" class="primary-button compact" type="button">立即备份</button>
@@ -132,7 +136,7 @@
           <details id="provider-routing-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
             <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">任务路由 & 回退链（点击展开）</summary>
             <div style="padding: 8px 12px; font-size: 12px; line-height: 1.6;">
-              <p style="margin: 0 0 8px 0; color: var(--subtle);">为不同任务指定专用 Provider（留空则用全局默认）。主 Provider 失败时按回退链顺序重试。</p>
+              <p style="margin: 0 0 8px 0; color: var(--subtle);">为不同任务指定专用 Provider（留空则用全局默认）。会话绑定只覆盖对话与改写，不会挤占事实提取和记忆总结模型。</p>
               <label style="display: block; margin-bottom: 8px;">
                 <span style="display: block; margin-bottom: 4px; color: var(--subtle);">对话生成 (chat)</span>
                 <select id="task-provider-chat" class="form-input"></select>
@@ -342,14 +346,14 @@
               <input id="import-session-file" type="file" accept=".json" hidden>
             </div>
             <div class="chat-header-right">
-              <div id="narrative-mode-switch" class="narrative-mode-switch" role="group" aria-label="叙事路线强度">
-                <span class="narrative-mode-label">路线</span>
+              <div id="narrative-mode-switch" class="narrative-mode-switch" role="group" aria-label="叙事约束">
+                <span class="narrative-mode-label">约束</span>
                 <button class="narrative-mode-button" type="button" data-narrative-mode="free" aria-pressed="false" title="自由发展，仍遵守既有世界规则">自由</button>
                 <button class="narrative-mode-button active" type="button" data-narrative-mode="stable" aria-pressed="true" title="允许辅线，最多两轮必须回流主线">稳定</button>
                 <button class="narrative-mode-button" type="button" data-narrative-mode="strict" aria-pressed="false" title="未经确认不更换题材与主线">严格</button>
               </div>
               <span id="session-status" class="status-text">等待状态</span>
-              <select id="session-provider" class="form-input compact-select" style="max-width: 130px;"></select>
+              <select id="session-provider" class="form-input compact-select" style="max-width: 130px;" aria-label="本会话对话模型" title="仅绑定本会话的对话与改写模型；后台事实提取和记忆总结继续按任务路由执行"></select>
               <button id="save-session-settings" class="ghost-button compact" type="button">绑定</button>
               <span id="session-settings-status" class="status-text"></span>
             </div>
@@ -362,7 +366,7 @@
           </div>
 
           <div id="background-panel" class="background-panel collapsed">
-            <div id="background-status" class="background-status">当前：未设置背景。主题只影响界面，不覆盖会话框。</div>
+            <div id="background-status" class="background-status">当前：未设置舞台背景。界面皮肤只影响工作台，不覆盖会话内容。</div>
             <div class="background-presets" id="background-presets"></div>
             <div class="file-row">
               <input id="background-url-input" class="form-input" type="text" placeholder="或粘贴图片 URL..." autocomplete="off">
@@ -376,13 +380,13 @@
           <div class="composer">
             <div class="stage-actions" role="group" aria-label="场景操作">
               <button class="tool-button" type="button" data-tab-shortcut="character" data-help-key="character">角色设定</button>
-              <button id="continue-message" class="tool-button" type="button" data-help-key="continue">继续</button>
+              <button id="continue-message" class="tool-button" type="button" data-help-key="continue" data-immersive-action>继续</button>
               <button id="rewrite-chat-input" class="tool-button" type="button" data-help-key="rewrite">润色</button>
               <button class="tool-button" type="button" data-help-key="format" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
-              <button id="target-speaker-btn" class="tool-button" type="button" data-help-key="targetSpeaker">指定发言</button>
+              <button id="target-speaker-btn" class="tool-button" type="button" data-help-key="targetSpeaker" data-immersive-action>指定发言</button>
               <button id="toggle-author-note" class="tool-button" type="button" data-help-key="authorNote">注释</button>
               <button id="toggle-background" class="tool-button" type="button" data-help-key="background">背景</button>
-              <button class="tool-button" type="button" data-help-key="scrollBottom" data-scroll-bottom>底部</button>
+              <button class="tool-button" type="button" data-help-key="scrollBottom" data-scroll-bottom data-immersive-action>底部</button>
             </div>
             <form id="chat-form" class="chat-form">
               <textarea id="chat-input" rows="1" placeholder="输入角色行动或旁白指令..." spellcheck="false"></textarea>
@@ -428,6 +432,11 @@
             <span id="content-pack-status" class="status-text"></span>
           </div>
 
+          <label class="inspector-tab-picker mobile-only" for="inspector-tab-select">
+            <span>当前工具</span>
+            <select id="inspector-tab-select" class="form-input" aria-label="选择检查器工具"></select>
+          </label>
+
           <div class="tabs" role="tablist" aria-label="检查器标签">
             <button class="tab-button" type="button" data-tab="memory" data-mode-groups="debug" data-help-key="memory" role="tab" aria-selected="false">记忆</button>
             <button class="tab-button active" type="button" data-tab="status" data-mode-groups="creative settings debug" data-help-key="status" role="tab" aria-selected="true">状态</button>
@@ -442,8 +451,12 @@
             <button class="tab-button" type="button" data-tab="macro" data-mode-groups="settings" data-help-key="macro" role="tab" aria-selected="false">宏</button>
           </div>
 
-          <section class="tab-pane" data-pane="memory" role="tabpanel" hidden>
-            <pre id="memory-view" class="json-view"></pre>
+          <section class="tab-pane memory-pane" data-pane="memory" role="tabpanel" hidden>
+            <div id="memory-overview" class="memory-overview"></div>
+            <details class="advanced-data-panel">
+              <summary>原始记忆数据</summary>
+              <pre id="memory-view" class="json-view"></pre>
+            </details>
           </section>
 
           <section class="tab-pane active" data-pane="status" role="tabpanel">
@@ -487,7 +500,12 @@
               </select>
               <button id="apply-worldbook-preset" class="ghost-button compact" type="button">加载预设</button>
             </div>
-            <details id="worldbook-entries-panel" class="worldbook-entries-panel">
+            <div class="editor-actions worldbook-primary-actions">
+              <span id="worldbook-status" class="status-text"></span>
+              <button id="add-worldbook-entry" class="ghost-button compact" type="button">新增条目</button>
+              <button id="save-worldbook" class="primary-button compact" type="button">保存世界书</button>
+            </div>
+            <details id="worldbook-entries-panel" class="worldbook-entries-panel" open>
               <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">世界圣经浏览与编辑</summary>
               <div class="worldbook-browser-toolbar">
                 <input id="worldbook-search" class="form-input" type="search" placeholder="搜索标题、关键词或正文..." aria-label="搜索世界书">
@@ -507,15 +525,15 @@
               </div>
               <div id="worldbook-trigger-result" class="worldbook-trigger-result"></div>
             </details>
-            <textarea id="worldbook-editor" class="json-editor" spellcheck="false"></textarea>
-            <div class="editor-actions">
-              <span id="worldbook-status" class="status-text"></span>
-              <button id="add-worldbook-entry" class="ghost-button compact" type="button">新增条目</button>
-              <button id="export-worldbook" class="ghost-button compact" type="button">导出</button>
-              <button id="import-worldbook" class="ghost-button compact" type="button">导入</button>
-              <input type="file" id="worldbook-import-file" accept=".json,application/json" style="display: none;">
-              <button id="save-worldbook" class="primary-button compact" type="button">保存世界书</button>
-            </div>
+            <details class="advanced-data-panel worldbook-advanced-panel">
+              <summary>高级 JSON 与导入导出</summary>
+              <textarea id="worldbook-editor" class="json-editor" spellcheck="false"></textarea>
+              <div class="editor-actions">
+                <button id="export-worldbook" class="ghost-button compact" type="button">导出</button>
+                <button id="import-worldbook" class="ghost-button compact" type="button">导入</button>
+                <input type="file" id="worldbook-import-file" accept=".json,application/json" style="display: none;">
+              </div>
+            </details>
           </section>
 
           <section class="tab-pane" data-pane="character" role="tabpanel" hidden>
@@ -579,18 +597,13 @@
               <button id="save-character-preset" class="ghost-button compact" type="button">收藏当前</button>
               <button id="delete-character-preset" class="ghost-button compact" type="button">删除</button>
             </div>
-            <div class="file-row">
-              <label>
-                <span>导入角色卡 / 世界书</span>
-                <input id="character-card-import" type="file" accept=".json,.png,.yaml,.yml,.txt,application/json,image/png,text/yaml,text/plain">
-              </label>
-            </div>
-            <div id="import-preview" class="import-preview" hidden></div>
-            <textarea id="character-card-editor" class="json-editor" spellcheck="false"></textarea>
+            <div id="character-overview" class="character-overview" aria-live="polite"></div>
+            <details class="advanced-data-panel character-advanced-panel">
+              <summary>高级 JSON 编辑</summary>
+              <textarea id="character-card-editor" class="json-editor" spellcheck="false"></textarea>
+            </details>
             <div class="editor-actions">
               <span id="character-card-status" class="status-text"></span>
-              <button id="confirm-import" class="primary-button compact" type="button" hidden>确认导入</button>
-              <button id="cancel-import" class="ghost-button compact" type="button" hidden>取消导入</button>
               <button id="reset-character-card" class="ghost-button compact" type="button">角色模板</button>
               <button id="save-character-card" class="primary-button compact" type="button">保存角色卡</button>
               <button id="export-character-card" class="ghost-button compact" type="button">导出 PNG</button>
@@ -619,8 +632,21 @@
                 <strong>创作资源库</strong>
                 <span id="resource-adapter-summary">正在载入适配器</span>
               </div>
-              <button id="refresh-resource-library" class="ghost-button compact" type="button">刷新</button>
+              <div class="resource-workbench-actions">
+                <label class="ghost-button compact resource-file-button" for="character-card-import">
+                  导入文件
+                  <input id="character-card-import" class="resource-file-input" type="file" accept=".json,.png,.yaml,.yml,.txt,application/json,image/png,text/yaml,text/plain">
+                </label>
+                <button id="refresh-resource-library" class="ghost-button compact" type="button">刷新</button>
+              </div>
             </header>
+
+            <ol class="resource-flow" aria-label="资源处理流程">
+              <li data-resource-flow-step="discover"><span>1</span>获取</li>
+              <li data-resource-flow-step="review"><span>2</span>评定</li>
+              <li data-resource-flow-step="library"><span>3</span>入库</li>
+              <li data-resource-flow-step="composer"><span>4</span>组装</li>
+            </ol>
 
             <div class="resource-metrics" aria-label="资源库摘要">
               <div><strong id="resource-count-all">0</strong><span>素材</span></div>
@@ -891,6 +917,32 @@
         </div>
       </div>
     </dialog>
-    <script type="module" src="/app.js?v=20260714-1"></script>
+
+    <dialog id="import-review-dialog" class="import-review-dialog" aria-labelledby="import-review-title">
+      <div class="import-review-shell">
+        <header class="import-review-header">
+          <div>
+            <span>资源准入</span>
+            <h2 id="import-review-title">导入评定</h2>
+          </div>
+          <button id="close-import-review" class="icon-button" type="button" aria-label="关闭导入评定" title="关闭">×</button>
+        </header>
+        <div id="import-preview" class="import-preview"></div>
+        <footer class="import-review-footer">
+          <label class="import-apply-option">
+            <input id="import-apply-current" type="checkbox">
+            <span>
+              <strong>同时载入当前创作配置</strong>
+              <small>关闭时只存入素材库，不改变正在写的剧本</small>
+            </span>
+          </label>
+          <div class="import-review-actions">
+            <button id="cancel-import" class="ghost-button" type="button">取消</button>
+            <button id="confirm-import" class="primary-button" type="button">存入素材库</button>
+          </div>
+        </footer>
+      </div>
+    </dialog>
+    <script type="module" src="/app.js?v=20260715-3"></script>
   </body>
 </html>

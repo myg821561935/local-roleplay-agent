@@ -2,8 +2,15 @@ export const defaultProviders = {
   activeProviderId: '',
   taskProviders: {
     chat: '',
+    rewrite: '',
     fact: '',
     summary: ''
+  },
+  taskFallbackChains: {
+    chat: [],
+    rewrite: [],
+    fact: [],
+    summary: []
   },
   fallbackChain: [],
   providers: []

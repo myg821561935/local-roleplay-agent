@@ -55,9 +55,12 @@ function createSession(id) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     messages: [],
+    usageLedger: [],
     memory: createDefaultMemory(),
     settings: {
       providerId: '',
+      taskProviderOverrides: {},
+      taskFallbackOverrides: {},
       recentPairs: 8,
       maxPromptTokens: 8000,
       maxInjectedCards: 5,
@@ -71,6 +74,7 @@ function createSession(id) {
 
 function enrichSessionNarrativeState(session) {
   const next = structuredClone(session);
+  next.usageLedger = Array.isArray(next.usageLedger) ? next.usageLedger : [];
   const memory = next.memory && typeof next.memory === 'object' ? next.memory : createDefaultMemory();
   const packId = String(
     memory.narrativeState?.lockedGenre

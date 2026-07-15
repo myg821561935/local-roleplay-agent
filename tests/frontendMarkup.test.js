@@ -102,6 +102,8 @@ test('frontend exposes provider presets and import review controls', async () =>
   assert.match(app, /\/prologue-template\.json/);
   assert.match(app, /data-destiny-card/);
   assert.match(app, /epic-setup-footer/);
+  assert.match(app, /epic-seal-hint/);
+  assert.match(app, /返回创作台/);
   assert.match(app, /PROLOGUE_RANDOM_POOLS/);
   assert.match(app, /generateSetupFieldValue/);
   assert.match(app, /getSetupRandomContext/);
@@ -166,8 +168,8 @@ test('chat background customization is explicit and not owned by themes', async 
 
   assert.match(html, /id="background-mode"/);
   assert.match(html, /id="background-status"/);
-  assert.match(html, /场景：未设置背景/);
-  assert.match(html, /主题只影响界面，不覆盖会话框/);
+  assert.match(html, /舞台背景：未设置/);
+  assert.match(html, /界面皮肤只影响工作台，不覆盖会话内容/);
   assert.match(html, /清除背景/);
   assert.match(app, /url:\s*'\/assets\/xuanhuan-luoyan-stage\.png'/);
   assert.match(app, /url:\s*'\/assets\/lingyi-yongan-stage\.png'/);
@@ -197,9 +199,9 @@ test('chat background customization is explicit and not owned by themes', async 
   assert.match(app, /已应用到会话：\$\{payload\.appliedPack\?\.title \|\| packId\} · 视觉：\$\{visualPreset\.label\}/);
   assert.match(app, /preset\.url\s*\|\|/);
   assert.match(app, /updateBackgroundModeUi/);
-  assert.match(app, /场景：未设置背景/);
-  assert.match(app, /自定义背景/);
-  assert.match(app, /场景：\$\{label \|\| '自定义背景'\}/);
+  assert.match(app, /舞台背景：未设置/);
+  assert.match(app, /自定义舞台背景/);
+  assert.match(app, /舞台背景：\$\{label \|\| '自定义'\}/);
   assert.match(css, /var\(--chat-bg-image,\s*linear-gradient/);
   assert.doesNotMatch(css, /var\(--chat-bg-image,\s*url\('\/assets\/wuxia-stage\.png'\)\)/);
   assert.doesNotMatch(css, /var\(--chat-bg-image,\s*url\('\/assets\/xianxia-stage\.png'\)\)/);
@@ -222,15 +224,23 @@ test('v0.2 resource workbench keeps community imports, diagnostics and script co
   assert.match(html, /id="resource-pack-form"/);
   assert.match(html, /id="resource-pack-worldbooks"/);
   assert.match(html, /id="resource-pack-prompts"/);
+  assert.match(html, /class="resource-flow"/);
+  assert.match(html, /id="import-review-dialog"/);
+  assert.match(html, /id="import-apply-current"/);
+  assert.match(html, /只存入素材库，不改变正在写的剧本/);
   assert.match(app, /\/api\/resource-library\/resources/);
   assert.match(app, /\/api\/resource-library\/packs/);
   assert.match(app, /function renderResourceWorkbench/);
   assert.match(app, /function createResourcePack/);
   assert.match(app, /preview\.inspection/);
+  assert.match(app, /applyToActiveConfig/);
+  assert.match(app, /function createImportResourceReport/);
   assert.match(app, /payload\.appliedPack\?\.visualPackId \|\| packId/);
   assert.match(css, /\.inspector-panel\.resource-workbench-open:not\(\.collapsed\)\s*\{[\s\S]*width:\s*420px/);
   assert.match(css, /\.resource-view\s*\{[\s\S]*min-height:\s*0;[\s\S]*overflow:\s*hidden/);
   assert.match(css, /\.resource-library-list[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.import-review-dialog/);
+  assert.match(css, /\.import-dimension-list/);
   assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.inspector-panel\.resource-workbench-open:not\(\.collapsed\)[\s\S]*width:\s*auto/);
 });
 
@@ -276,6 +286,9 @@ test('world book inspector editor keeps long entry lists scrollable', async () =
   const app = await readFile('public/app.js', 'utf8');
 
   assert.match(html, /<section class="tab-pane worldbook-pane" data-pane="worldbook"/);
+  assert.match(html, /id="worldbook-entries-panel" class="worldbook-entries-panel" open/);
+  assert.match(html, /class="advanced-data-panel worldbook-advanced-panel"/);
+  assert.match(html, /高级 JSON 与导入导出/);
   assert.match(css, /\.worldbook-pane\s*\{[\s\S]*overflow-y:\s*auto;[\s\S]*scrollbar-gutter:\s*stable;/);
   assert.match(css, /\.worldbook-entries-list\s*\{[\s\S]*max-height:\s*min\(420px,\s*52vh\);[\s\S]*overflow-y:\s*auto;/);
   assert.match(css, /\.wb-editor-dialog\s*\{[\s\S]*display:\s*flex;[\s\S]*overflow:\s*hidden;/);
@@ -311,6 +324,7 @@ test('inspector controls stay usable in narrow drawers', async () => {
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(html, /<details class="group-section inspector-subsection">/);
+  assert.match(html, /id="inspector-tab-select"/);
   assert.doesNotMatch(html, /class="preset-controls" style="[^"]*display:\s*flex/);
   assert.match(css, /\.inspector-panel\s+\.tab-pane\s*\{[\s\S]*overflow-y:\s*auto;[\s\S]*scrollbar-gutter:\s*stable;/);
   assert.match(css, /\.tabs\s*\{[\s\S]*display:\s*flex;[\s\S]*overflow-x:\s*auto;/);
@@ -322,6 +336,8 @@ test('inspector controls stay usable in narrow drawers', async () => {
   assert.match(app, /els\.openProviderPanel\?\.addEventListener\('click', \(\) => setWorkspacePanelExpanded\('provider', true\)\)/);
   assert.match(app, /els\.toggleInspectorPanel\?\.addEventListener\('click', \(\) => setWorkspacePanelExpanded\('inspector', false\)\)/);
   assert.match(app, /button\.addEventListener\('click', \(\) => activateTab\(button\.dataset\.tab\)\)/);
+  assert.match(app, /function syncInspectorTabSelect/);
+  assert.match(app, /inspectorTabSelect\?\.addEventListener\('change'/);
   assert.match(app, /els\.inspectorPanel\?\.querySelectorAll\('\.tab-button\[data-tab\]'\)/);
   assert.match(app, /els\.inspectorPanel\?\.querySelectorAll\('\.tab-pane\[data-pane\]'\)/);
   assert.match(app, /pane\.hidden = !active/);
@@ -477,12 +493,31 @@ test('narrow workbench switches to single-stage mode before panels crush the cha
   const app = await readFile('public/app.js', 'utf8');
 
   assert.match(css, /@media \(max-width:\s*900px\)\s*\{[\s\S]*\.workspace\s*\{[\s\S]*grid-template-columns:\s*1fr;/);
+  assert.match(css, /@media \(max-width:\s*900px\)\s*\{[\s\S]*\.app-shell\s*\{[\s\S]*height:\s*100dvh;/);
+  assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*\.provider-panel,[\s\S]*\.inspector-panel,[\s\S]*width:\s*auto;/);
+  assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*\.workspace\s*\{[\s\S]*height:\s*auto;[\s\S]*min-height:\s*0;/);
+  assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*\.send-button\s*\{[\s\S]*width:\s*40px;[\s\S]*height:\s*40px;/);
   assert.match(css, /@media \(max-width:\s*900px\)\s*\{[\s\S]*\.workspace\[data-active-view="chat"\] \.chat-panel/);
   assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*\.messages\.has-cover-page\s*\{[\s\S]*align-items:\s*stretch;[\s\S]*justify-content:\s*flex-start;/);
   assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*\.messages\.has-cover-page\s+\.epic-cover-page\s*\{[\s\S]*height:\s*auto;[\s\S]*max-height:\s*none;[\s\S]*overflow:\s*visible;/);
   assert.match(app, /matchMedia\('\(max-width:\s*900px\)'\)/);
   assert.doesNotMatch(css, /@media \(max-width:\s*760px\)/);
   assert.doesNotMatch(app, /max-width:\s*760px/);
+});
+
+test('memory inspector leads with a creator overview and keeps raw data optional', async () => {
+  const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(html, /id="memory-overview"/);
+  assert.match(html, /<details class="advanced-data-panel">[\s\S]*原始记忆数据[\s\S]*id="memory-view"/);
+  assert.match(app, /function renderMemoryOverview/);
+  assert.match(app, /长期叙事记忆/);
+  assert.match(app, /当前叙事坐标/);
+  assert.match(css, /\.memory-overview\s*\{/);
+  assert.match(css, /\.memory-metrics\s*\{/);
+  assert.match(css, /\.memory-context-grid,/);
 });
 
 test('immersive option cards from markdown have dedicated styling', async () => {
@@ -549,15 +584,19 @@ test('character preset library covers more genre-matched roles', async () => {
   assert.match(app, /追踪：/);
 });
 
-test('work modes separate creation settings and debug while exposing the current content stack', async () => {
+test('work modes separate creation, immersion, settings and debug while exposing the current content stack', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(html, /id="work-mode-switch"/);
   assert.match(html, /data-work-mode="creative"/);
+  assert.match(html, /data-work-mode="immersive"/);
   assert.match(html, /data-work-mode="settings"/);
   assert.match(html, /data-work-mode="debug"/);
+  assert.match(html, /id="exit-immersive-mode"/);
+  assert.match(html, /界面皮肤/);
+  assert.match(html, /舞台背景/);
   assert.match(html, /id="content-stack-status"/);
   assert.match(html, /id="content-stack-items"/);
   assert.match(html, /应用到会话/);
@@ -565,6 +604,8 @@ test('work modes separate creation settings and debug while exposing the current
   assert.match(app, /workModeButtons: Array\.from\(document\.querySelectorAll\('#work-mode-switch \.work-mode-button\[data-work-mode\]'\)\)/);
   assert.doesNotMatch(app, /workModeButtons: Array\.from\(document\.querySelectorAll\('\[data-work-mode\]'\)\)/);
   assert.match(app, /function activateWorkMode/);
+  assert.match(app, /document\.documentElement\.dataset\.workMode = safeMode/);
+  assert.match(app, /safeMode === 'creative' \|\| safeMode === 'immersive'/);
   assert.match(app, /function renderContentStack/);
   assert.match(app, /function setContentPackPreviewStatus/);
   assert.match(app, /仅视觉预览/);
@@ -575,6 +616,9 @@ test('work modes separate creation settings and debug while exposing the current
   assert.match(app, /narrativeState\.activeArc/);
   assert.match(app, /extensions\?\.inspirationRefs/);
   assert.match(css, /\.work-mode-switch\s*\{/);
+  assert.match(css, /:root\[data-work-mode="immersive"\] \.chat-panel/);
+  assert.match(css, /\.tool-button:not\(\[data-immersive-action\]\)/);
+  assert.match(css, /\.exit-immersive-button/);
   assert.match(css, /\.content-stack-summary\s*\{/);
   assert.match(css, /\[data-work-mode="creative"\]/);
   assert.match(css, /\[data-mode-groups~="settings"\]/);
@@ -587,6 +631,7 @@ test('chat header exposes persistent narrative route controls', async () => {
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(html, /id="narrative-mode-switch"/);
+  assert.match(html, /aria-label="叙事约束"/);
   assert.match(html, /data-narrative-mode="free"/);
   assert.match(html, /data-narrative-mode="stable"/);
   assert.match(html, /data-narrative-mode="strict"/);
@@ -594,6 +639,24 @@ test('chat header exposes persistent narrative route controls', async () => {
   assert.match(app, /\['free', 'stable', 'strict'\]\.includes\(mode\) \? mode : 'stable'/);
   assert.match(css, /\.narrative-mode-switch\s*\{/);
   assert.match(css, /\.narrative-mode-button\.active\s*\{/);
+});
+
+test('character cards use a readable overview and warn before cross-genre loading', async () => {
+  const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(html, /id="character-overview"/);
+  assert.match(html, /class="advanced-data-panel character-advanced-panel"/);
+  assert.match(html, /高级 JSON 编辑/);
+  assert.match(app, /function renderCharacterOverview/);
+  assert.match(app, /function inferCharacterContentPackId/);
+  assert.match(app, /function confirmCharacterCompatibility/);
+  assert.match(app, /题材冲突：当前故事是/);
+  assert.match(app, /button\.textContent = '仍然加载'/);
+  assert.match(css, /\.character-overview\s*\{/);
+  assert.match(css, /\.character-compatibility-warning\s*\{/);
+  assert.match(css, /\.character-advanced-panel #character-card-editor/);
 });
 
 test('Hero script is wired through selectors, visuals, guided opening and dynamic character presets', async () => {

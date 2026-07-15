@@ -6,6 +6,12 @@ import {
   normalizeWorldBookEntry
 } from '../config/configService.js';
 import { resolveResourceAdapter } from '../resources/resourceAdapters.js';
+import {
+  aggregateResourceEvaluations,
+  detectExecutionRisks,
+  evaluateResourceCandidate,
+  estimateResourceTokens
+} from '../resources/resourceEvaluator.js';
 
 const RESOURCE_DIR = 'library/resources';
 const PACK_DIR = 'library/packs';
@@ -56,26 +62,23 @@ export class ResourceLibraryService {
         kind: candidate.kind,
         title: candidate.title,
         fingerprint,
-        diagnostics: diagnoseCandidate(candidate, conflicts)
+        diagnostics: evaluateResourceCandidate(candidate, {
+          conflicts,
+          source,
+          adapter
+        })
       };
     });
-
-    const score = resources.length
-      ? Math.round(resources.reduce((sum, item) => sum + item.diagnostics.score, 0) / resources.length)
-      : 0;
+    const evaluation = aggregateResourceEvaluations(resources.map((item) => item.diagnostics));
     return {
       adapter,
-      score,
-      grade: score >= 85 ? '完整' : score >= 65 ? '可用' : '待补全',
+      ...evaluation,
       resources,
-      warningCount: resources.reduce((sum, item) => sum + item.diagnostics.warnings.length, 0),
-      conflictCount: resources.reduce((sum, item) => sum + item.diagnostics.conflicts.length, 0),
-      riskCount: resources.reduce((sum, item) => sum + item.diagnostics.riskFlags.length, 0)
     };
   }
 
-  async savePreview(preview, source = {}) {
-    const inspection = await this.inspectPreview(preview, source);
+  async savePreview(preview, source = {}, { inspection: suppliedInspection = null } = {}) {
+    const inspection = suppliedInspection || await this.inspectPreview(preview, source);
     const candidates = buildPreviewCandidates(preview, source);
     const existing = await this.listResources();
     const importedAt = this.now().toISOString();
@@ -277,91 +280,8 @@ function buildWorldBookCandidate(entries, title) {
   };
 }
 
-function diagnoseCandidate(candidate, conflicts) {
-  const warnings = [];
-  const missingFields = [];
-  const riskFlags = detectExecutionRisks(candidate.payload);
-  let score = 100;
-
-  if (candidate.kind === 'character') {
-    const card = candidate.payload;
-    for (const [field, label, penalty] of [
-      ['description', '角色描述', 15],
-      ['personality', '性格', 12],
-      ['scenario', '当前场景', 10],
-      ['firstMessage', '开场白', 15]
-    ]) {
-      if (!String(card[field] || '').trim()) {
-        missingFields.push({ field, label });
-        score -= penalty;
-      }
-    }
-    if (!String(card.systemPrompt || '').trim() && !String(card.postHistoryInstructions || '').trim()) {
-      warnings.push({ code: 'CHARACTER_WITHOUT_BEHAVIOR_RULE', message: '缺少角色行为约束，长对话中更容易偏离人设。' });
-      score -= 8;
-    }
-    if (!Array.isArray(card.exampleDialog) || !card.exampleDialog.length) {
-      warnings.push({ code: 'CHARACTER_WITHOUT_DIALOG_EXAMPLE', message: '没有示例对话，语言风格主要依赖模型自行发挥。' });
-      score -= 5;
-    }
-  }
-
-  if (candidate.kind === 'worldbook') {
-    const entries = candidate.payload.entries || [];
-    if (!entries.length) {
-      missingFields.push({ field: 'entries', label: '世界书条目' });
-      score -= 70;
-    }
-    const inertEntries = entries.filter((entry) => !entry.constant && !(entry.keywords || []).length && !(entry.regex || []).length);
-    if (inertEntries.length) {
-      warnings.push({ code: 'WORLD_BOOK_INERT_ENTRIES', message: `${inertEntries.length} 条设定没有关键词、正则或常驻标记，可能永远不会触发。` });
-      score -= Math.min(20, inertEntries.length * 3);
-    }
-    const duplicateTitles = findDuplicates(entries.map((entry) => normalizeTitle(entry.title)).filter(Boolean));
-    if (duplicateTitles.length) {
-      warnings.push({ code: 'WORLD_BOOK_DUPLICATE_TITLES', message: `存在 ${duplicateTitles.length} 组同名条目，建议确认覆盖关系。` });
-      score -= Math.min(12, duplicateTitles.length * 2);
-    }
-    if (entries.length > 240) {
-      warnings.push({ code: 'WORLD_BOOK_LARGE', message: '条目很多，建议用触发词和深度控制上下文用量。' });
-      score -= 4;
-    }
-  }
-
-  if (candidate.kind === 'prompt') {
-    if (!String(candidate.payload.content || '').trim()) {
-      missingFields.push({ field: 'content', label: 'Prompt 内容' });
-      score -= 80;
-    }
-  }
-
-  const exactDuplicates = conflicts.filter((item) => item.type === 'exact-duplicate').length;
-  const sameTitles = conflicts.filter((item) => item.type === 'same-title').length;
-  if (exactDuplicates) warnings.push({ code: 'EXACT_DUPLICATE', message: '素材库中已有完全相同的内容，本次不会重复保存。' });
-  if (sameTitles) warnings.push({ code: 'SAME_TITLE_DIFFERENT_CONTENT', message: '素材库中存在同名不同内容，将作为独立版本保留。' });
-  if (riskFlags.length) score -= Math.min(30, riskFlags.length * 10);
-
-  return {
-    score: Math.max(0, score),
-    grade: score >= 85 ? '完整' : score >= 65 ? '可用' : '待补全',
-    warnings,
-    missingFields,
-    conflicts,
-    riskFlags
-  };
-}
-
-function detectExecutionRisks(payload) {
-  const text = JSON.stringify(payload || {}).toLowerCase();
-  const patterns = [
-    ['script-tag', '<script', '包含脚本标签；只会作为文本保存，不会执行。'],
-    ['process-command', 'child_process', '包含进程执行描述；不会获得本机执行权限。'],
-    ['mcp-command', 'mcpservers', '包含 MCP 配置片段；不会自动注册或连接。'],
-    ['shell-command', 'shell_command', '包含 Shell 命令字段；不会自动执行。']
-  ];
-  return patterns
-    .filter(([, marker]) => text.includes(marker))
-    .map(([code, , message]) => ({ code, message }));
+function diagnoseCandidate(candidate, conflicts, options = {}) {
+  return evaluateResourceCandidate(candidate, { conflicts, ...options });
 }
 
 function normalizeSource(source, candidate, importedAt) {
@@ -470,16 +390,6 @@ function uniqueStrings(values) {
   return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
-function findDuplicates(values) {
-  const seen = new Set();
-  const duplicates = new Set();
-  for (const value of values) {
-    if (seen.has(value)) duplicates.add(value);
-    seen.add(value);
-  }
-  return [...duplicates];
-}
-
 function normalizeTitle(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -497,5 +407,6 @@ function summarizeText(value) {
 export const resourceLibraryInternals = {
   createFingerprint,
   detectExecutionRisks,
-  diagnoseCandidate
+  diagnoseCandidate,
+  estimateResourceTokens
 };

@@ -154,6 +154,7 @@ const OPENING_GENRE_OPTIONS = [
 ];
 const WORK_MODES = {
   creative: { label: '创作', defaultTab: 'status', activeView: 'chat' },
+  immersive: { label: '沉浸', defaultTab: 'status', activeView: 'chat' },
   settings: { label: '设定', defaultTab: 'worldbook', activeView: 'inspector' },
   debug: { label: '调试', defaultTab: 'memory', activeView: 'inspector' }
 };
@@ -178,7 +179,7 @@ const WORLD_BOOK_TYPE_LABELS = {
 const MODULE_HELP = {
   contentPack: {
     title: '题材内容包',
-    body: '选择题材会先预览对应主题与背景；点击“应用到会话”后，才会同步世界书、角色卡、Prompt 和规则系统。'
+    body: '选择故事题材会先预览对应界面皮肤与舞台背景；点击“应用到会话”后，才会同步世界书、角色卡、Prompt 和规则系统。'
   },
   memory: {
     title: '记忆',
@@ -245,8 +246,8 @@ const MODULE_HELP = {
     body: '临时追加本回合写作指令，例如天气、节奏、禁用桥段或需要突出某个伏笔。'
   },
   background: {
-    title: '背景',
-    body: '切换会话舞台图，只影响沉浸感，不覆盖会话内容和主题规则。'
+    title: '舞台背景',
+    body: '切换会话舞台图，只影响沉浸感，不覆盖会话内容和题材规则。'
   },
   scrollBottom: {
     title: '回到底部',
@@ -387,6 +388,7 @@ const state = {
 let currentSessionId = localStorage.getItem('localRoleplaySessionId') || 'main';
 let pendingImportPayload = null;
 let pendingImportSource = null;
+let pendingImportCanCommit = false;
 let importSources = FALLBACK_IMPORT_SOURCES;
 let sourceResultItems = [];
 let usageRefreshTimer = null;
@@ -503,12 +505,15 @@ const els = {
   saveSessionSettings: document.querySelector('#save-session-settings'),
   sessionSettingsStatus: document.querySelector('#session-settings-status'),
   refreshState: document.querySelector('#refresh-state'),
+  memoryOverview: document.querySelector('#memory-overview'),
   memoryView: document.querySelector('#memory-view'),
   ruleStatusView: document.querySelector('#rule-status-view'),
   workspace: document.querySelector('.workspace'),
   workModeButtons: Array.from(document.querySelectorAll('#work-mode-switch .work-mode-button[data-work-mode]')),
+  exitImmersiveMode: document.querySelector('#exit-immersive-mode'),
   narrativeModeButtons: Array.from(document.querySelectorAll('#narrative-mode-switch .narrative-mode-button[data-narrative-mode]')),
   inspectorPanel: document.querySelector('.inspector-panel'),
+  inspectorTabSelect: document.querySelector('#inspector-tab-select'),
   providerPanel: document.querySelector('.provider-panel'),
   toggleInspectorPanel: document.querySelector('#toggle-inspector-panel'),
   toggleProviderPanel: document.querySelector('#toggle-provider-panel'),
@@ -550,11 +555,15 @@ const els = {
   contentPackStatus: document.querySelector('#content-pack-status'),
   contentStackStatus: document.querySelector('#content-stack-status'),
   contentStackItems: document.querySelector('#content-stack-items'),
+  characterOverview: document.querySelector('#character-overview'),
   characterCardEditor: document.querySelector('#character-card-editor'),
   characterCardImport: document.querySelector('#character-card-import'),
+  importReviewDialog: document.querySelector('#import-review-dialog'),
+  closeImportReview: document.querySelector('#close-import-review'),
   importPreview: document.querySelector('#import-preview'),
   confirmImport: document.querySelector('#confirm-import'),
   cancelImport: document.querySelector('#cancel-import'),
+  importApplyCurrent: document.querySelector('#import-apply-current'),
   sourceSelect: document.querySelector('#source-select'),
   sourceKind: document.querySelector('#source-kind'),
   sourceQuery: document.querySelector('#source-query'),
@@ -563,6 +572,7 @@ const els = {
   sourceResults: document.querySelector('#source-results'),
   resourceViewButtons: Array.from(document.querySelectorAll('[data-resource-view]')),
   resourceViews: Array.from(document.querySelectorAll('[data-resource-pane]')),
+  resourceFlowSteps: Array.from(document.querySelectorAll('[data-resource-flow-step]')),
   refreshResourceLibrary: document.querySelector('#refresh-resource-library'),
   resourceAdapterSummary: document.querySelector('#resource-adapter-summary'),
   resourceCountAll: document.querySelector('#resource-count-all'),
@@ -641,9 +651,11 @@ function bindEvents() {
   els.toggleProviderPanel?.addEventListener('click', () => setWorkspacePanelExpanded('provider', false));
   els.openInspectorPanel?.addEventListener('click', () => setWorkspacePanelExpanded('inspector', true));
   els.toggleInspectorPanel?.addEventListener('click', () => setWorkspacePanelExpanded('inspector', false));
+  els.exitImmersiveMode?.addEventListener('click', () => activateWorkMode('creative'));
   Array.from(els.inspectorPanel?.querySelectorAll('.tab-button[data-tab]') || []).forEach((button) => {
     button.addEventListener('click', () => activateTab(button.dataset.tab));
   });
+  els.inspectorTabSelect?.addEventListener('change', () => activateTab(els.inspectorTabSelect.value));
 
   document.querySelector('#provider-form').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -730,7 +742,9 @@ function bindEvents() {
   }
   document.addEventListener('click', handleModuleHelpClick);
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeModuleHint();
+    if (event.key !== 'Escape') return;
+    closeModuleHint();
+    if (els.workspace?.dataset.workMode === 'immersive') activateWorkMode('creative');
   });
 
   els.themeSelect.addEventListener('change', () => saveSessionTheme(els.themeSelect.value));
@@ -753,6 +767,7 @@ function bindEvents() {
   els.macroTestClear?.addEventListener('click', clearMacroTest);
   els.applyContentPack?.addEventListener('click', () => applyContentPack());
   els.contentPackSelect?.addEventListener('change', () => handleContentPackSelectionChange());
+  els.characterCardEditor?.addEventListener('input', () => renderCharacterOverview(safeObjectFromTextarea(els.characterCardEditor)));
   els.saveCharacterCard.addEventListener('click', () => saveCharacterCard());
   els.exportCharacterCard?.addEventListener('click', exportCharacterCardPng);
   els.loadCharacterPreset?.addEventListener('click', loadCharacterPresetFavorite);
@@ -769,6 +784,12 @@ function bindEvents() {
   els.characterCardImport.addEventListener('change', () => importCharacterCardFile());
   els.confirmImport.addEventListener('click', () => commitPendingImport());
   els.cancelImport.addEventListener('click', () => cancelPendingImport());
+  els.closeImportReview?.addEventListener('click', () => cancelPendingImport());
+  els.importApplyCurrent?.addEventListener('change', updateImportActionLabel);
+  els.importReviewDialog?.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    cancelPendingImport();
+  });
   els.sourceSearch?.addEventListener('click', () => searchImportSources());
   els.sourceQuery?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
@@ -788,6 +809,8 @@ function bindEvents() {
   els.applyPromptPreset?.addEventListener('click', () => applyPromptPreset());
   els.applyWorldbookPreset?.addEventListener('click', () => applyWorldbookPreset());
   els.applyCharacterPreset?.addEventListener('click', () => applyCharacterPreset());
+  els.characterPresetSelect?.addEventListener('change', () => resetCharacterCompatibilityConfirmation(els.applyCharacterPreset));
+  els.characterPresetFavorites?.addEventListener('change', () => resetCharacterCompatibilityConfirmation(els.loadCharacterPreset));
 
   els.sessionSelect?.addEventListener('change', () => {
     currentSessionId = els.sessionSelect.value;
@@ -1446,16 +1469,16 @@ function updateBackgroundModeUi(backgroundImage = state.session?.settings?.backg
   const label = getBackgroundLabelForUrl(bg);
   els.toggleBackground?.classList.toggle('active', isCustom);
   if (els.toggleBackground) {
-    els.toggleBackground.title = isCustom ? `正在使用${label || '自定义'}场景背景` : '当前未设置场景背景';
+    els.toggleBackground.title = isCustom ? `正在使用${label || '自定义'}舞台背景` : '当前未设置舞台背景';
   }
   if (els.backgroundMode) {
-    els.backgroundMode.textContent = isCustom ? `场景：${label || '自定义背景'}` : '场景：未设置背景';
+    els.backgroundMode.textContent = isCustom ? `舞台背景：${label || '自定义'}` : '舞台背景：未设置';
     els.backgroundMode.classList.toggle('is-custom', isCustom);
   }
   if (els.backgroundStatus) {
     els.backgroundStatus.textContent = isCustom
-      ? `当前：${label || '自定义场景背景'}。主题只影响界面色调，不覆盖会话框。`
-      : '当前：未设置背景。主题只影响界面，不覆盖会话框。';
+      ? `当前：${label || '自定义舞台背景'}。界面皮肤只影响工作台，不覆盖会话内容。`
+      : '当前：未设置舞台背景。界面皮肤只影响工作台，不覆盖会话内容。';
   }
 }
 
@@ -2765,7 +2788,7 @@ function renderSetupPanel(tpl) {
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button';
   cancelButton.className = 'epic-secondary-btn';
-  cancelButton.textContent = '稍后再说';
+  cancelButton.textContent = '返回创作台';
   cancelButton.addEventListener('click', closePanel);
   previousButton = document.createElement('button');
   previousButton.type = 'button';
@@ -2780,7 +2803,13 @@ function renderSetupPanel(tpl) {
   sealButton = document.createElement('button');
   sealButton.type = 'button';
   sealButton.className = 'epic-start-btn epic-seal-btn';
-  sealButton.textContent = tpl.buttonText || '[ 封存卷轴 · 开启征途 ]';
+  const sealTitle = document.createElement('span');
+  sealTitle.className = 'epic-seal-title';
+  sealTitle.textContent = tpl.buttonText || '[ 封存卷轴 · 开启征途 ]';
+  const sealHint = document.createElement('small');
+  sealHint.className = 'epic-seal-hint';
+  sealHint.textContent = '开始剧情';
+  sealButton.append(sealTitle, sealHint);
   sealButton.addEventListener('click', finishJourney);
   footerActions.append(cancelButton, previousButton, nextButton, sealButton);
   footer.append(footerStatus, footerActions);
@@ -3141,6 +3170,7 @@ function findMessage(messageId) {
 
 function renderInspector() {
   renderContentStack();
+  renderMemoryOverview();
   els.memoryView.textContent = prettyJson(state.session?.memory || {});
   renderRuleStatus();
   renderUsageView();
@@ -3148,7 +3178,7 @@ function renderInspector() {
   els.worldbookEditor.value = prettyJson(state.config.worldBook || []);
   renderWorldbookEntries();
   renderMacroTemplates();
-  els.characterCardEditor.value = prettyJson(state.config.characterCard || createCharacterCardTemplate());
+  setCharacterCardEditor(state.config.characterCard || createCharacterCardTemplate());
   els.promptEditor.value = prettyJson(state.config.promptModules || []);
   renderPersona();
   renderQuickReplies();
@@ -3157,6 +3187,312 @@ function renderInspector() {
   renderGroupMembers();
   renderTargetSpeakerIndicator();
   renderResourceWorkbench();
+}
+
+function setCharacterCardEditor(characterCard) {
+  const safeCard = isPlainObject(characterCard) ? characterCard : createCharacterCardTemplate();
+  if (els.characterCardEditor) els.characterCardEditor.value = prettyJson(safeCard);
+  renderCharacterOverview(safeCard);
+}
+
+function inferCharacterContentPackId(characterCard, presetKey = '') {
+  const explicitPack = characterCard?.extensions?.contentPack
+    || characterCard?.extensions?.content_pack
+    || characterCard?.metadata?.contentPack
+    || characterCard?.metadata?.content_pack;
+  if (openingGenreIds().includes(explicitPack) || (state.contentPacks || []).some((pack) => pack.id === explicitPack)) {
+    return explicitPack;
+  }
+
+  const normalizedKey = String(presetKey || '').toLowerCase();
+  const keyMappings = [
+    ['yingxiongzhi', 'yingxiongzhi'],
+    ['xuanhuan', 'xuanhuan'],
+    ['lingyi', 'lingyi'],
+    ['mingmo', 'mingmo'],
+    ['xianxia', 'xianxia'],
+    ['yechenzhou', 'xuanhuan']
+  ];
+  const mappedByKey = keyMappings.find(([needle]) => normalizedKey === needle || normalizedKey.startsWith(`${needle}_`));
+  if (mappedByKey) return mappedByKey[1];
+
+  const tagText = (Array.isArray(characterCard?.tags) ? characterCard.tags : [])
+    .map((tag) => String(tag).toLowerCase())
+    .join(' ');
+  const tagMappings = [
+    ['英雄志', 'yingxiongzhi'],
+    ['玄幻', 'xuanhuan'],
+    ['灵异', 'lingyi'],
+    ['民俗', 'lingyi'],
+    ['明末', 'mingmo'],
+    ['仙侠', 'xianxia'],
+    ['修真', 'xianxia']
+  ];
+  return tagMappings.find(([needle]) => tagText.includes(needle))?.[1] || '';
+}
+
+function getCharacterCompatibility(characterCard, presetKey = '') {
+  const storyPackId = getAppliedContentPackId();
+  const characterPackId = inferCharacterContentPackId(characterCard, presetKey);
+  return {
+    storyPackId,
+    characterPackId,
+    mismatched: Boolean(storyPackId && characterPackId && storyPackId !== characterPackId)
+  };
+}
+
+function resetCharacterCompatibilityConfirmation(button) {
+  if (!button) return;
+  const originalLabel = button.dataset.compatibilityOriginalLabel;
+  if (originalLabel) button.textContent = originalLabel;
+  delete button.dataset.compatibilityToken;
+  delete button.dataset.compatibilityOriginalLabel;
+}
+
+function confirmCharacterCompatibility({ button, characterCard, presetKey = '' }) {
+  const compatibility = getCharacterCompatibility(characterCard, presetKey);
+  if (!compatibility.mismatched) {
+    resetCharacterCompatibilityConfirmation(button);
+    return true;
+  }
+
+  const token = `${compatibility.storyPackId}:${compatibility.characterPackId}:${presetKey || characterCard?.name || ''}`;
+  if (button?.dataset.compatibilityToken === token) {
+    resetCharacterCompatibilityConfirmation(button);
+    return true;
+  }
+
+  if (button) {
+    button.dataset.compatibilityOriginalLabel = button.textContent || '加载';
+    button.dataset.compatibilityToken = token;
+    button.textContent = '仍然加载';
+  }
+  setStatus(
+    els.characterCardStatus,
+    `题材冲突：当前故事是“${getContentPackTitle(compatibility.storyPackId)}”，角色属于“${getContentPackTitle(compatibility.characterPackId)}”。再次点击可原样加载。`,
+    'warning'
+  );
+  return false;
+}
+
+function formatCharacterOverviewValue(value) {
+  if (Array.isArray(value)) return value.map((item) => formatCharacterOverviewValue(item)).filter(Boolean).join('\n');
+  if (isPlainObject(value)) {
+    return Object.entries(value)
+      .map(([key, item]) => `${key}：${formatCharacterOverviewValue(item)}`)
+      .filter((item) => !item.endsWith('：'))
+      .join('\n');
+  }
+  return String(value || '').trim();
+}
+
+function createCharacterOverviewSection(title, value, options = {}) {
+  const text = formatCharacterOverviewValue(value);
+  if (!text) return null;
+  const section = document.createElement('details');
+  section.className = 'character-overview-section';
+  section.open = Boolean(options.open);
+  const summary = document.createElement('summary');
+  summary.textContent = title;
+  const content = document.createElement('p');
+  content.textContent = text;
+  section.append(summary, content);
+  return section;
+}
+
+function renderCharacterOverview(characterCard = state.config?.characterCard || {}) {
+  if (!els.characterOverview) return;
+  const card = isPlainObject(characterCard) ? characterCard : {};
+  const compatibility = getCharacterCompatibility(card);
+  const tags = Array.isArray(card.tags) ? card.tags.filter(Boolean) : [];
+  const alternateGreetings = card.alternateGreetings || card.alternate_greetings || [];
+  const exampleDialog = card.exampleDialog || card.mes_example || [];
+  const firstMessage = card.firstMessage || card.first_mes || '';
+  const creatorNotes = card.creatorNotes || card.creator_notes || '';
+  const systemPrompt = card.systemPrompt || card.system_prompt || '';
+  const postHistory = card.postHistoryInstructions || card.post_history_instructions || '';
+  els.characterOverview.replaceChildren();
+
+  const heading = document.createElement('header');
+  heading.className = 'character-overview-heading';
+  const headingText = document.createElement('div');
+  const eyebrow = document.createElement('span');
+  eyebrow.textContent = '当前角色卡';
+  const name = document.createElement('strong');
+  name.textContent = card.name || '未命名角色';
+  headingText.append(eyebrow, name);
+  const packBadge = document.createElement('span');
+  packBadge.className = `character-pack-badge${compatibility.mismatched ? ' is-mismatched' : ''}`;
+  packBadge.textContent = compatibility.characterPackId
+    ? getContentPackTitle(compatibility.characterPackId)
+    : '未声明题材';
+  heading.append(headingText, packBadge);
+  els.characterOverview.append(heading);
+
+  if (compatibility.mismatched) {
+    const warning = document.createElement('div');
+    warning.className = 'character-compatibility-warning';
+    warning.textContent = `当前故事为“${getContentPackTitle(compatibility.storyPackId)}”，此角色属于“${getContentPackTitle(compatibility.characterPackId)}”。加载或保存前请确认是否需要本地化。`;
+    els.characterOverview.append(warning);
+  }
+
+  const identity = document.createElement('div');
+  identity.className = 'character-identity-grid';
+  const identityItems = [
+    ['身份', card.role || card.extensions?.role || '未填写'],
+    ['作者', card.creator || '本地创作'],
+    ['版本', card.characterVersion || card.character_version || '未标注'],
+    ['素材', `${tags.length} 标签 · ${Array.isArray(alternateGreetings) ? alternateGreetings.length : 0} 备选开场 · ${Array.isArray(exampleDialog) ? exampleDialog.length : 0} 对话样例`]
+  ];
+  identityItems.forEach(([label, value]) => {
+    const row = document.createElement('div');
+    const key = document.createElement('span');
+    key.textContent = label;
+    const content = document.createElement('strong');
+    content.textContent = String(value);
+    row.append(key, content);
+    identity.append(row);
+  });
+  els.characterOverview.append(identity);
+
+  if (tags.length) {
+    const tagList = document.createElement('div');
+    tagList.className = 'character-tag-list';
+    tags.slice(0, 12).forEach((tag) => {
+      const chip = document.createElement('span');
+      chip.textContent = String(tag);
+      tagList.append(chip);
+    });
+    els.characterOverview.append(tagList);
+  }
+
+  [
+    createCharacterOverviewSection('人物设定', card.description, { open: true }),
+    createCharacterOverviewSection('性格与行为', card.personality),
+    createCharacterOverviewSection('当前处境', card.scenario),
+    createCharacterOverviewSection('开场白', firstMessage),
+    createCharacterOverviewSection('叙事约束', [systemPrompt, postHistory]),
+    createCharacterOverviewSection('创作者说明', creatorNotes)
+  ].filter(Boolean).forEach((section) => els.characterOverview.append(section));
+}
+
+function renderMemoryOverview() {
+  if (!els.memoryOverview) return;
+  const memory = state.session?.memory || {};
+  const worldState = memory.worldState || {};
+  const narrativeState = memory.narrativeState || {};
+  const protagonist = worldState.protagonist || {};
+  const memoryCards = Array.isArray(memory.memoryCards) ? memory.memoryCards : [];
+  const summary = String(memory.rollingSummary || '').trim();
+
+  const displayValue = (value, fallback = '未记录') => {
+    if (Array.isArray(value)) return value.filter(Boolean).slice(0, 6).join('、') || fallback;
+    if (value && typeof value === 'object') {
+      const text = Object.entries(value)
+        .slice(0, 6)
+        .map(([key, item]) => `${key}: ${Array.isArray(item) ? item.join('、') : String(item)}`)
+        .join(' · ');
+      return text || fallback;
+    }
+    return String(value ?? '').trim() || fallback;
+  };
+
+  const createMetric = (label, value) => {
+    const metric = document.createElement('div');
+    metric.className = 'memory-metric';
+    const number = document.createElement('strong');
+    number.textContent = String(value);
+    const caption = document.createElement('span');
+    caption.textContent = label;
+    metric.append(number, caption);
+    return metric;
+  };
+
+  const createContextRow = (label, value) => {
+    const row = document.createElement('div');
+    row.className = 'memory-context-row';
+    const caption = document.createElement('span');
+    caption.textContent = label;
+    const content = document.createElement('strong');
+    content.textContent = displayValue(value);
+    content.title = content.textContent;
+    row.append(caption, content);
+    return row;
+  };
+
+  els.memoryOverview.innerHTML = '';
+
+  const heading = document.createElement('header');
+  heading.className = 'memory-overview-heading';
+  const title = document.createElement('div');
+  const eyebrow = document.createElement('span');
+  eyebrow.textContent = '长期叙事记忆';
+  const headingText = document.createElement('strong');
+  headingText.textContent = '当前会话记忆总览';
+  title.append(eyebrow, headingText);
+  const badge = document.createElement('span');
+  badge.className = 'memory-pending-badge';
+  const pendingTurns = Number(memory.unsummarizedTurnCount || 0);
+  badge.textContent = pendingTurns ? `${pendingTurns} 回合待整理` : '已同步';
+  heading.append(title, badge);
+  els.memoryOverview.append(heading);
+
+  const metrics = document.createElement('div');
+  metrics.className = 'memory-metrics';
+  metrics.append(
+    createMetric('摘要字数', summary.length),
+    createMetric('事实卡', memoryCards.length),
+    createMetric('状态域', Object.keys(worldState).length)
+  );
+  els.memoryOverview.append(metrics);
+
+  const summaryCard = document.createElement('section');
+  summaryCard.className = 'memory-overview-card memory-summary-card';
+  const summaryTitle = document.createElement('strong');
+  summaryTitle.textContent = '章节摘要';
+  const summaryText = document.createElement('p');
+  summaryText.textContent = summary || '尚未形成章节摘要。对话达到总结阈值后，系统会在这里沉淀长期情节。';
+  summaryCard.append(summaryTitle, summaryText);
+  els.memoryOverview.append(summaryCard);
+
+  const contextCard = document.createElement('section');
+  contextCard.className = 'memory-overview-card';
+  const contextTitle = document.createElement('strong');
+  contextTitle.textContent = '当前叙事坐标';
+  const contextGrid = document.createElement('div');
+  contextGrid.className = 'memory-context-grid';
+  contextGrid.append(
+    createContextRow('题材', worldState.flags?.genre || memory.ruleSystem?.title),
+    createContextRow('主角', protagonist.name || state.config?.characterCard?.name),
+    createContextRow('地点', worldState.location || worldState.currentLocation || narrativeState.currentLocation),
+    createContextRow('时间', worldState.time || worldState.date || narrativeState.currentTime),
+    createContextRow('主线', narrativeState.activeArc || narrativeState.currentArc),
+    createContextRow('随身物品', worldState.inventory || protagonist.inventory)
+  );
+  contextCard.append(contextTitle, contextGrid);
+  els.memoryOverview.append(contextCard);
+
+  if (memoryCards.length) {
+    const factCard = document.createElement('section');
+    factCard.className = 'memory-overview-card';
+    const factTitle = document.createElement('strong');
+    factTitle.textContent = '最近提取的事实';
+    const factList = document.createElement('div');
+    factList.className = 'memory-recent-facts';
+    memoryCards.slice(0, 4).forEach((fact) => {
+      const item = document.createElement('div');
+      const itemTitle = document.createElement('span');
+      itemTitle.textContent = fact.title || fact.subject || '叙事事实';
+      const itemContent = document.createElement('p');
+      itemContent.textContent = fact.content || fact.fact
+        || [fact.subject, fact.predicate, fact.object].filter(Boolean).join(' ')
+        || '等待补充内容';
+      item.append(itemTitle, itemContent);
+      factList.append(item);
+    });
+    factCard.append(factTitle, factList);
+    els.memoryOverview.append(factCard);
+  }
 }
 
 function getAppliedContentPackId() {
@@ -3519,6 +3855,16 @@ function activateResourceView(view) {
     const active = pane.dataset.resourcePane === safeView;
     pane.classList.toggle('active', active);
     pane.hidden = !active;
+  });
+  setResourceFlowStep(safeView === 'online' ? 'discover' : safeView);
+}
+
+function setResourceFlowStep(step) {
+  els.resourceFlowSteps?.forEach((item) => {
+    const active = item.dataset.resourceFlowStep === step;
+    item.classList.toggle('active', active);
+    if (active) item.setAttribute('aria-current', 'step');
+    else item.removeAttribute('aria-current');
   });
 }
 
@@ -3957,9 +4303,7 @@ async function previewImportSourceItem(item, button) {
     pendingImportPayload = payload.payload;
     pendingImportSource = source;
     renderImportPreview(inspected.preview);
-    activateTab('character');
-    setStatus(els.sourceStatus, '导入预览已生成', 'ok');
-    setStatus(els.characterCardStatus, '素材源预览已生成，请确认后写入', 'ok');
+    setStatus(els.sourceStatus, '评定报告已生成', 'ok');
   } catch (error) {
     setStatus(els.sourceStatus, `预览失败：${humanizeApiError(error)}`, 'error');
   } finally {
@@ -3988,6 +4332,25 @@ function renderUsageView() {
     createUsageMetric('回复', formatTokenCount(usage.totals.completionTokens)),
     createUsageMetric('调用', String(usage.totals.calls))
   );
+
+  const taskList = document.createElement('div');
+  taskList.className = 'usage-provider-list';
+  (usage.byTask || []).forEach((row) => {
+    const item = document.createElement('article');
+    item.className = 'usage-row';
+    const title = document.createElement('div');
+    title.className = 'usage-row-title';
+    title.textContent = `任务 · ${formatUsageTask(row.taskKey)}`;
+    const detail = document.createElement('div');
+    detail.className = 'usage-row-detail';
+    detail.textContent = [
+      `调用 ${row.calls}`,
+      `总 ${formatTokenCount(row.totalTokens)}`,
+      row.fallbackCalls ? `回退 ${row.fallbackCalls}` : ''
+    ].filter(Boolean).join(' · ');
+    item.append(title, detail);
+    taskList.append(item);
+  });
 
   const providerList = document.createElement('div');
   providerList.className = 'usage-provider-list';
@@ -4019,7 +4382,7 @@ function renderUsageView() {
 
     const title = document.createElement('div');
     title.className = 'usage-row-title';
-    title.textContent = `${row.sessionId || currentSessionId} · ${row.providerId || 'provider'} · ${row.model || 'model'}`;
+    title.textContent = `${row.sessionId || currentSessionId} · ${formatUsageTask(row.taskKey)} · ${row.providerId || 'provider'} · ${row.model || 'model'}`;
 
     const detail = document.createElement('div');
     detail.className = 'usage-row-detail';
@@ -4028,6 +4391,8 @@ function renderUsageView() {
       `Prompt ${formatTokenCount(row.promptTokens)}`,
       `回复 ${formatTokenCount(row.completionTokens)}`,
       row.injectedCards ? `注入 ${row.injectedCards} 条` : '',
+      row.fallbackUsed ? `已从 ${row.requestedProviderId || '主模型'} 回退` : '',
+      row.durationMs ? `${row.durationMs} ms` : '',
       row.estimated === false ? '服务商返回' : '本地估算'
     ].filter(Boolean).join(' · ');
 
@@ -4039,7 +4404,16 @@ function renderUsageView() {
     list.append(item);
   });
 
-  els.usageView.append(summary, providerList, list);
+  els.usageView.append(summary, taskList, providerList, list);
+}
+
+function formatUsageTask(taskKey) {
+  return ({
+    chat: '叙事对话',
+    rewrite: '文本改写',
+    fact: '事实提取',
+    summary: '记忆总结'
+  })[String(taskKey || '')] || String(taskKey || '其他任务');
 }
 
 async function loadUsageStats({ silent = false } = {}) {
@@ -4501,11 +4875,19 @@ async function saveProvider() {
   els.saveProvider.disabled = true;
   try {
     const provider = readProviderForm();
+    const existingProviders = Array.isArray(state.config?.providers?.providers)
+      ? state.config.providers.providers
+      : [];
     const providers = {
       activeProviderId: provider.id,
-      taskProviders: isPlainObject(state.config?.providers?.taskProviders) ? state.config.providers.taskProviders : { chat: '', fact: '', summary: '' },
+      taskProviders: isPlainObject(state.config?.providers?.taskProviders)
+        ? state.config.providers.taskProviders
+        : { chat: '', rewrite: '', fact: '', summary: '' },
+      taskFallbackChains: isPlainObject(state.config?.providers?.taskFallbackChains)
+        ? state.config.providers.taskFallbackChains
+        : {},
       fallbackChain: Array.isArray(state.config?.providers?.fallbackChain) ? state.config.providers.fallbackChain : [],
-      providers: [provider]
+      providers: [...existingProviders.filter((item) => item.id !== provider.id), provider]
     };
 
     await apiRequest('/api/providers', {
@@ -4566,7 +4948,7 @@ async function loadReleaseState() {
       apiRequest('/api/backups')
     ]);
     if (els.releaseVersion) {
-      els.releaseVersion.textContent = `v${health.version || '0.2.0'} · 数据 v${health.dataSchemaVersion ?? '-'}`;
+      els.releaseVersion.textContent = `v${health.version || '0.2.1'} · 数据 v${health.dataSchemaVersion ?? '-'}`;
     }
     renderBackupOptions(backupPayload.backups || []);
     if (backupPayload.invalidCount) {
@@ -4680,6 +5062,7 @@ async function saveProviderRouting() {
     const currentProviders = state.config?.providers || {};
     const providers = Array.isArray(currentProviders.providers) ? currentProviders.providers : [];
     const taskProviders = {
+      ...(isPlainObject(currentProviders.taskProviders) ? currentProviders.taskProviders : {}),
       chat: els.taskProviderChat?.value || '',
       fact: els.taskProviderFact?.value || '',
       summary: els.taskProviderSummary?.value || ''
@@ -4697,6 +5080,9 @@ async function saveProviderRouting() {
     const payload = {
       activeProviderId: currentProviders.activeProviderId || providers[0]?.id || '',
       taskProviders,
+      taskFallbackChains: isPlainObject(currentProviders.taskFallbackChains)
+        ? currentProviders.taskFallbackChains
+        : {},
       fallbackChain,
       providers
     };
@@ -5564,7 +5950,7 @@ async function saveCharacterCard() {
       }
     });
     state.config.characterCard = payload.characterCard || characterCard;
-    els.characterCardEditor.value = prettyJson(state.config.characterCard);
+    setCharacterCardEditor(state.config.characterCard);
     setStatus(els.characterCardStatus, '角色卡已保存', 'ok');
   } catch (error) {
     setStatus(els.characterCardStatus, `保存失败：${error.message}`, 'error');
@@ -5627,6 +6013,11 @@ async function loadCharacterPresetFavorite() {
   }
   const preset = (state.config?.characterPresets || []).find((p) => p.id === presetId);
   if (!preset) return;
+  if (preset.characterCard && !confirmCharacterCompatibility({
+    button: els.loadCharacterPreset,
+    characterCard: preset.characterCard,
+    presetKey: `favorite:${presetId}`
+  })) return;
 
   try {
     if (preset.characterCard) {
@@ -5635,7 +6026,7 @@ async function loadCharacterPresetFavorite() {
         body: { sessionId: currentSessionId, characterCard: preset.characterCard }
       });
       state.config.characterCard = payload.characterCard;
-      els.characterCardEditor.value = prettyJson(state.config.characterCard);
+      setCharacterCardEditor(state.config.characterCard);
     }
     if (Array.isArray(preset.worldBook) && preset.worldBook.length) {
       const wbPayload = await apiRequest('/api/world-book', {
@@ -6289,7 +6680,7 @@ async function pickTargetSpeaker() {
 }
 
 function resetCharacterCardTemplate() {
-  els.characterCardEditor.value = prettyJson({
+  setCharacterCardEditor({
     ...createCharacterCardTemplate(),
     ...safeObjectFromTextarea(els.characterCardEditor)
   });
@@ -6337,16 +6728,26 @@ async function commitPendingImport() {
   setStatus(els.characterCardStatus, '正在写入导入内容...', 'busy');
   setImportButtonsDisabled(true);
   try {
+    const applyToActiveConfig = els.importApplyCurrent?.checked === true;
     const payload = await apiRequest('/api/import/commit', {
       method: 'POST',
-      body: { payload: pendingImportPayload, source: pendingImportSource || {} }
+      body: {
+        payload: pendingImportPayload,
+        source: pendingImportSource || {},
+        applyToActiveConfig
+      }
     });
     await loadResourceLibrary();
     clearPendingImport({ resetFile: false });
     const count = Number(payload.importedWorldBookCount || 0);
     const created = (payload.libraryResources || []).filter((item) => item.importStatus === 'created').length;
     const duplicates = (payload.libraryResources || []).filter((item) => item.importStatus === 'duplicate').length;
-    setStatus(els.characterCardStatus, `已入素材库：新增 ${created}，重复 ${duplicates}，附带世界书 ${count} 条`, 'ok');
+    const applied = payload.applyMode === 'active-config';
+    const resultText = applied
+      ? `已入库并载入：新增 ${created}，重复 ${duplicates}，世界书 ${count} 条`
+      : `已存入素材库：新增 ${created}，重复 ${duplicates}`;
+    setStatus(els.characterCardStatus, resultText, 'ok');
+    setStatus(els.resourceLibraryStatus, resultText, 'ok');
     activateTab('sources');
     activateResourceView('library');
   } catch (error) {
@@ -6358,16 +6759,78 @@ async function commitPendingImport() {
 
 function cancelPendingImport() {
   clearPendingImport();
+  const activeResourceView = els.resourceViewButtons.find((button) => button.classList.contains('active'))?.dataset.resourceView;
+  activateResourceView(activeResourceView || 'library');
   setStatus(els.characterCardStatus, '已取消导入', 'ok');
+  setStatus(els.sourceStatus, '已取消导入', 'ok');
 }
 
 function renderImportPreview(preview = {}) {
   const summary = preview.summary || {};
+  const inspection = preview.inspection || {};
+  const resources = Array.isArray(inspection.resources) ? inspection.resources : [];
+  pendingImportCanCommit = inspection.canImport !== false;
   els.importPreview.innerHTML = '';
 
-  const title = document.createElement('div');
-  title.className = 'import-preview-title';
-  title.textContent = preview.kind === 'world-book' ? '世界书导入预览' : '角色卡导入预览';
+  const assessment = document.createElement('section');
+  assessment.className = 'import-assessment';
+  const score = document.createElement('div');
+  score.className = `import-score import-score-${inspection.verdict || 'review'}`;
+  const scoreValue = document.createElement('strong');
+  scoreValue.textContent = String(Number(inspection.score || 0));
+  const scoreUnit = document.createElement('span');
+  scoreUnit.textContent = '/ 100';
+  score.append(scoreValue, scoreUnit);
+
+  const assessmentCopy = document.createElement('div');
+  assessmentCopy.className = 'import-assessment-copy';
+  const eyebrow = document.createElement('span');
+  eyebrow.textContent = preview.kind === 'world-book' ? '世界书' : '角色卡';
+  const title = document.createElement('h3');
+  title.textContent = preview.kind === 'world-book'
+    ? (preview.title || summary.titles?.[0] || '未命名世界书')
+    : (summary.characterName || '未命名角色');
+  const recommendation = document.createElement('p');
+  recommendation.textContent = inspection.summary || '解析完成，可以审阅后存入素材库。';
+  assessmentCopy.append(eyebrow, title, recommendation);
+
+  const verdict = document.createElement('span');
+  verdict.className = `import-verdict import-verdict-${inspection.verdict || 'review'}`;
+  verdict.textContent = inspection.verdictLabel || inspection.grade || '待检查';
+  assessment.append(score, assessmentCopy, verdict);
+  els.importPreview.append(assessment);
+
+  if (Array.isArray(inspection.dimensions) && inspection.dimensions.length) {
+    const dimensionSection = document.createElement('section');
+    dimensionSection.className = 'import-dimensions';
+    const heading = document.createElement('div');
+    heading.className = 'import-section-heading';
+    heading.innerHTML = '<strong>技术评定</strong><span>只评估结构、兼容性与运行质量</span>';
+    const dimensionList = document.createElement('div');
+    dimensionList.className = 'import-dimension-list';
+    inspection.dimensions.forEach((dimension) => {
+      const row = document.createElement('div');
+      row.className = `import-dimension is-${dimension.status || 'review'}`;
+      const label = document.createElement('div');
+      label.className = 'import-dimension-label';
+      const name = document.createElement('strong');
+      name.textContent = dimension.label || dimension.id;
+      const value = document.createElement('span');
+      value.textContent = `${Number(dimension.score || 0)} 分`;
+      label.append(name, value);
+      const track = document.createElement('div');
+      track.className = 'import-dimension-track';
+      const fill = document.createElement('span');
+      fill.style.width = `${Math.max(0, Math.min(100, Number(dimension.score || 0)))}%`;
+      track.append(fill);
+      const note = document.createElement('small');
+      note.textContent = dimension.summary || '';
+      row.append(label, track, note);
+      dimensionList.append(row);
+    });
+    dimensionSection.append(heading, dimensionList);
+    els.importPreview.append(dimensionSection);
+  }
 
   const list = document.createElement('ul');
   list.className = 'import-preview-list';
@@ -6386,39 +6849,88 @@ function renderImportPreview(preview = {}) {
     Array.isArray(summary.keywordSamples) && summary.keywordSamples.length ? summary.keywordSamples.join('、') : '无'
   );
   appendImportPreviewItem(list, '写入方式', summary.worldBookMode === 'append-dedupe' ? '追加并自动去重' : '按导入类型写入');
+  appendImportPreviewItem(list, '格式适配', inspection.adapter?.label || inspection.adapter?.id || '通用适配');
+  appendImportPreviewItem(list, '预计体量', `${formatTokenCount(inspection.estimatedTokens || 0)} tokens`);
+  appendImportPreviewItem(list, '冲突检查', inspection.conflictCount ? `${inspection.conflictCount} 项` : '未发现');
+  const overview = document.createElement('section');
+  overview.className = 'import-overview';
+  const overviewHeading = document.createElement('div');
+  overviewHeading.className = 'import-section-heading';
+  overviewHeading.innerHTML = '<strong>导入内容</strong><span>默认只进入本地素材库</span>';
+  overview.append(overviewHeading, list);
+  els.importPreview.append(overview);
 
-  const inspection = preview.inspection;
-  if (inspection) {
-    appendImportPreviewItem(list, '格式适配', inspection.adapter?.label || inspection.adapter?.id || '通用适配');
-    appendImportPreviewItem(list, '完整度', `${Number(inspection.score || 0)} 分 · ${inspection.grade || '待检查'}`);
-    appendImportPreviewItem(list, '冲突', inspection.conflictCount ? `${inspection.conflictCount} 项（将保留独立版本）` : '无');
+  if (resources.length) {
+    const resourceReports = document.createElement('section');
+    resourceReports.className = 'import-resource-reports';
+    const reportHeading = document.createElement('div');
+    reportHeading.className = 'import-section-heading';
+    reportHeading.innerHTML = `<strong>资源明细</strong><span>${resources.length} 份独立素材</span>`;
+    resourceReports.append(reportHeading);
+    resources.forEach((resource) => resourceReports.append(createImportResourceReport(resource)));
+    els.importPreview.append(resourceReports);
   }
 
-  els.importPreview.append(title, list);
-  if (inspection) {
-    const notes = inspection.resources
-      .flatMap((resource) => [
-        ...(resource.diagnostics?.warnings || []).map((item) => item.message),
-        ...(resource.diagnostics?.riskFlags || []).map((item) => item.message)
-      ]);
-    if (notes.length) {
-      const notice = document.createElement('div');
-      notice.className = 'import-diagnostics';
-      const heading = document.createElement('strong');
-      heading.textContent = '入库提示';
-      const noteList = document.createElement('ul');
-      [...new Set(notes)].slice(0, 5).forEach((text) => {
-        const item = document.createElement('li');
-        item.textContent = text;
-        noteList.append(item);
-      });
-      notice.append(heading, noteList);
-      els.importPreview.append(notice);
-    }
+  const blocking = resources.flatMap((resource) => resource.diagnostics?.blockingIssues || []);
+  const warnings = resources.flatMap((resource) => resource.diagnostics?.warnings || []);
+  const risks = resources.flatMap((resource) => resource.diagnostics?.riskFlags || []);
+  appendImportNoticeSection(els.importPreview, '必须处理', blocking, 'danger');
+  appendImportNoticeSection(els.importPreview, '建议审阅', warnings, 'warning');
+  appendImportNoticeSection(els.importPreview, '执行隔离', risks, 'neutral');
+
+  if (els.importReviewDialog) {
+    els.importReviewDialog.dataset.verdict = inspection.verdict || 'review';
   }
-  els.importPreview.hidden = false;
+  if (els.importApplyCurrent) els.importApplyCurrent.checked = false;
   els.confirmImport.hidden = false;
   els.cancelImport.hidden = false;
+  setResourceFlowStep('review');
+  updateImportActionLabel();
+  setImportButtonsDisabled(false);
+  if (els.importReviewDialog && !els.importReviewDialog.open) els.importReviewDialog.showModal();
+}
+
+function createImportResourceReport(resource) {
+  const details = document.createElement('details');
+  details.className = 'import-resource-report';
+  details.open = resource.diagnostics?.verdict !== 'recommended';
+  const summary = document.createElement('summary');
+  const identity = document.createElement('span');
+  identity.textContent = `${resourceKindLabel(resource.kind)} · ${resource.title || '未命名素材'}`;
+  const score = document.createElement('strong');
+  score.textContent = `${Number(resource.diagnostics?.score || 0)} 分`;
+  summary.append(identity, score);
+  const body = document.createElement('div');
+  body.className = 'import-resource-report-body';
+  const recommendation = document.createElement('p');
+  recommendation.textContent = resource.diagnostics?.recommendation || '未发现阻断项。';
+  const meta = document.createElement('div');
+  meta.className = 'import-resource-report-meta';
+  meta.textContent = [
+    `${formatTokenCount(resource.diagnostics?.estimatedTokens || 0)} tokens`,
+    resource.diagnostics?.missingFields?.length ? `缺少 ${resource.diagnostics.missingFields.length} 项` : '核心字段齐备',
+    resource.diagnostics?.conflicts?.length ? `${resource.diagnostics.conflicts.length} 项库内冲突` : '无库内冲突'
+  ].join(' · ');
+  body.append(recommendation, meta);
+  details.append(summary, body);
+  return details;
+}
+
+function appendImportNoticeSection(parent, title, notices, tone) {
+  const unique = [...new Map((notices || []).map((item) => [item.code || item.message, item])).values()];
+  if (!unique.length) return;
+  const section = document.createElement('section');
+  section.className = `import-notices import-notices-${tone}`;
+  const heading = document.createElement('strong');
+  heading.textContent = title;
+  const list = document.createElement('ul');
+  unique.slice(0, 8).forEach((notice) => {
+    const item = document.createElement('li');
+    item.textContent = notice.message || String(notice);
+    list.append(item);
+  });
+  section.append(heading, list);
+  parent.append(section);
 }
 
 function appendImportPreviewItem(list, label, value) {
@@ -6435,16 +6947,27 @@ function appendImportPreviewItem(list, label, value) {
 function clearPendingImport({ resetFile = true } = {}) {
   pendingImportPayload = null;
   pendingImportSource = null;
+  pendingImportCanCommit = false;
   els.importPreview.innerHTML = '';
-  els.importPreview.hidden = true;
-  els.confirmImport.hidden = true;
-  els.cancelImport.hidden = true;
+  if (els.importReviewDialog?.open) els.importReviewDialog.close();
+  if (els.importReviewDialog) delete els.importReviewDialog.dataset.verdict;
+  if (els.importApplyCurrent) els.importApplyCurrent.checked = false;
   if (resetFile) els.characterCardImport.value = '';
 }
 
 function setImportButtonsDisabled(disabled) {
-  els.confirmImport.disabled = disabled;
+  els.confirmImport.disabled = disabled || !pendingImportCanCommit;
   els.cancelImport.disabled = disabled;
+}
+
+function updateImportActionLabel() {
+  if (!els.confirmImport) return;
+  const verdict = els.importReviewDialog?.dataset.verdict;
+  if (!pendingImportCanCommit) {
+    els.confirmImport.textContent = verdict === 'duplicate' ? '已在素材库' : '修正后再导入';
+    return;
+  }
+  els.confirmImport.textContent = els.importApplyCurrent?.checked ? '存入并载入' : '存入素材库';
 }
 
 const PROMPT_PRESETS = {
@@ -7281,7 +7804,7 @@ function randomizeProtagonist() {
         : genre === 'yingxiongzhi'
           ? generateYingxiongzhiProtagonistCard()
           : generateRandomProtagonistCard();
-  els.characterCardEditor.value = prettyJson(characterCard);
+  setCharacterCardEditor(characterCard);
   setStatus(els.characterCardStatus, `已随机生成：${characterCard.name}，请审核后保存`, 'ok');
 }
 
@@ -7620,7 +8143,12 @@ function applyCharacterPreset() {
   const dynamicPreset = state.contentPackCharacterPresets[presetKey];
   const preset = CHARACTER_PRESETS[presetKey] || dynamicPreset?.characterCard;
   if (preset) {
-    els.characterCardEditor.value = prettyJson(preset);
+    if (!confirmCharacterCompatibility({
+      button: els.applyCharacterPreset,
+      characterCard: preset,
+      presetKey
+    })) return;
+    setCharacterCardEditor(preset);
     const sourceLabel = dynamicPreset ? `已加载 ${dynamicPreset.name}` : '已加载预设';
     setStatus(els.characterCardStatus, `${sourceLabel}，请点击保存生效`, 'ok');
   }
@@ -7925,9 +8453,9 @@ async function saveSessionTheme(theme) {
   const value = applyTheme(theme);
   try {
     await saveSessionVisualSettings({ theme: value });
-    setStatus(els.appStatus, '主题已保存到当前会话', 'ok');
+    setStatus(els.appStatus, '界面皮肤已保存到当前会话', 'ok');
   } catch (error) {
-    setStatus(els.appStatus, `主题保存失败：${humanizeApiError(error)}`, 'error');
+    setStatus(els.appStatus, `界面皮肤保存失败：${humanizeApiError(error)}`, 'error');
   }
 }
 
@@ -8017,6 +8545,7 @@ function loadWorkMode() {
 function activateWorkMode(mode, options = {}) {
   const safeMode = WORK_MODES[mode] ? mode : 'creative';
   const config = WORK_MODES[safeMode];
+  document.documentElement.dataset.workMode = safeMode;
   if (els.workspace) {
     els.workspace.dataset.workMode = safeMode;
     els.workspace.dataset.activeView = config.activeView;
@@ -8028,7 +8557,7 @@ function activateWorkMode(mode, options = {}) {
     button.setAttribute('aria-pressed', String(active));
   });
 
-  if (safeMode === 'creative') {
+  if (safeMode === 'creative' || safeMode === 'immersive') {
     setWorkspacePanelExpanded('provider', false);
     setWorkspacePanelExpanded('inspector', false);
     setWorkspaceActiveView('chat');
@@ -8053,6 +8582,23 @@ function syncMobileNavForWorkMode(mode) {
   syncMobileNavForView(els.workspace?.dataset.activeView || WORK_MODES[mode]?.activeView || 'chat', mode);
 }
 
+function syncInspectorTabSelect(activeTab) {
+  if (!els.inspectorTabSelect) return;
+  const mode = els.workspace?.dataset.workMode || 'creative';
+  const buttons = Array.from(els.inspectorPanel?.querySelectorAll('.tab-button[data-tab]') || [])
+    .filter((button) => String(button.dataset.modeGroups || '').split(/\s+/).includes(mode));
+  els.inspectorTabSelect.innerHTML = '';
+  buttons.forEach((button) => {
+    const option = document.createElement('option');
+    option.value = button.dataset.tab;
+    option.textContent = button.textContent.trim();
+    els.inspectorTabSelect.append(option);
+  });
+  if (buttons.some((button) => button.dataset.tab === activeTab)) {
+    els.inspectorTabSelect.value = activeTab;
+  }
+}
+
 function activateTab(tab) {
   const tabButtons = Array.from(els.inspectorPanel?.querySelectorAll('.tab-button[data-tab]') || []);
   const tabPanes = Array.from(els.inspectorPanel?.querySelectorAll('.tab-pane[data-pane]') || []);
@@ -8072,6 +8618,11 @@ function activateTab(tab) {
     pane.hidden = !active;
   });
   els.inspectorPanel?.classList.toggle('resource-workbench-open', tab === 'sources');
+  if (tab === 'sources') {
+    const activeResourceView = els.resourceViewButtons.find((button) => button.classList.contains('active'))?.dataset.resourceView;
+    activateResourceView(activeResourceView || 'library');
+  }
+  syncInspectorTabSelect(tab);
   return true;
 }
 

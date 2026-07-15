@@ -137,9 +137,11 @@ function normalizeProviders(value) {
     activeProviderId: String(source.activeProviderId || ''),
     taskProviders: {
       chat: String(source.taskProviders?.chat || ''),
+      rewrite: String(source.taskProviders?.rewrite || ''),
       fact: String(source.taskProviders?.fact || ''),
       summary: String(source.taskProviders?.summary || '')
     },
+    taskFallbackChains: normalizeTaskFallbackChains(source.taskFallbackChains),
     fallbackChain: Array.isArray(source.fallbackChain) ? source.fallbackChain.map((id) => String(id || '')).filter(Boolean) : [],
     providers: Array.isArray(source.providers) ? source.providers.map((provider) => ({
       id: String(provider.id || ''),
@@ -153,6 +155,16 @@ function normalizeProviders(value) {
       headers: isPlainObject(provider.headers) ? provider.headers : {}
     })) : []
   };
+}
+
+function normalizeTaskFallbackChains(value) {
+  const source = isPlainObject(value) ? value : {};
+  return Object.fromEntries(['chat', 'rewrite', 'fact', 'summary'].map((taskKey) => [
+    taskKey,
+    Array.isArray(source[taskKey])
+      ? source[taskKey].map((id) => String(id || '')).filter(Boolean)
+      : []
+  ]));
 }
 
 function normalizeProviderKind(kind) {

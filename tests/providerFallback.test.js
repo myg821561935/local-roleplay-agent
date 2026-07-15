@@ -51,6 +51,10 @@ test('completeWithFallback uses primary when it succeeds', async () => {
     messages: [{ role: 'user', content: 'hi' }]
   });
   assert.equal(result.content, 'A response');
+  assert.equal(result.routing.requestedProviderId, 'A');
+  assert.equal(result.routing.providerId, 'A');
+  assert.equal(result.routing.fallbackUsed, false);
+  assert.deepEqual(result.routing.attempts.map((attempt) => attempt.status), ['success']);
 });
 
 test('completeWithFallback falls back when primary fails', async () => {
@@ -72,6 +76,10 @@ test('completeWithFallback falls back when primary fails', async () => {
     messages: [{ role: 'user', content: 'hi' }]
   });
   assert.equal(result.content, 'B response');
+  assert.equal(result.routing.requestedProviderId, 'A');
+  assert.equal(result.routing.providerId, 'B');
+  assert.equal(result.routing.fallbackUsed, true);
+  assert.deepEqual(result.routing.attempts.map((attempt) => attempt.status), ['error', 'success']);
 });
 
 test('completeWithFallback throws last error when all fail', async () => {
@@ -127,14 +135,17 @@ test('normalizeProviders preserves taskProviders and fallbackChain fields', asyn
       assert.equal(value.taskProviders.fact, 'provider-fact');
       assert.equal(value.taskProviders.summary, 'provider-summary');
       assert.equal(value.taskProviders.chat, 'provider-chat');
+      assert.equal(value.taskProviders.rewrite, 'provider-rewrite');
       assert.deepEqual(value.fallbackChain, ['provider-b']);
+      assert.deepEqual(value.taskFallbackChains.fact, ['provider-b']);
       return value;
     }
   };
   const service = new ConfigService(store);
   await service.saveProviders({
     activeProviderId: 'provider-chat',
-    taskProviders: { chat: 'provider-chat', fact: 'provider-fact', summary: 'provider-summary' },
+    taskProviders: { chat: 'provider-chat', rewrite: 'provider-rewrite', fact: 'provider-fact', summary: 'provider-summary' },
+    taskFallbackChains: { fact: ['provider-b'] },
     fallbackChain: ['provider-b'],
     providers: [
       { id: 'provider-chat', kind: 'openai-compatible', baseUrl: 'http://x', apiKey: 'k', model: 'm' },
@@ -172,7 +183,7 @@ test('runMemoryMaintenanceIfNeeded uses task-routed providers for fact and summa
       eventLedger: []
     },
     messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }],
-    settings: { maxPromptTokens: 100 }
+    settings: { maxPromptTokens: 100, providerId: 'chat' }
   };
   const service = new AgentService({
     configService: { getAll: async () => config },
@@ -189,4 +200,5 @@ test('runMemoryMaintenanceIfNeeded uses task-routed providers for fact and summa
   assert.equal(seenIds[0], 'fact', 'fact 任务应使用 fact provider');
   assert.equal(seenIds[1], 'summary', 'summary 任务应使用 summary provider');
   assert.ok(!seenIds.includes('chat'), 'chat provider 不应被调用');
+  assert.deepEqual(session.usageLedger.map((entry) => entry.taskKey), ['fact', 'summary']);
 });
