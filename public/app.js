@@ -382,13 +382,15 @@ const state = {
   contentPacks: [],
   resourceLibrary: [],
   resourcePacks: [],
-  resourceAdapters: []
+  resourceAdapters: [],
+  plugins: []
 };
 
 let currentSessionId = localStorage.getItem('localRoleplaySessionId') || 'main';
 let pendingImportPayload = null;
 let pendingImportSource = null;
 let pendingImportCanCommit = false;
+let pendingImportKind = '';
 let importSources = FALLBACK_IMPORT_SOURCES;
 let sourceResultItems = [];
 let usageRefreshTimer = null;
@@ -564,6 +566,7 @@ const els = {
   confirmImport: document.querySelector('#confirm-import'),
   cancelImport: document.querySelector('#cancel-import'),
   importApplyCurrent: document.querySelector('#import-apply-current'),
+  importApplyOption: document.querySelector('#import-apply-option'),
   sourceSelect: document.querySelector('#source-select'),
   sourceKind: document.querySelector('#source-kind'),
   sourceQuery: document.querySelector('#source-query'),
@@ -593,6 +596,11 @@ const els = {
   resourcePackPrompts: document.querySelector('#resource-pack-prompts'),
   resourcePackStatus: document.querySelector('#resource-pack-status'),
   resourcePackList: document.querySelector('#resource-pack-list'),
+  pluginManifestImport: document.querySelector('#plugin-manifest-import'),
+  pluginSummary: document.querySelector('#plugin-summary'),
+  pluginList: document.querySelector('#plugin-list'),
+  adapterCount: document.querySelector('#adapter-count'),
+  adapterList: document.querySelector('#adapter-list'),
   saveCharacterCard: document.querySelector('#save-character-card'),
   exportCharacterCard: document.querySelector('#export-character-card'),
   characterPresetFavorites: document.querySelector('#character-preset-favorites'),
@@ -782,6 +790,7 @@ function bindEvents() {
   els.resetCharacterCard.addEventListener('click', () => resetCharacterCardTemplate());
   els.randomProtagonist?.addEventListener('click', () => randomizeProtagonist());
   els.characterCardImport.addEventListener('change', () => importCharacterCardFile());
+  els.pluginManifestImport?.addEventListener('change', () => importCharacterCardFile(els.pluginManifestImport));
   els.confirmImport.addEventListener('click', () => commitPendingImport());
   els.cancelImport.addEventListener('click', () => cancelPendingImport());
   els.closeImportReview?.addEventListener('click', () => cancelPendingImport());
@@ -805,6 +814,7 @@ function bindEvents() {
   els.resourceLibraryList?.addEventListener('click', handleResourceLibraryClick);
   els.resourcePackForm?.addEventListener('submit', createResourcePack);
   els.resourcePackList?.addEventListener('click', handleResourcePackClick);
+  els.pluginList?.addEventListener('click', handlePluginRegistryClick);
   els.savePrompt.addEventListener('click', () => savePromptModules());
   els.applyPromptPreset?.addEventListener('click', () => applyPromptPreset());
   els.applyWorldbookPreset?.addEventListener('click', () => applyWorldbookPreset());
@@ -947,7 +957,8 @@ async function loadState() {
       resourcesResult,
       resourcePacksResult,
       adaptersResult,
-      contentPacksResult
+      contentPacksResult,
+      pluginsResult
     ] = await Promise.allSettled([
       fetch(`/api/state?sessionId=${encodeURIComponent(currentSessionId)}`),
       fetch('/api/sessions'),
@@ -956,7 +967,8 @@ async function loadState() {
       fetch('/api/resource-library/resources'),
       fetch('/api/resource-library/packs'),
       fetch('/api/resource-library/adapters'),
-      fetch('/api/content-packs')
+      fetch('/api/content-packs'),
+      fetch('/api/plugins')
     ]);
 
     if (stateResult.status !== 'fulfilled' || !stateResult.value.ok) {
@@ -993,6 +1005,9 @@ async function loadState() {
     }
     if (contentPacksResult.status === 'fulfilled' && contentPacksResult.value.ok) {
       state.contentPacks = (await contentPacksResult.value.json()).contentPacks || [];
+    }
+    if (pluginsResult.status === 'fulfilled' && pluginsResult.value.ok) {
+      state.plugins = (await pluginsResult.value.json()).plugins || [];
     }
 
     renderContentPackOptions();
@@ -3822,17 +3837,19 @@ async function loadResourceLibrary({ announce = false } = {}) {
   if (announce) setStatus(els.resourceLibraryStatus, '正在刷新资源库...', 'busy');
   if (els.refreshResourceLibrary) els.refreshResourceLibrary.disabled = true;
   try {
-    const [resources, packs, adapters, contentPacks, assets] = await Promise.all([
+    const [resources, packs, adapters, contentPacks, plugins, assets] = await Promise.all([
       apiRequest('/api/resource-library/resources'),
       apiRequest('/api/resource-library/packs'),
       apiRequest('/api/resource-library/adapters'),
       apiRequest('/api/content-packs'),
+      apiRequest('/api/plugins'),
       apiRequest('/api/assets')
     ]);
     state.resourceLibrary = resources.resources || [];
     state.resourcePacks = packs.packs || [];
     state.resourceAdapters = adapters.adapters || [];
     state.contentPacks = contentPacks.contentPacks || [];
+    state.plugins = plugins.plugins || [];
     window.__assets = assets.assets || window.__assets;
     renderContentPackOptions();
     renderResourceWorkbench();
@@ -3845,7 +3862,7 @@ async function loadResourceLibrary({ announce = false } = {}) {
 }
 
 function activateResourceView(view) {
-  const safeView = ['library', 'online', 'composer'].includes(view) ? view : 'library';
+  const safeView = ['library', 'online', 'composer', 'extensions'].includes(view) ? view : 'library';
   els.resourceViewButtons.forEach((button) => {
     const active = button.dataset.resourceView === safeView;
     button.classList.toggle('active', active);
@@ -3856,7 +3873,8 @@ function activateResourceView(view) {
     pane.classList.toggle('active', active);
     pane.hidden = !active;
   });
-  setResourceFlowStep(safeView === 'online' ? 'discover' : safeView);
+  const flowStep = safeView === 'online' ? 'discover' : safeView === 'extensions' ? 'library' : safeView;
+  setResourceFlowStep(flowStep);
 }
 
 function setResourceFlowStep(step) {
@@ -3877,14 +3895,17 @@ function renderResourceWorkbench() {
   if (els.resourceCountPack) els.resourceCountPack.textContent = String(packs.length);
   if (els.resourceAdapterSummary) {
     const adapters = Array.isArray(state.resourceAdapters) ? state.resourceAdapters : [];
+    const localPlugins = (state.plugins || []).filter((item) => item.origin === 'local' && item.enabled);
     els.resourceAdapterSummary.textContent = adapters.length
-      ? `${adapters.length} 个格式适配器已就绪`
+      ? `${adapters.length} 个格式适配器已就绪${localPlugins.length ? ` · ${localPlugins.length} 个本地扩展` : ''}`
       : '支持 Character Card V2 与 SillyTavern 世界书';
     els.resourceAdapterSummary.title = adapters.map((item) => item.label).join('、');
   }
   renderResourceLibrary();
   renderResourcePackBuilder();
   renderResourcePackList();
+  renderPluginRegistry();
+  renderAdapterRegistry();
 }
 
 function renderResourceLibrary() {
@@ -4091,7 +4112,8 @@ function renderResourcePackList() {
     body.innerHTML = `
       <strong>${escapeHtmlText(pack.title || pack.id)}</strong>
       <span>${escapeHtmlText(pack.description || '')}</span>
-      <small>${escapeHtmlText(getContentPackTitle(pack.basePackId, pack.basePackId || '自定义基线'))} · ${Number(pack.counts?.worldBook || 0)} 条世界书 · ${escapeHtmlText(pack.characterName || '沿用角色')}</small>
+      <small>v${escapeHtmlText(pack.version || '1.0.0')} · ${escapeHtmlText(pack.compatibility?.verdictLabel || '待检查')} · ${escapeHtmlText(getContentPackTitle(pack.basePackId, pack.basePackId || '自定义基线'))}</small>
+      <small>${Number(pack.counts?.worldBook || 0)} 条世界书 · ${Number(pack.counts?.promptModules || 0)} 个 Prompt · ${escapeHtmlText(pack.characterName || '沿用角色')}</small>
     `;
     const actions = document.createElement('div');
     actions.className = 'resource-pack-actions';
@@ -4100,12 +4122,19 @@ function renderResourcePackList() {
     apply.className = 'primary-button compact';
     apply.dataset.resourcePackApply = pack.id;
     apply.textContent = '应用';
+    apply.disabled = pack.compatibility?.compatible === false;
+    if (apply.disabled) apply.title = '请先解决内容包依赖或引擎版本问题';
+    const exportButton = document.createElement('button');
+    exportButton.type = 'button';
+    exportButton.className = 'ghost-button compact';
+    exportButton.dataset.resourcePackExport = pack.id;
+    exportButton.textContent = '导出';
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'ghost-button compact';
     remove.dataset.resourcePackDelete = pack.id;
     remove.textContent = '删除';
-    actions.append(apply, remove);
+    actions.append(apply, exportButton, remove);
     item.append(body, actions);
     els.resourcePackList.append(item);
   });
@@ -4126,6 +4155,20 @@ async function handleResourcePackClick(event) {
     return;
   }
 
+  const exportButton = event.target.closest('[data-resource-pack-export]');
+  if (exportButton) {
+    const packId = exportButton.dataset.resourcePackExport;
+    const pack = (state.resourcePacks || []).find((item) => item.id === packId);
+    const link = document.createElement('a');
+    link.href = `/api/content-packs/${encodeURIComponent(packId)}/export`;
+    link.download = `${packId}-${pack?.version || '1.0.0'}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setStatus(els.resourcePackStatus, `已导出：${pack?.title || packId}`, 'ok');
+    return;
+  }
+
   const deleteButton = event.target.closest('[data-resource-pack-delete]');
   if (!deleteButton) return;
   const pack = (state.resourcePacks || []).find((item) => item.id === deleteButton.dataset.resourcePackDelete);
@@ -4138,6 +4181,129 @@ async function handleResourcePackClick(event) {
   } catch (error) {
     setStatus(els.resourcePackStatus, `删除失败：${humanizeApiError(error)}`, 'error');
     deleteButton.disabled = false;
+  }
+}
+
+function renderPluginRegistry() {
+  if (!els.pluginList) return;
+  const plugins = Array.isArray(state.plugins) ? state.plugins : [];
+  const localCount = plugins.filter((item) => item.origin === 'local').length;
+  const enabledCount = plugins.filter((item) => item.enabled && item.compatible).length;
+  if (els.pluginSummary) {
+    els.pluginSummary.textContent = `${plugins.length} 个插件 · ${enabledCount} 个可用 · ${localCount} 个本地安装`;
+  }
+  els.pluginList.innerHTML = '';
+  if (!plugins.length) {
+    const empty = document.createElement('div');
+    empty.className = 'resource-empty-state compact';
+    empty.innerHTML = '<strong>尚未载入插件清单</strong><span>刷新资源库，或导入 lra.plugin/v1 JSON 清单。</span>';
+    els.pluginList.append(empty);
+    return;
+  }
+
+  plugins.forEach((plugin) => {
+    const item = document.createElement('article');
+    item.className = `plugin-registry-item${plugin.enabled ? '' : ' is-disabled'}`;
+    const body = document.createElement('div');
+    body.className = 'plugin-registry-body';
+    const heading = document.createElement('div');
+    heading.className = 'plugin-registry-heading';
+    const name = document.createElement('strong');
+    name.textContent = plugin.name || plugin.id;
+    const status = document.createElement('span');
+    const statusKind = !plugin.compatible ? 'warning' : plugin.enabled ? 'good' : 'muted';
+    status.className = `plugin-registry-status is-${statusKind}`;
+    status.textContent = !plugin.compatible ? '不兼容' : plugin.enabled ? '已启用' : '已停用';
+    heading.append(name, status);
+    const description = document.createElement('p');
+    description.textContent = plugin.manifest?.description || '未提供插件说明。';
+    const meta = document.createElement('small');
+    meta.textContent = `${plugin.origin === 'core' ? '内置' : '本地'} · v${plugin.version || '0.0.0'} · 引擎 ${plugin.manifest?.engine || '*'} · ${Number(plugin.adapterCount || 0)} 个适配器`;
+    body.append(heading, description, meta);
+    if (plugin.blockingIssues?.length || plugin.warnings?.length) {
+      const notice = document.createElement('small');
+      notice.className = 'plugin-registry-notice';
+      notice.textContent = plugin.blockingIssues?.[0]?.message || plugin.warnings?.[0]?.message || '';
+      body.append(notice);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'plugin-registry-actions';
+    if (plugin.origin === 'local') {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'ghost-button compact';
+      toggle.dataset.pluginToggle = plugin.id;
+      toggle.textContent = plugin.enabled ? '停用' : '启用';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'ghost-button compact danger';
+      remove.dataset.pluginDelete = plugin.id;
+      remove.textContent = '移除';
+      actions.append(toggle, remove);
+    } else {
+      const locked = document.createElement('span');
+      locked.className = 'plugin-core-label';
+      locked.textContent = '随引擎提供';
+      actions.append(locked);
+    }
+    item.append(body, actions);
+    els.pluginList.append(item);
+  });
+}
+
+function renderAdapterRegistry() {
+  if (!els.adapterList) return;
+  const adapters = Array.isArray(state.resourceAdapters) ? state.resourceAdapters : [];
+  if (els.adapterCount) els.adapterCount.textContent = `${adapters.length} 个`;
+  els.adapterList.innerHTML = '';
+  adapters.forEach((adapter) => {
+    const row = document.createElement('div');
+    row.className = 'adapter-registry-row';
+    const body = document.createElement('span');
+    const title = document.createElement('strong');
+    title.textContent = adapter.label || adapter.id;
+    const meta = document.createElement('small');
+    const kinds = Array.isArray(adapter.kinds) ? adapter.kinds.join(' / ') : 'resource';
+    const formats = Array.isArray(adapter.formats) ? adapter.formats.join(', ') : '';
+    meta.textContent = `${kinds} · ${formats || '自动识别'} · ${adapter.pluginName || adapter.pluginId}`;
+    body.append(title, meta);
+    const version = document.createElement('small');
+    version.textContent = `v${adapter.version || adapter.pluginVersion || '1.0.0'}`;
+    row.append(body, version);
+    els.adapterList.append(row);
+  });
+}
+
+async function handlePluginRegistryClick(event) {
+  const toggleButton = event.target.closest('[data-plugin-toggle]');
+  const deleteButton = event.target.closest('[data-plugin-delete]');
+  const button = toggleButton || deleteButton;
+  if (!button) return;
+  const pluginId = toggleButton?.dataset.pluginToggle || deleteButton?.dataset.pluginDelete;
+  const plugin = (state.plugins || []).find((item) => item.id === pluginId);
+  if (!plugin) return;
+  if (deleteButton && !window.confirm(`移除扩展“${plugin.name || plugin.id}”？已入库素材不会被删除。`)) return;
+
+  button.disabled = true;
+  try {
+    if (toggleButton) {
+      await apiRequest(`/api/plugins/${encodeURIComponent(pluginId)}`, {
+        method: 'PATCH',
+        body: { enabled: !plugin.enabled }
+      });
+    } else {
+      await apiRequest(`/api/plugins/${encodeURIComponent(pluginId)}`, { method: 'DELETE', body: {} });
+    }
+    await loadResourceLibrary();
+    setStatus(
+      els.resourceLibraryStatus,
+      toggleButton ? `扩展已${plugin.enabled ? '停用' : '启用'}：${plugin.name}` : `扩展已移除：${plugin.name}`,
+      'ok'
+    );
+  } catch (error) {
+    setStatus(els.resourceLibraryStatus, `扩展操作失败：${humanizeApiError(error)}`, 'error');
+    button.disabled = false;
   }
 }
 
@@ -6687,8 +6853,8 @@ function resetCharacterCardTemplate() {
   setStatus(els.characterCardStatus, '已套用角色卡模板，编辑后保存', 'ok');
 }
 
-async function importCharacterCardFile() {
-  const file = els.characterCardImport.files?.[0];
+async function importCharacterCardFile(input = els.characterCardImport) {
+  const file = input?.files?.[0];
   if (!file) return;
   setStatus(els.characterCardStatus, '正在解析导入文件...', 'busy');
   setImportButtonsDisabled(true);
@@ -6714,7 +6880,7 @@ async function importCharacterCardFile() {
     clearPendingImport({ resetFile: false });
     setStatus(els.characterCardStatus, `解析失败：${humanizeApiError(error)}`, 'error');
   } finally {
-    els.characterCardImport.value = '';
+    if (input) input.value = '';
     setImportButtonsDisabled(false);
   }
 }
@@ -6728,7 +6894,8 @@ async function commitPendingImport() {
   setStatus(els.characterCardStatus, '正在写入导入内容...', 'busy');
   setImportButtonsDisabled(true);
   try {
-    const applyToActiveConfig = els.importApplyCurrent?.checked === true;
+    const isPackageImport = pendingImportKind === 'plugin-manifest' || pendingImportKind === 'content-pack';
+    const applyToActiveConfig = !isPackageImport && els.importApplyCurrent?.checked === true;
     const payload = await apiRequest('/api/import/commit', {
       method: 'POST',
       body: {
@@ -6738,18 +6905,24 @@ async function commitPendingImport() {
       }
     });
     await loadResourceLibrary();
+    const importKind = pendingImportKind;
     clearPendingImport({ resetFile: false });
     const count = Number(payload.importedWorldBookCount || 0);
     const created = (payload.libraryResources || []).filter((item) => item.importStatus === 'created').length;
     const duplicates = (payload.libraryResources || []).filter((item) => item.importStatus === 'duplicate').length;
     const applied = payload.applyMode === 'active-config';
-    const resultText = applied
-      ? `已入库并载入：新增 ${created}，重复 ${duplicates}，世界书 ${count} 条`
-      : `已存入素材库：新增 ${created}，重复 ${duplicates}`;
+    const installAction = payload.installStatus === 'updated' ? '已更新' : payload.installStatus === 'duplicate' ? '已存在' : '已安装';
+    const resultText = payload.applyMode === 'plugin-registry'
+      ? `${installAction}扩展：${payload.plugin?.name || payload.plugin?.id || '未命名插件'} v${payload.plugin?.version || ''}`
+      : payload.applyMode === 'content-pack-library'
+        ? `${installAction}内容包：${payload.pack?.title || payload.pack?.id || '未命名内容包'} v${payload.pack?.version || ''}`
+        : applied
+          ? `已入库并载入：新增 ${created}，重复 ${duplicates}，世界书 ${count} 条`
+          : `已存入素材库：新增 ${created}，重复 ${duplicates}`;
     setStatus(els.characterCardStatus, resultText, 'ok');
     setStatus(els.resourceLibraryStatus, resultText, 'ok');
     activateTab('sources');
-    activateResourceView('library');
+    activateResourceView(importKind === 'plugin-manifest' ? 'extensions' : importKind === 'content-pack' ? 'composer' : 'library');
   } catch (error) {
     setStatus(els.characterCardStatus, `导入失败：${humanizeApiError(error)}`, 'error');
   } finally {
@@ -6769,6 +6942,8 @@ function renderImportPreview(preview = {}) {
   const summary = preview.summary || {};
   const inspection = preview.inspection || {};
   const resources = Array.isArray(inspection.resources) ? inspection.resources : [];
+  const isPackageImport = preview.kind === 'content-pack' || preview.kind === 'plugin-manifest';
+  pendingImportKind = preview.kind || '';
   pendingImportCanCommit = inspection.canImport !== false;
   els.importPreview.innerHTML = '';
 
@@ -6785,11 +6960,18 @@ function renderImportPreview(preview = {}) {
   const assessmentCopy = document.createElement('div');
   assessmentCopy.className = 'import-assessment-copy';
   const eyebrow = document.createElement('span');
-  eyebrow.textContent = preview.kind === 'world-book' ? '世界书' : '角色卡';
+  eyebrow.textContent = {
+    'world-book': '世界书',
+    'character-card': '角色卡',
+    'content-pack': '版本化内容包',
+    'plugin-manifest': '声明式适配插件'
+  }[preview.kind] || '创作资源';
   const title = document.createElement('h3');
   title.textContent = preview.kind === 'world-book'
     ? (preview.title || summary.titles?.[0] || '未命名世界书')
-    : (summary.characterName || '未命名角色');
+    : preview.kind === 'character-card'
+      ? (summary.characterName || '未命名角色')
+      : (preview.title || summary.packId || summary.pluginId || '未命名资源包');
   const recommendation = document.createElement('p');
   recommendation.textContent = inspection.summary || '解析完成，可以审阅后存入素材库。';
   assessmentCopy.append(eyebrow, title, recommendation);
@@ -6839,24 +7021,44 @@ function renderImportPreview(preview = {}) {
     appendImportPreviewItem(list, '开场白', summary.firstMessage ? truncateText(summary.firstMessage, 72) : '无');
     appendImportPreviewItem(list, '标签', Array.isArray(summary.tags) && summary.tags.length ? summary.tags.join('、') : '无');
     appendImportPreviewItem(list, '附带世界书', `${Number(summary.worldBookCount || 0)} 条`);
-  } else {
+  } else if (preview.kind === 'world-book') {
     appendImportPreviewItem(list, '世界书条目', `${Number(summary.worldBookCount || 0)} 条`);
     appendImportPreviewItem(list, '标题示例', Array.isArray(summary.titles) && summary.titles.length ? summary.titles.join('、') : '无');
+  } else if (preview.kind === 'content-pack') {
+    appendImportPreviewItem(list, '内容包 ID', summary.packId || inspection.manifest?.id || '未声明');
+    appendImportPreviewItem(list, '版本', summary.version || inspection.manifest?.version || '未声明');
+    appendImportPreviewItem(list, '引擎范围', summary.engine || inspection.manifest?.engine || '未声明');
+    appendImportPreviewItem(list, '主角色卡', summary.characterName || '未命名角色');
+    appendImportPreviewItem(list, '世界书', `${Number(summary.worldBookCount || inspection.counts?.worldBook || 0)} 条`);
+    appendImportPreviewItem(list, 'Prompt', `${Number(summary.promptModuleCount || inspection.counts?.promptModules || 0)} 个`);
+    appendImportPreviewItem(list, '依赖', `${Number(summary.dependencyCount || inspection.dependencies?.length || 0)} 项`);
+  } else if (preview.kind === 'plugin-manifest') {
+    appendImportPreviewItem(list, '插件 ID', summary.pluginId || inspection.manifest?.id || '未声明');
+    appendImportPreviewItem(list, '版本', summary.version || inspection.manifest?.version || '未声明');
+    appendImportPreviewItem(list, '引擎范围', summary.engine || inspection.manifest?.engine || '未声明');
+    appendImportPreviewItem(list, '格式适配器', `${Number(summary.adapterCount || inspection.manifest?.adapters?.length || 0)} 个`);
+    appendImportPreviewItem(list, '依赖', `${Number(summary.dependencyCount || inspection.dependencies?.length || 0)} 项`);
   }
-  appendImportPreviewItem(
-    list,
-    '关键词示例',
-    Array.isArray(summary.keywordSamples) && summary.keywordSamples.length ? summary.keywordSamples.join('、') : '无'
-  );
-  appendImportPreviewItem(list, '写入方式', summary.worldBookMode === 'append-dedupe' ? '追加并自动去重' : '按导入类型写入');
+  if (!isPackageImport) {
+    appendImportPreviewItem(
+      list,
+      '关键词示例',
+      Array.isArray(summary.keywordSamples) && summary.keywordSamples.length ? summary.keywordSamples.join('、') : '无'
+    );
+    appendImportPreviewItem(list, '写入方式', summary.worldBookMode === 'append-dedupe' ? '追加并自动去重' : '按导入类型写入');
+  }
   appendImportPreviewItem(list, '格式适配', inspection.adapter?.label || inspection.adapter?.id || '通用适配');
   appendImportPreviewItem(list, '预计体量', `${formatTokenCount(inspection.estimatedTokens || 0)} tokens`);
-  appendImportPreviewItem(list, '冲突检查', inspection.conflictCount ? `${inspection.conflictCount} 项` : '未发现');
+  appendImportPreviewItem(
+    list,
+    isPackageImport ? '兼容结论' : '冲突检查',
+    isPackageImport ? (inspection.verdictLabel || '待检查') : inspection.conflictCount ? `${inspection.conflictCount} 项` : '未发现'
+  );
   const overview = document.createElement('section');
   overview.className = 'import-overview';
   const overviewHeading = document.createElement('div');
   overviewHeading.className = 'import-section-heading';
-  overviewHeading.innerHTML = '<strong>导入内容</strong><span>默认只进入本地素材库</span>';
+  overviewHeading.innerHTML = `<strong>导入内容</strong><span>${isPackageImport ? '安装前不会执行任何第三方代码' : '默认只进入本地素材库'}</span>`;
   overview.append(overviewHeading, list);
   els.importPreview.append(overview);
 
@@ -6871,6 +7073,32 @@ function renderImportPreview(preview = {}) {
     els.importPreview.append(resourceReports);
   }
 
+  if (Array.isArray(inspection.dependencies) && inspection.dependencies.length) {
+    const dependencySection = document.createElement('section');
+    dependencySection.className = 'import-dependencies';
+    const dependencyHeading = document.createElement('div');
+    dependencyHeading.className = 'import-section-heading';
+    dependencyHeading.innerHTML = `<strong>依赖检查</strong><span>${inspection.dependencies.length} 项声明</span>`;
+    const dependencyList = document.createElement('div');
+    dependencyList.className = 'import-dependency-list';
+    inspection.dependencies.forEach((dependency) => {
+      const row = document.createElement('div');
+      row.className = `import-dependency is-${dependency.status || 'missing'}`;
+      const identity = document.createElement('span');
+      const name = document.createElement('strong');
+      name.textContent = `${dependency.kind || 'plugin'} · ${dependency.id || '未命名依赖'}`;
+      const range = document.createElement('small');
+      range.textContent = `需要 ${dependency.range || '*'}${dependency.installedVersion ? ` · 当前 ${dependency.installedVersion}` : ''}`;
+      identity.append(name, range);
+      const status = document.createElement('span');
+      status.textContent = dependency.status === 'ready' ? '已满足' : dependency.status === 'version-mismatch' ? '版本不符' : '未安装';
+      row.append(identity, status);
+      dependencyList.append(row);
+    });
+    dependencySection.append(dependencyHeading, dependencyList);
+    els.importPreview.append(dependencySection);
+  }
+
   const blocking = resources.flatMap((resource) => resource.diagnostics?.blockingIssues || []);
   const warnings = resources.flatMap((resource) => resource.diagnostics?.warnings || []);
   const risks = resources.flatMap((resource) => resource.diagnostics?.riskFlags || []);
@@ -6882,6 +7110,8 @@ function renderImportPreview(preview = {}) {
     els.importReviewDialog.dataset.verdict = inspection.verdict || 'review';
   }
   if (els.importApplyCurrent) els.importApplyCurrent.checked = false;
+  if (els.importApplyCurrent) els.importApplyCurrent.disabled = isPackageImport;
+  if (els.importApplyOption) els.importApplyOption.hidden = isPackageImport;
   els.confirmImport.hidden = false;
   els.cancelImport.hidden = false;
   setResourceFlowStep('review');
@@ -6948,11 +7178,19 @@ function clearPendingImport({ resetFile = true } = {}) {
   pendingImportPayload = null;
   pendingImportSource = null;
   pendingImportCanCommit = false;
+  pendingImportKind = '';
   els.importPreview.innerHTML = '';
   if (els.importReviewDialog?.open) els.importReviewDialog.close();
   if (els.importReviewDialog) delete els.importReviewDialog.dataset.verdict;
-  if (els.importApplyCurrent) els.importApplyCurrent.checked = false;
-  if (resetFile) els.characterCardImport.value = '';
+  if (els.importApplyCurrent) {
+    els.importApplyCurrent.checked = false;
+    els.importApplyCurrent.disabled = false;
+  }
+  if (els.importApplyOption) els.importApplyOption.hidden = false;
+  if (resetFile) {
+    els.characterCardImport.value = '';
+    if (els.pluginManifestImport) els.pluginManifestImport.value = '';
+  }
 }
 
 function setImportButtonsDisabled(disabled) {
@@ -6965,6 +7203,14 @@ function updateImportActionLabel() {
   const verdict = els.importReviewDialog?.dataset.verdict;
   if (!pendingImportCanCommit) {
     els.confirmImport.textContent = verdict === 'duplicate' ? '已在素材库' : '修正后再导入';
+    return;
+  }
+  if (pendingImportKind === 'plugin-manifest') {
+    els.confirmImport.textContent = '安装适配插件';
+    return;
+  }
+  if (pendingImportKind === 'content-pack') {
+    els.confirmImport.textContent = '安装内容包';
     return;
   }
   els.confirmImport.textContent = els.importApplyCurrent?.checked ? '存入并载入' : '存入素材库';

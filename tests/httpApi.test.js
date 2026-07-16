@@ -353,6 +353,94 @@ test('v0.2 resource library deduplicates imports and composes an applicable cust
   assert.equal((await request(app, { url: '/api/state' })).json().config.characterCard.name, '沈观澜');
 });
 
+test('v0.2.2 plugin manifest preview installs declarative adapters and blocks executable plugins', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const manifest = {
+    spec: 'lra.plugin/v1',
+    id: 'community.rain-night',
+    version: '1.0.0',
+    name: '雨夜适配',
+    engine: '>=0.2.2 <1.0.0',
+    adapters: [{
+      id: 'rain-night-lore',
+      label: '雨夜世界书',
+      kinds: ['worldbook'],
+      formats: ['json'],
+      match: { previewKinds: ['world-book'], sourceIncludes: ['rain-night'] }
+    }]
+  };
+  const preview = await request(app, {
+    method: 'POST',
+    url: '/api/import/preview',
+    headers: { 'content-type': 'application/json' },
+    body: { payload: { mimeType: 'application/json', data: JSON.stringify(manifest) } }
+  });
+  const committed = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: { payload: { mimeType: 'application/json', data: JSON.stringify(manifest) } }
+  });
+  const plugins = (await request(app, { url: '/api/plugins' })).json();
+  const adapters = (await request(app, { url: '/api/resource-library/adapters' })).json().adapters;
+  const blocked = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: { payload: { mimeType: 'application/json', data: JSON.stringify({ ...manifest, id: 'community.unsafe', script: 'run.js' }) } }
+  });
+
+  assert.equal(preview.status, 200);
+  assert.equal(preview.json().preview.kind, 'plugin-manifest');
+  assert.equal(preview.json().preview.inspection.adapter.id, 'lra-plugin-manifest-v1');
+  assert.equal(committed.status, 200);
+  assert.equal(committed.json().applyMode, 'plugin-registry');
+  assert.ok(plugins.plugins.find((item) => item.id === manifest.id && item.origin === 'local'));
+  assert.ok(adapters.find((item) => item.id === 'rain-night-lore'));
+  assert.equal(blocked.status, 422);
+});
+
+test('v0.2.2 imports, exports and applies a versioned content pack bundle', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const bundle = createContentPackBundlePayload();
+  const preview = await request(app, {
+    method: 'POST',
+    url: '/api/import/preview',
+    headers: { 'content-type': 'application/json' },
+    body: { payload: { mimeType: 'application/json', data: JSON.stringify(bundle) } }
+  });
+  const committed = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: { mimeType: 'application/json', fileName: 'rain-night.json', data: JSON.stringify(bundle) },
+      source: { site: 'local-file', fileName: 'rain-night.json' }
+    }
+  });
+  const installed = committed.json().pack;
+  const listed = (await request(app, { url: '/api/content-packs' })).json().contentPacks;
+  const exported = await request(app, { url: `/api/content-packs/${installed.id}/export` });
+  const applied = await request(app, {
+    method: 'POST',
+    url: `/api/content-packs/${installed.id}/apply`,
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+
+  assert.equal(preview.status, 200);
+  assert.equal(preview.json().preview.inspection.adapter.id, 'lra-content-pack-v1');
+  assert.equal(preview.json().preview.inspection.canImport, true);
+  assert.equal(committed.status, 200);
+  assert.equal(committed.json().applyMode, 'content-pack-library');
+  assert.equal(committed.json().installStatus, 'created');
+  assert.ok(listed.find((pack) => pack.id === installed.id && pack.version === '1.1.0'));
+  assert.equal(exported.status, 200);
+  assert.equal(exported.json().manifest.id, 'community.rain-night');
+  assert.equal(applied.status, 200);
+  assert.equal(applied.json().characterCard.name, '沈观澜');
+});
+
 test('GET /api/content-packs lists linked genre packs', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
 
@@ -900,7 +988,7 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.2.1',
+    version: '0.2.2',
     releaseChannel: 'preview-local',
     dataSchemaVersion: 2,
     targetDataSchemaVersion: 2
@@ -1554,6 +1642,32 @@ function createV2CardPayload() {
           extensions: {}
         }]
       }
+    }
+  };
+}
+
+function createContentPackBundlePayload() {
+  return {
+    spec: 'lra.content-pack/v1',
+    manifest: {
+      spec: 'lra.content-pack/v1',
+      id: 'community.rain-night',
+      version: '1.1.0',
+      title: '听雨仙途',
+      description: '雨夜旧案与仙门因果。',
+      engine: '>=0.2.2 <1.0.0',
+      dependencies: [{ kind: 'plugin', id: 'core.character-card-v2', range: '^1.0.0', scope: 'runtime' }],
+      capabilities: ['character', 'worldbook', 'prompt', 'rule-system']
+    },
+    content: {
+      sessionTitle: '听雨楼夜话',
+      visualPackId: 'xianxia',
+      characterCard: { name: '沈观澜', description: '负刀问道。' },
+      worldBook: [{ id: 'rain-lore', title: '听雨楼', keywords: ['听雨楼'], content: '听雨楼不问来路。', enabled: true }],
+      promptModules: [{ id: 'rain-prompt', title: '雨夜文风', content: '克制叙事。', enabled: true }],
+      memory: { memoryCards: [], worldState: { flags: { genre: 'xianxia' } } },
+      ruleSystem: { id: 'rain-rules', title: '听雨规则', boundary: '仙侠悬案', panels: [] },
+      characterPresets: []
     }
   };
 }

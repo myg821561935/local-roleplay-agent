@@ -24,7 +24,6 @@ import { readDataSchemaStatus } from './data/migrations.js';
 import { APP_NAME, APP_VERSION, DATA_SCHEMA_VERSION, RELEASE_CHANNEL } from './releaseInfo.js';
 import { sanitizeProviderTestError, testProviderConnection } from './services/providerTestService.js';
 import { ResourceLibraryService } from './services/resourceLibraryService.js';
-import { listResourceAdapters } from './resources/resourceAdapters.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -62,7 +61,11 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   const configService = new ConfigService(store);
   const sessionService = new SessionService(store);
   const assetService = new AssetService(store);
-  const resourceLibraryService = new ResourceLibraryService(store);
+  const resourceLibraryService = new ResourceLibraryService(store, {
+    appVersion: APP_VERSION,
+    resolveBuiltInPack: getContentPack,
+    listBuiltInPacks: listContentPackSummaries
+  });
   const importSourceService = new ImportSourceService({ fetchImpl });
   const providerClient = providerClientOverride || buildProviderClient();
   const agentService = new AgentService({ configService, sessionService, providerClient });
@@ -214,7 +217,63 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
   }
 
   if (req.method === 'GET' && url.pathname === '/api/resource-library/adapters') {
-    writeJson(res, 200, { adapters: listResourceAdapters() });
+    writeJson(res, 200, { adapters: await resourceLibraryService.listAdapters() });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/plugins') {
+    const plugins = await resourceLibraryService.listPlugins();
+    writeJson(res, 200, {
+      plugins,
+      summary: {
+        total: plugins.length,
+        core: plugins.filter((item) => item.origin === 'core').length,
+        local: plugins.filter((item) => item.origin === 'local').length,
+        incompatible: plugins.filter((item) => !item.compatible).length
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/plugins/inspect') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    writeJson(res, 200, { inspection: await resourceLibraryService.pluginRegistry.inspectManifest(body.manifest || body) });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/plugins') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    try {
+      writeJson(res, 200, await resourceLibraryService.installPluginManifest(body.manifest || body));
+    } catch (error) {
+      throw new ApiError(422, 'PLUGIN_MANIFEST_INVALID', error.message);
+    }
+    return;
+  }
+
+  const pluginRoute = matchPluginRoute(url.pathname);
+  if (pluginRoute && req.method === 'PATCH') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    try {
+      const plugin = await resourceLibraryService.setPluginEnabled(pluginRoute.pluginId, body.enabled === true);
+      if (!plugin) throw new ApiError(404, 'PLUGIN_NOT_FOUND');
+      writeJson(res, 200, { plugin });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (error.message === 'CORE_PLUGIN_IMMUTABLE') throw new ApiError(409, 'CORE_PLUGIN_IMMUTABLE');
+      throw error;
+    }
+    return;
+  }
+
+  if (pluginRoute && req.method === 'DELETE') {
+    validateMutatingRequest(req);
+    const removed = await resourceLibraryService.removePlugin(pluginRoute.pluginId);
+    if (!removed) throw new ApiError(404, 'PLUGIN_NOT_FOUND');
+    writeJson(res, 200, { ok: true });
     return;
   }
 
@@ -370,6 +429,19 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
   if (req.method === 'GET' && url.pathname === '/api/content-packs') {
     const customPacks = await resourceLibraryService.listPacks();
     writeJson(res, 200, { contentPacks: [...listContentPackSummaries(), ...customPacks] });
+    return;
+  }
+
+  const contentPackExportRoute = matchContentPackExportRoute(url.pathname);
+  if (contentPackExportRoute && req.method === 'GET') {
+    const bundle = await resourceLibraryService.exportPackBundle(contentPackExportRoute.packId);
+    if (!bundle) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    res.writeHead(200, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="${encodeURIComponent(bundle.manifest.id)}-${bundle.manifest.version}.json"`,
+      'cache-control': 'no-store'
+    });
+    res.end(`${JSON.stringify(bundle, null, 2)}\n`);
     return;
   }
 
@@ -1174,6 +1246,34 @@ async function commitImport({ assetService, resourceLibraryService, body }) {
   if (inspection.verdict === 'blocked') {
     throw new ApiError(422, 'RESOURCE_IMPORT_NOT_READY');
   }
+  if (preview.kind === 'plugin-manifest') {
+    const result = await resourceLibraryService.installPluginManifest(preview.importData.pluginManifest);
+    preview.inspection = result.inspection;
+    return {
+      preview,
+      applyMode: 'plugin-registry',
+      plugin: result.plugin,
+      installStatus: result.installStatus,
+      importedWorldBookCount: 0,
+      libraryResources: []
+    };
+  }
+  if (preview.kind === 'content-pack') {
+    const result = await resourceLibraryService.installContentPackBundle(
+      preview.importData.contentPackBundle,
+      source,
+      { inspection }
+    );
+    preview.inspection = result.inspection;
+    return {
+      preview,
+      applyMode: 'content-pack-library',
+      pack: result.pack,
+      installStatus: result.installStatus,
+      importedWorldBookCount: 0,
+      libraryResources: []
+    };
+  }
   const libraryResult = await resourceLibraryService.savePreview(preview, source, { inspection });
   preview.inspection = libraryResult.inspection;
   const applyToActiveConfig = body.applyToActiveConfig !== false;
@@ -1355,6 +1455,14 @@ async function saveMemoryFacts({ sessionService, body }) {
 async function applyContentPack({ configService, sessionService, body, packId, resourceLibraryService }) {
   const pack = await resolveContentPack(resourceLibraryService, packId);
   if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+  const compatibility = await resourceLibraryService.inspectPackCompatibility(pack);
+  if (!compatibility.canInstall) {
+    throw new ApiError(
+      409,
+      'CONTENT_PACK_INCOMPATIBLE',
+      compatibility.blockingIssues.map((item) => item.code).join(',')
+    );
+  }
 
   const [promptModules, worldBook, characterCard, session] = await Promise.all([
     configService.savePromptModules(pack.promptModules),
@@ -1392,7 +1500,12 @@ async function applyContentPack({ configService, sessionService, body, packId, r
       ruleSystem: pack.ruleSystem,
       custom: pack.custom === true,
       visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
-      basePackId: pack.resourceManifest?.basePackId || ''
+      basePackId: pack.resourceManifest?.basePackId || '',
+      manifest: pack.manifest || null,
+      compatibility: {
+        verdict: compatibility.verdict,
+        warningCount: compatibility.warnings.length
+      }
     },
     promptModules,
     worldBook,
@@ -1415,6 +1528,8 @@ function summarizeResolvedPack(pack) {
     custom: pack.custom === true,
     visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
     basePackId: pack.resourceManifest?.basePackId || '',
+    manifest: pack.manifest || null,
+    version: pack.manifest?.version || '1.0.0',
     counts: {
       promptModules: pack.promptModules?.length || 0,
       worldBook: pack.worldBook?.length || 0,
@@ -1614,6 +1729,12 @@ function matchContentPackApplyRoute(pathname) {
   return { packId: decodeURIComponent(match[1]) };
 }
 
+function matchContentPackExportRoute(pathname) {
+  const match = pathname.match(/^\/api\/content-packs\/([^/]+)\/export$/);
+  if (!match) return null;
+  return { packId: decodeURIComponent(match[1]) };
+}
+
 function matchContentPackCharactersRoute(pathname) {
   const match = pathname.match(/^\/api\/content-packs\/([^/]+)\/characters$/);
   if (!match) return null;
@@ -1630,6 +1751,12 @@ function matchCustomPackDeleteRoute(pathname) {
   const match = pathname.match(/^\/api\/resource-library\/packs\/([^/]+)$/);
   if (!match) return null;
   return { packId: decodeURIComponent(match[1]) };
+}
+
+function matchPluginRoute(pathname) {
+  const match = pathname.match(/^\/api\/plugins\/([^/]+)$/);
+  if (!match) return null;
+  return { pluginId: decodeURIComponent(match[1]) };
 }
 
 async function readRequestJson(req) {

@@ -145,6 +145,32 @@ never:
   assert.match(preview.importData.characterCard.systemPrompt, /绝不主动/);
 });
 
+test('previews lra content pack and declarative plugin manifests before generic card parsing', () => {
+  const contentPack = previewImportPayload({
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      spec: 'lra.content-pack/v1',
+      manifest: { spec: 'lra.content-pack/v1', id: 'rain-night', version: '1.0.0', title: '听雨夜', engine: '>=0.2.2' },
+      content: { characterCard: { name: '沈观澜' }, worldBook: [], promptModules: [], memory: {}, ruleSystem: {} }
+    })
+  });
+  const plugin = previewImportPayload({
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      spec: 'lra.plugin/v1',
+      id: 'community.rain-night',
+      version: '1.0.0',
+      name: '雨夜适配',
+      adapters: [{ id: 'rain-night-lore', kinds: ['worldbook'], formats: ['json'] }]
+    })
+  });
+
+  assert.equal(contentPack.kind, 'content-pack');
+  assert.equal(contentPack.summary.characterName, '沈观澜');
+  assert.equal(plugin.kind, 'plugin-manifest');
+  assert.equal(plugin.summary.adapterCount, 1);
+});
+
 function createV2CardPayload() {
   return {
     spec: 'chara_card_v2',

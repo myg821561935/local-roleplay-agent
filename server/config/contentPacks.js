@@ -1,5 +1,6 @@
 import { createYingxiongzhiContentPack } from './yingxiongzhiPack.js';
 import { genreNarrativeModules, genreWorldBookExpansions } from './genreExpansions.js';
+import { createContentPackManifest, summarizeContentPackManifest } from '../content/contentPackManifest.js';
 import {
   GENRE_INSPIRATION_REFS as genreInspirationRefs,
   buildGenreReferenceMethodContent,
@@ -996,6 +997,14 @@ const contentPacks = {
   }
 };
 
+for (const pack of Object.values(contentPacks)) {
+  pack.manifest = createContentPackManifest(pack, {
+    manifestId: pack.id,
+    version: '1.0.0',
+    publisher: 'local-roleplay-agent'
+  });
+}
+
 export function listContentPackSummaries() {
   return Object.values(contentPacks).map((pack) => {
     const profile = getGenreNarrativeProfile(pack.id);
@@ -1006,6 +1015,8 @@ export function listContentPackSummaries() {
       description: pack.description,
       sessionTitle: pack.sessionTitle,
       characterName: pack.characterCard.name,
+      manifest: summarizeContentPackManifest(pack),
+      version: pack.manifest.version,
       inspirationRefs: pack.characterCard.extensions?.inspirationRefs || [],
       narrative: {
         label: profile?.label || pack.title,

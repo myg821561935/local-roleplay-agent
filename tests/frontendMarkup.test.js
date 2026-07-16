@@ -244,6 +244,43 @@ test('v0.2 resource workbench keeps community imports, diagnostics and script co
   assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.inspector-panel\.resource-workbench-open:not\(\.collapsed\)[\s\S]*width:\s*auto/);
 });
 
+test('v0.2.2 exposes versioned content packs and declarative plugin adapters in the resource workbench', async () => {
+  const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(html, /data-resource-view="extensions"/);
+  assert.match(html, /data-resource-pane="extensions"/);
+  assert.match(html, /id="plugin-manifest-import"/);
+  assert.match(html, /id="plugin-list"/);
+  assert.match(html, /id="adapter-list"/);
+  assert.match(html, /声明式插件注册表/);
+  assert.match(html, /id="import-apply-option"/);
+
+  assert.match(app, /apiRequest\('\/api\/plugins'\)/);
+  assert.match(app, /fetch\('\/api\/plugins'\)/);
+  assert.match(app, /function renderPluginRegistry/);
+  assert.match(app, /function renderAdapterRegistry/);
+  assert.match(app, /function handlePluginRegistryClick/);
+  assert.match(app, /data-plugin-toggle/);
+  assert.match(app, /data-plugin-delete/);
+  assert.match(app, /data-resource-pack-export/);
+  assert.match(app, /\/api\/content-packs\/\$\{encodeURIComponent\(packId\)\}\/export/);
+  assert.match(app, /pendingImportKind === 'plugin-manifest'/);
+  assert.match(app, /pendingImportKind === 'content-pack'/);
+  assert.match(app, /安装适配插件/);
+  assert.match(app, /安装内容包/);
+  assert.match(app, /importApplyOption\.hidden = isPackageImport/);
+  assert.match(app, /className = 'import-dependency-list'/);
+
+  assert.match(css, /\.resource-view-switch\s*\{[\s\S]*grid-template-columns:\s*repeat\(4,/);
+  assert.match(css, /\.resource-extensions\s*\{/);
+  assert.match(css, /\.plugin-registry-item\s*\{/);
+  assert.match(css, /\.adapter-registry-row\s*\{/);
+  assert.match(css, /\.import-dependency-list\s*\{/);
+  assert.match(css, /\.import-apply-option\[hidden\]\s*\{[\s\S]*display:\s*none;/);
+});
+
 test('provider configuration uses an internal scroll body for expandable tools', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地角色扮演 Agent</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/styles.css?v=20260715-3">
+    <link rel="stylesheet" href="/styles.css?v=20260715-4">
   </head>
   <body>
     <div class="app-shell">
@@ -659,6 +659,7 @@
               <button class="resource-view-button active" type="button" data-resource-view="library" role="tab" aria-selected="true">本地素材</button>
               <button class="resource-view-button" type="button" data-resource-view="online" role="tab" aria-selected="false">在线采集</button>
               <button class="resource-view-button" type="button" data-resource-view="composer" role="tab" aria-selected="false">剧本工坊</button>
+              <button class="resource-view-button" type="button" data-resource-view="extensions" role="tab" aria-selected="false">扩展适配</button>
             </div>
 
             <section class="resource-view active" data-resource-pane="library">
@@ -750,6 +751,27 @@
               </form>
               <div class="resource-pack-divider"><span>已组合剧本</span></div>
               <div id="resource-pack-list" class="resource-pack-list"></div>
+            </section>
+
+            <section class="resource-view resource-extensions" data-resource-pane="extensions" hidden>
+              <header class="extension-registry-header">
+                <div>
+                  <strong>声明式插件注册表</strong>
+                  <span id="plugin-summary">正在读取插件与格式适配器</span>
+                </div>
+                <label class="ghost-button compact resource-file-button" for="plugin-manifest-import">
+                  安装清单
+                  <input id="plugin-manifest-import" class="resource-file-input" type="file" accept=".json,application/json">
+                </label>
+              </header>
+              <div id="plugin-list" class="plugin-list"></div>
+              <details class="adapter-registry-panel">
+                <summary>
+                  <span>可用格式适配器</span>
+                  <small id="adapter-count">0 个</small>
+                </summary>
+                <div id="adapter-list" class="adapter-list"></div>
+              </details>
             </section>
           </section>
 
@@ -929,7 +951,7 @@
         </header>
         <div id="import-preview" class="import-preview"></div>
         <footer class="import-review-footer">
-          <label class="import-apply-option">
+          <label id="import-apply-option" class="import-apply-option">
             <input id="import-apply-current" type="checkbox">
             <span>
               <strong>同时载入当前创作配置</strong>
@@ -943,6 +965,6 @@
         </footer>
       </div>
     </dialog>
-    <script type="module" src="/app.js?v=20260715-3"></script>
+    <script type="module" src="/app.js?v=20260715-5"></script>
   </body>
 </html>
