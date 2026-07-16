@@ -16,6 +16,7 @@ test('content pack v1 bundle is self-contained and preserves story systems', () 
   assert.equal(restored.characterCard.name, '沈观澜');
   assert.equal(restored.worldBook.length, 1);
   assert.equal(restored.ruleSystem.id, 'rain-night-rules');
+  assert.ok(bundle.manifest.capabilities.includes('world-simulation'));
 });
 
 test('content pack compatibility blocks missing runtime dependencies', () => {
@@ -46,6 +47,17 @@ function createPack() {
     sessionTitle: '听雨楼夜话',
     visualPackId: 'xianxia',
     characterCard: { name: '沈观澜', description: '负刀问道。' },
+    characterPresets: [{
+      id: 'rain-night-keeper',
+      characterCard: {
+        name: '守夜人',
+        extensions: {
+          npcCard: true,
+          privateKnowledge: ['知道雨夜旧案的第二份口供'],
+          schedule: [{ at: '23:00', location: '听雨楼', activity: '核对旧账', visibility: 'private' }]
+        }
+      }
+    }],
     worldBook: [{ id: 'rain-lore', title: '听雨楼', keywords: ['听雨楼'], content: '听雨楼不问来路。' }],
     promptModules: [{ id: 'rain-prompt', title: '雨夜文风', content: '克制叙事。', enabled: true }],
     memory: { memoryCards: [] },

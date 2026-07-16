@@ -17,6 +17,11 @@ const requiredFiles = [
   'server/data/migrations.js',
   'server/services/backupService.js',
   'server/services/resourceLibraryService.js',
+  'server/services/worldSimulationService.js',
+  'server/simulation/actionProtocol.js',
+  'server/simulation/eventLedger.js',
+  'server/simulation/npcSimulation.js',
+  'server/simulation/worldStateArbiter.js',
   'server/resources/resourceAdapters.js',
   'server/resources/resourceEvaluator.js',
   'server/content/contentPackManifest.js',
@@ -27,6 +32,8 @@ const requiredFiles = [
   'docs/release-v0.2.md',
   'docs/release-v0.2.1.md',
   'docs/release-v0.2.2.md',
+  'docs/release-v0.4.md',
+  'docs/action-protocol-v1.md',
   'docs/content-pack-spec-v1.md',
   'docs/plugin-manifest-spec-v1.md'
 ];

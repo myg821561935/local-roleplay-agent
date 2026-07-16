@@ -1,4 +1,5 @@
 import { compareSemver, normalizeSemver, satisfiesSemver } from '../lib/semver.js';
+import { APP_VERSION } from '../releaseInfo.js';
 
 export const PLUGIN_SPEC = 'lra.plugin/v1';
 export const DEFAULT_PLUGIN_ENGINE_RANGE = '>=0.2.2 <1.0.0';
@@ -10,7 +11,7 @@ const SUPPORTED_FORMATS = new Set(['png', 'json', 'txt', 'yaml', 'yml']);
 const EXECUTABLE_FIELDS = ['entry', 'main', 'module', 'script', 'scripts', 'command', 'hooks'];
 
 export function inspectPluginManifest(input = {}, {
-  appVersion = '0.2.2',
+  appVersion = APP_VERSION,
   installedPlugins = [],
   installedAdapters = [],
   corePluginIds = []
@@ -114,7 +115,7 @@ function normalizeManifestShape(input, blockingIssues, warnings) {
 
   for (const field of EXECUTABLE_FIELDS) {
     if (Object.hasOwn(source, field)) {
-      blockingIssues.push(issue('executable-plugin-unsupported', `v0.2.2 不执行第三方 ${field} 字段。`, field));
+      blockingIssues.push(issue('executable-plugin-unsupported', `本地引擎不执行第三方 ${field} 字段。`, field));
     }
   }
 

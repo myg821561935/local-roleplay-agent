@@ -161,6 +161,74 @@ test('AgentService extracts recommended actions from assistant reply', async () 
   assert.deepEqual(readback.messages[1].recommendedActions, reply.recommendedActions);
 });
 
+test('AgentService hides action protocol blocks and commits adjudicated world effects', async () => {
+  const { service, sessionService } = await createHarness({
+    providerClient: {
+      complete: async () => ({
+        content: [
+          '你从暗格中取出一封密信。',
+          '',
+          '```lra-actions',
+          JSON.stringify({
+            actorId: 'narrator',
+            summary: '主角取得密信',
+            actions: [{ type: 'state.append', path: 'protagonist.inventory', value: '密信' }]
+          }),
+          '```'
+        ].join('\n'),
+        raw: { fake: true }
+      })
+    }
+  });
+
+  const result = await service.sendMessage({ sessionId: 'main', content: '检查桌下暗格。' });
+  const readback = await sessionService.getSession('main');
+
+  assert.equal(result.reply.content, '你从暗格中取出一封密信。');
+  assert.doesNotMatch(result.reply.content, /lra-actions|state\.append/);
+  assert.deepEqual(readback.memory.worldState.protagonist.inventory, ['密信']);
+  assert.equal(readback.messages[1].adjudication.status, 'accepted');
+  assert.equal(readback.memory.eventLedger[0].effects[0].path, 'worldState.protagonist.inventory');
+});
+
+test('AgentService replays world effects for regenerate and swipe selection', async () => {
+  let replyIndex = 0;
+  const { service } = await createHarness({
+    providerClient: {
+      complete: async () => {
+        replyIndex += 1;
+        const item = replyIndex === 1 ? '旧钥匙' : '密信';
+        return {
+          content: [
+            `你找到${item}。`,
+            '```lra-actions',
+            JSON.stringify({ actions: [{ type: 'state.append', path: 'protagonist.inventory', value: item }] }),
+            '```'
+          ].join('\n'),
+          raw: { fake: true }
+        };
+      }
+    }
+  });
+
+  const first = await service.sendMessage({ sessionId: 'main', content: '搜索书案。' });
+  assert.deepEqual(first.session.memory.worldState.protagonist.inventory, ['旧钥匙']);
+
+  const regenerated = await service.regenerateAssistantMessage({
+    sessionId: 'main',
+    messageId: first.reply.id
+  });
+  assert.deepEqual(regenerated.session.memory.worldState.protagonist.inventory, ['密信']);
+
+  const switched = await service.switchMessageSwipe({
+    sessionId: 'main',
+    messageId: first.reply.id,
+    swipeIndex: 0
+  });
+  assert.deepEqual(switched.session.memory.worldState.protagonist.inventory, ['旧钥匙']);
+  assert.equal(switched.session.messages[1].content, '你找到旧钥匙。');
+});
+
 test('AgentService edits a user message and regenerates from that point', async () => {
   const { service, sessionService } = await createHarness();
 

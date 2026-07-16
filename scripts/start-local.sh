@@ -5,7 +5,6 @@ SCRIPT_DIR="${0:A:h}"
 ROOT_DIR="${SCRIPT_DIR:h}"
 cd "$ROOT_DIR"
 
-APP_VERSION="0.2.2"
 PORT="${PORT:-5178}"
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 BROWSER_HOST="$BIND_HOST"
@@ -31,6 +30,8 @@ if (( NODE_MAJOR < 20 )); then
   echo "Node.js 版本过低：$($NODE_BIN -v)，需要 20 或更高版本。"
   exit 1
 fi
+
+APP_VERSION="$($NODE_BIN -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
 
 open_app() {
   echo "本地角色扮演 Agent：${URL}"

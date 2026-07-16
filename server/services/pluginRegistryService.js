@@ -2,11 +2,12 @@ import { rm } from 'node:fs/promises';
 import { BUILTIN_PLUGIN_MANIFESTS } from '../plugins/builtins.js';
 import { inspectPluginManifest } from '../plugins/pluginManifest.js';
 import { listResourceAdapters } from '../resources/resourceAdapters.js';
+import { APP_VERSION } from '../releaseInfo.js';
 
 const PLUGIN_DIR = 'plugins/manifests';
 
 export class PluginRegistryService {
-  constructor(store, { appVersion = '0.2.2', now = () => new Date() } = {}) {
+  constructor(store, { appVersion = APP_VERSION, now = () => new Date() } = {}) {
     this.store = store;
     this.appVersion = appVersion;
     this.now = now;

@@ -1,6 +1,8 @@
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { APP_VERSION, DATA_SCHEMA_VERSION } from '../releaseInfo.js';
+import { createDefaultMemory } from '../agent/memoryUpdater.js';
+import { ensureSimulationMemory } from '../simulation/npcSimulation.js';
 
 const SCHEMA_FILE = '.schema.json';
 
@@ -28,6 +30,45 @@ const migrations = [
         mkdir(path.join(dataDir, 'library', 'packs'), { recursive: true })
       ]);
       await validateJsonFiles(dataDir);
+    }
+  },
+  {
+    id: '0003-v0.4-world-simulation',
+    from: 2,
+    to: 3,
+    async up({ dataDir }) {
+      await validateJsonFiles(dataDir);
+      const sessionDir = path.join(dataDir, 'sessions');
+      let sessionFiles = [];
+      try {
+        sessionFiles = (await readdir(sessionDir, { withFileTypes: true }))
+          .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+          .map((entry) => path.join(sessionDir, entry.name));
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      for (const sessionFile of sessionFiles) {
+        const session = JSON.parse(await readFile(sessionFile, 'utf8'));
+        if (!isPlainObject(session)) throw new Error(`DATA_SESSION_INVALID:${path.basename(sessionFile)}`);
+        const defaults = createDefaultMemory();
+        const existingMemory = isPlainObject(session.memory) ? session.memory : {};
+        session.memory = ensureSimulationMemory({
+          ...defaults,
+          ...existingMemory,
+          worldState: isPlainObject(existingMemory.worldState)
+            ? existingMemory.worldState
+            : defaults.worldState,
+          eventLedger: Array.isArray(existingMemory.eventLedger) ? existingMemory.eventLedger : []
+        });
+        session.memory.worldStateBaseline = isPlainObject(existingMemory.worldStateBaseline)
+          ? structuredClone(existingMemory.worldStateBaseline)
+          : structuredClone(session.memory.worldState);
+        session.memory.simulationBaseline = isPlainObject(existingMemory.simulationBaseline)
+          ? structuredClone(existingMemory.simulationBaseline)
+          : structuredClone(session.memory.simulation);
+        session.memory.actionCheckpointMessageId = String(existingMemory.actionCheckpointMessageId || '');
+        await writeJsonAtomic(sessionFile, session);
+      }
     }
   }
 ];
@@ -95,7 +136,10 @@ async function readSchemaMetadata(dataDir) {
 }
 
 async function writeSchemaMetadata(dataDir, value) {
-  const filePath = path.join(dataDir, SCHEMA_FILE);
+  await writeJsonAtomic(path.join(dataDir, SCHEMA_FILE), value);
+}
+
+async function writeJsonAtomic(filePath, value) {
   const tempPath = `${filePath}.tmp`;
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   await rename(tempPath, filePath);

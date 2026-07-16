@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地角色扮演 Agent</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/styles.css?v=20260715-4">
+    <link rel="stylesheet" href="/styles.css?v=20260716-2">
   </head>
   <body>
     <div class="app-shell">
@@ -118,7 +118,7 @@
             <summary>本地备份与恢复</summary>
             <div class="release-data-controls">
               <div class="release-data-heading">
-                <strong id="release-version">v0.2.1 · 数据 v-</strong>
+                <strong id="release-version">v0.4.0 · 数据 v-</strong>
                 <span>快照包含 Provider 密钥</span>
               </div>
               <button id="create-backup" class="primary-button compact" type="button">立即备份</button>
@@ -459,8 +459,54 @@
             </details>
           </section>
 
-          <section class="tab-pane active" data-pane="status" role="tabpanel">
+          <section class="tab-pane status-pane active" data-pane="status" role="tabpanel">
             <div id="rule-status-view" class="rule-status-view"></div>
+            <section class="world-simulation-panel" aria-label="幕后世界">
+              <div class="world-simulation-heading">
+                <div>
+                  <span>世界运行</span>
+                  <strong id="simulation-clock-label">第1日 08:00</strong>
+                </div>
+                <div id="simulation-view-switch" class="simulation-view-switch" role="group" aria-label="世界信息视图">
+                  <button class="simulation-view-button active" type="button" data-simulation-view="director" aria-pressed="true">幕后</button>
+                  <button class="simulation-view-button" type="button" data-simulation-view="public" aria-pressed="false">公开</button>
+                </div>
+              </div>
+
+              <div id="simulation-metrics" class="simulation-metrics"></div>
+
+              <div class="simulation-clock-controls" aria-label="推进世界时间">
+                <span id="simulation-status" class="status-text"></span>
+                <button class="ghost-button compact" type="button" data-simulation-advance="15">+15 分</button>
+                <button class="ghost-button compact" type="button" data-simulation-advance="60">+1 时</button>
+                <button class="ghost-button compact" type="button" data-simulation-advance="1440">+1 日</button>
+              </div>
+
+              <details class="simulation-section" open>
+                <summary>
+                  <span>角色运行</span>
+                  <small id="simulation-actor-count">0 人</small>
+                </summary>
+                <div id="simulation-actors" class="simulation-actors"></div>
+              </details>
+
+              <details class="simulation-section" open>
+                <summary>
+                  <span>事件账本</span>
+                  <small id="simulation-event-count">0 条</small>
+                </summary>
+                <div id="simulation-events" class="simulation-events"></div>
+              </details>
+
+              <details class="advanced-data-panel simulation-actors-editor-panel">
+                <summary>高级：编辑 NPC 档案</summary>
+                <textarea id="simulation-actors-editor" class="json-editor" rows="16" spellcheck="false"></textarea>
+                <div class="editor-actions">
+                  <span id="simulation-actors-status" class="status-text"></span>
+                  <button id="save-simulation-actors" class="primary-button compact" type="button">保存 NPC 档案</button>
+                </div>
+              </details>
+            </section>
           </section>
 
           <section class="tab-pane" data-pane="facts" role="tabpanel" hidden>
@@ -965,6 +1011,6 @@
         </footer>
       </div>
     </dialog>
-    <script type="module" src="/app.js?v=20260715-5"></script>
+    <script type="module" src="/app.js?v=20260716-2"></script>
   </body>
 </html>

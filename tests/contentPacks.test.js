@@ -96,9 +96,11 @@ test('content packs expose linked prompt world character and memory payloads', (
     ['xianxia', '闻雪照']
   ].forEach(([packId, characterName]) => {
     const presets = listContentPackCharacters(packId);
-    assert.equal(presets.length, 1);
+    assert.equal(presets.length >= 4, true);
     assert.equal(presets[0].id, `${packId}_default_character`);
     assert.equal(presets[0].characterCard.name, characterName);
+    assert.ok(presets.slice(1).every((preset) => preset.characterCard.extensions?.npcCard === true));
+    assert.ok(presets.slice(1).some((preset) => preset.characterCard.extensions?.privateKnowledge?.length));
   });
 
   assert.ok(xuanhuan.worldBook.find((entry) => entry.id === 'event-heaven-list-challenge'));

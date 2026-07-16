@@ -5070,13 +5070,363 @@ select:focus {
 
 .rule-status-view {
   display: flex;
-  flex: 1;
+  flex: 0 0 auto;
   min-height: 0;
   flex-direction: column;
   gap: 10px;
-  overflow: auto;
+  overflow: visible;
   padding: 10px;
   background: var(--panel-deep);
+}
+
+.status-pane {
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  background: var(--panel-deep);
+}
+
+.world-simulation-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-deep) 92%, var(--teal) 8%);
+}
+
+.world-simulation-heading,
+.simulation-clock-controls,
+.simulation-event-meta,
+.simulation-event-foot,
+.simulation-actor > header {
+  display: flex;
+  align-items: center;
+}
+
+.world-simulation-heading {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.world-simulation-heading > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.world-simulation-heading > div:first-child > span {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.world-simulation-heading > div:first-child > strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.simulation-view-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  flex: 0 0 108px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(4, 8, 10, 0.55);
+}
+
+.simulation-view-button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--subtle);
+  font-size: 11px;
+}
+
+.simulation-view-button:hover,
+.simulation-view-button.active {
+  background: color-mix(in srgb, var(--teal) 16%, transparent);
+  color: var(--teal);
+}
+
+.simulation-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.simulation-metric {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px;
+  border-left: 2px solid color-mix(in srgb, var(--teal) 45%, var(--line));
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.simulation-metric strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simulation-metric span {
+  color: var(--subtle);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.simulation-clock-controls {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.simulation-clock-controls .status-text {
+  flex: 1 1 150px;
+  margin-right: auto;
+  font-size: 10px;
+}
+
+.simulation-clock-controls .ghost-button {
+  min-width: 56px;
+}
+
+.simulation-section {
+  border-top: 1px solid var(--line);
+}
+
+.simulation-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 8px 2px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+  list-style: none;
+}
+
+.simulation-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.simulation-section > summary::after {
+  content: '+';
+  order: 3;
+  color: var(--subtle);
+  font-size: 15px;
+}
+
+.simulation-section[open] > summary::after {
+  content: '\2212';
+}
+
+.simulation-section > summary small {
+  margin-left: auto;
+  margin-right: 10px;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.simulation-actors,
+.simulation-events {
+  display: grid;
+  gap: 7px;
+  padding-bottom: 4px;
+}
+
+.simulation-actor,
+.simulation-event {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(129, 212, 202, 0.14);
+  border-radius: 6px;
+  background: rgba(8, 12, 14, 0.58);
+}
+
+.simulation-actor.is-disabled {
+  opacity: 0.55;
+}
+
+.simulation-actor > header {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.simulation-actor > header > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.simulation-actor > header strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.simulation-actor > header span,
+.simulation-actor-location,
+.simulation-actor-grid > div > span,
+.simulation-private-block > span,
+.simulation-agenda > span {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.simulation-actor-status {
+  max-width: 112px;
+  overflow: hidden;
+  padding: 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--teal) 30%, var(--line));
+  border-radius: 999px;
+  color: var(--teal) !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simulation-actor-location {
+  margin: 7px 0 0;
+  padding-left: 9px;
+  border-left: 2px solid color-mix(in srgb, var(--gold) 45%, transparent);
+}
+
+.simulation-actor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.simulation-actor-grid > div,
+.simulation-private-block,
+.simulation-agenda {
+  min-width: 0;
+}
+
+.simulation-actor ul {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0 0;
+  padding-left: 14px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.simulation-list-empty {
+  margin: 4px 0 0;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.simulation-private-block,
+.simulation-agenda {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border-left: 2px solid color-mix(in srgb, var(--gold) 48%, transparent);
+  background: color-mix(in srgb, var(--gold) 6%, transparent);
+}
+
+.simulation-private-block {
+  border-left-color: color-mix(in srgb, #b987d4 55%, transparent);
+  background: rgba(185, 135, 212, 0.055);
+}
+
+.simulation-actor-details {
+  margin-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.simulation-actor-details > summary {
+  padding-top: 7px;
+  color: var(--subtle);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.simulation-actor-details p {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 6px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.simulation-actor-details time {
+  color: var(--teal);
+}
+
+.simulation-event {
+  display: grid;
+  gap: 6px;
+}
+
+.simulation-event-meta {
+  gap: 6px;
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.simulation-event-kind {
+  color: var(--gold);
+  font-weight: 680;
+}
+
+.simulation-event-status {
+  margin-left: auto;
+  color: var(--subtle);
+}
+
+.simulation-event-status.is-accepted {
+  color: var(--teal);
+}
+
+.simulation-event-status.is-rejected {
+  color: var(--danger);
+}
+
+.simulation-event > p {
+  max-height: 78px;
+  margin: 0;
+  overflow: auto;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-line;
+}
+
+.simulation-event-foot {
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--subtle);
+  font-size: 9px;
+}
+
+.simulation-actors-editor-panel {
+  margin: 0;
+}
+
+.simulation-actors-editor-panel .json-editor {
+  min-height: 320px;
+  max-height: 520px;
+  resize: vertical;
+}
+
+@media (max-width: 520px) {
+  .simulation-metrics,
+  .simulation-actor-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .rule-system-header,

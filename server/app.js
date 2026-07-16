@@ -24,6 +24,7 @@ import { readDataSchemaStatus } from './data/migrations.js';
 import { APP_NAME, APP_VERSION, DATA_SCHEMA_VERSION, RELEASE_CHANNEL } from './releaseInfo.js';
 import { sanitizeProviderTestError, testProviderConnection } from './services/providerTestService.js';
 import { ResourceLibraryService } from './services/resourceLibraryService.js';
+import { WorldSimulationService } from './services/worldSimulationService.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -68,7 +69,16 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   });
   const importSourceService = new ImportSourceService({ fetchImpl });
   const providerClient = providerClientOverride || buildProviderClient();
-  const agentService = new AgentService({ configService, sessionService, providerClient });
+  const worldSimulationService = new WorldSimulationService({
+    sessionService,
+    resolveCharacterPresets: (packId) => getContentPack(packId)?.characterPresets || []
+  });
+  const agentService = new AgentService({
+    configService,
+    sessionService,
+    providerClient,
+    worldSimulationService
+  });
   const backupService = new BackupService({ rootDir: appRoot });
   const mcpRegistry = new McpRegistry({
     transportFactory: async (config) => {
@@ -104,6 +114,7 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
           configService,
           sessionService,
           agentService,
+          worldSimulationService,
           assetService,
           resourceLibraryService,
           importSourceService,
@@ -122,7 +133,7 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   };
 }
 
-async function handleApi({ req, res, url, appRoot, configService, sessionService, agentService, assetService, resourceLibraryService, importSourceService, mcpRegistry, backupService, providerClient, fetchImpl }) {
+async function handleApi({ req, res, url, appRoot, configService, sessionService, agentService, worldSimulationService, assetService, resourceLibraryService, importSourceService, mcpRegistry, backupService, providerClient, fetchImpl }) {
   if (req.method === 'GET' && url.pathname === '/api/health') {
     const dataSchema = await readDataSchemaStatus(appRoot);
     writeJson(res, 200, {
@@ -346,6 +357,85 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
+  const simulationRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/simulation$/);
+  if (simulationRoute && req.method === 'GET') {
+    const sessionId = decodeURIComponent(simulationRoute[1]);
+    const director = url.searchParams.get('view') !== 'public';
+    writeJson(res, 200, {
+      snapshot: await worldSimulationService.getSnapshot(sessionId, { director })
+    });
+    return;
+  }
+
+  const eventLedgerRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/events$/);
+  if (eventLedgerRoute && req.method === 'GET') {
+    const sessionId = decodeURIComponent(eventLedgerRoute[1]);
+    const director = url.searchParams.get('view') !== 'public';
+    const limit = clampApiInteger(url.searchParams.get('limit'), 1, 1000, 200);
+    writeJson(res, 200, await worldSimulationService.listEvents(sessionId, { director, limit }));
+    return;
+  }
+
+  const actionPreviewRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/actions\/preview$/);
+  if (actionPreviewRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const sessionId = decodeURIComponent(actionPreviewRoute[1]);
+    writeJson(res, 200, await callSimulationApi(() => worldSimulationService.previewActions(
+      sessionId,
+      body.envelope ?? body.actions ?? body,
+      { director: body.view !== 'public' }
+    )));
+    return;
+  }
+
+  const actionCommitRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/actions\/commit$/);
+  if (actionCommitRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const sessionId = decodeURIComponent(actionCommitRoute[1]);
+    writeJson(res, 200, await callSimulationApi(() => worldSimulationService.commitActions(
+      sessionId,
+      body.envelope ?? body.actions ?? body,
+      {
+        actor: String(body.actor || 'creator'),
+        kind: String(body.kind || 'manual-action'),
+        director: body.view !== 'public'
+      }
+    )));
+    return;
+  }
+
+  const actorRegistryRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/simulation\/actors$/);
+  if (actorRegistryRoute && req.method === 'PUT') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    if (!Array.isArray(body.actors)) throw new ApiError(400, 'SIMULATION_ACTORS_INVALID');
+    const sessionId = decodeURIComponent(actorRegistryRoute[1]);
+    writeJson(res, 200, {
+      snapshot: await callSimulationApi(() => worldSimulationService.saveActors(
+        sessionId,
+        body.actors,
+        { director: body.view !== 'public' }
+      ))
+    });
+    return;
+  }
+
+  const simulationAdvanceRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/simulation\/advance$/);
+  if (simulationAdvanceRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const sessionId = decodeURIComponent(simulationAdvanceRoute[1]);
+    const minutes = clampApiInteger(body.minutes, 1, 525600, 60);
+    writeJson(res, 200, await callSimulationApi(() => worldSimulationService.advance(sessionId, {
+      minutes,
+      reason: String(body.reason || '创作者推进时间'),
+      director: body.view !== 'public'
+    })));
+    return;
+  }
+
   const exportMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/export$/);
   if (exportMatch && req.method === 'GET') {
     const sessionId = decodeURIComponent(exportMatch[1]);
@@ -384,16 +474,17 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
 
     let config = { characterCard: {}, worldBook: [], promptModules: [] };
     let memory;
+    let selectedPack = null;
     let title = body.title || '新的故事';
 
     if (body.packId) {
-       const pack = await resolveContentPack(resourceLibraryService, body.packId);
-       if (pack) {
-         config.characterCard = pack.characterCard;
-         config.worldBook = pack.worldBook;
-         config.promptModules = pack.promptModules;
-         memory = withPackRuleSystem(pack.memory, pack.ruleSystem);
-         title = body.title || pack.sessionTitle || title;
+       selectedPack = await resolveContentPack(resourceLibraryService, body.packId);
+       if (selectedPack) {
+         config.characterCard = selectedPack.characterCard;
+         config.worldBook = selectedPack.worldBook;
+         config.promptModules = selectedPack.promptModules;
+         memory = withPackRuleSystem(selectedPack.memory, selectedPack.ruleSystem);
+         title = body.title || selectedPack.sessionTitle || title;
        }
     } else {
        const assets = await assetService.listAssets();
@@ -413,6 +504,11 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
        config,
        memory
     });
+    worldSimulationService.prepareSession(session, {
+      characterCard: config.characterCard,
+      characterPresets: selectedPack?.characterPresets || []
+    });
+    await sessionService.saveSession(session);
 
     writeJson(res, 200, { session });
     return;
@@ -489,7 +585,8 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
       sessionService,
       body,
       packId: contentPackApplyRoute.packId,
-      resourceLibraryService
+      resourceLibraryService,
+      worldSimulationService
     });
     writeJson(res, 200, result);
     return;
@@ -1176,6 +1273,24 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+async function callSimulationApi(callback) {
+  try {
+    return await callback();
+  } catch (error) {
+    if (error?.name === 'ActionProtocolError' || String(error?.code || '').startsWith('ACTION_')) {
+      throw new ApiError(400, error.code || 'ACTION_PROTOCOL_INVALID', error.detail || error.message);
+    }
+    throw error;
+  }
+}
+
+function clampApiInteger(value, min, max, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(number)));
+}
+
 async function sendChat({ agentService, body }) {
   try {
     return await agentService.sendMessage({
@@ -1452,7 +1567,7 @@ async function saveMemoryFacts({ sessionService, body }) {
   return { facts, session };
 }
 
-async function applyContentPack({ configService, sessionService, body, packId, resourceLibraryService }) {
+async function applyContentPack({ configService, sessionService, body, packId, resourceLibraryService, worldSimulationService }) {
   const pack = await resolveContentPack(resourceLibraryService, packId);
   if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
   const compatibility = await resourceLibraryService.inspectPackCompatibility(pack);
@@ -1477,9 +1592,11 @@ async function applyContentPack({ configService, sessionService, body, packId, r
     updatedAt: new Date().toISOString(),
     config: {
       ...(isPlainObject(session.config) ? session.config : {}),
+      contentPackId: pack.id,
       promptModules,
       worldBook,
-      characterCard
+      characterCard,
+      characterPresets: Array.isArray(pack.characterPresets) ? structuredClone(pack.characterPresets) : []
     },
     memory: withPackRuleSystem(pack.memory, pack.ruleSystem),
     messages: Array.isArray(session.messages) ? session.messages : [],
@@ -1490,6 +1607,10 @@ async function applyContentPack({ configService, sessionService, body, packId, r
       narrativeMode: 'stable'
     }
   };
+  worldSimulationService.prepareSession(nextSession, {
+    characterCard,
+    characterPresets: Array.isArray(pack.characterPresets) ? pack.characterPresets : []
+  });
   await sessionService.saveSession(nextSession);
 
   return {

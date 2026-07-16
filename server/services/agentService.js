@@ -1,21 +1,24 @@
 import { assemblePrompt } from '../agent/promptAssembler.js';
-import { appendTurnEvent, rebuildMemoryFromMessages } from '../agent/memoryUpdater.js';
+import { rebuildMemoryFromMessages } from '../agent/memoryUpdater.js';
 import { buildSummaryPrompt, shouldSummarize } from '../agent/summaryScheduler.js';
 import { applyFactExtractionResult, buildFactExtractionPrompt, normalizeDynamicWorldBookEntries } from '../agent/factExtractor.js';
 import { worldBookIdentity } from '../agent/factCards.js';
 import { estimateTokens } from '../agent/token.js';
 import { VectorMemoryService } from '../agent/vectorMemory.js';
 import { resolveNarrativeContext } from '../agent/narrativeControl.js';
+import { extractActionEnvelope } from '../simulation/actionProtocol.js';
+import { WorldSimulationService } from './worldSimulationService.js';
 
 const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
 const INTERACTIVE_PROVIDER_TASKS = new Set(['chat', 'rewrite']);
 
 export class AgentService {
-  constructor({ configService, sessionService, providerClient, vectorMemoryService }) {
+  constructor({ configService, sessionService, providerClient, vectorMemoryService, worldSimulationService }) {
     this.configService = configService;
     this.sessionService = sessionService;
     this.providerClient = providerClient;
     this.vectorMemoryService = vectorMemoryService || new VectorMemoryService({ configService, fetchImpl: fetch });
+    this.worldSimulationService = worldSimulationService || new WorldSimulationService({ sessionService });
   }
 
   /**
@@ -60,6 +63,10 @@ export class AgentService {
       this.sessionService.getSession(sessionId)
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
+    this.worldSimulationService.prepareSession(session, {
+      characterCard: activeConfig.characterCard,
+      groupMembers: globalConfig.groupMembers
+    });
     const provider = getActiveProvider(globalConfig, session);
     const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
 
@@ -68,7 +75,7 @@ export class AgentService {
       session,
       userMessage: userMessage.content
     });
-    const { assistantMessage, assembled } = await this.generateAssistantMessage({
+    const { assistantMessage, assembled, actionEnvelope, actionError } = await this.generateAssistantMessage({
       config: activeConfig,
       session,
       provider,
@@ -82,11 +89,12 @@ export class AgentService {
     });
 
     session.messages.push(userMessage, assistantMessage);
-    session.memory = appendTurnEvent({
-      memory: session.memory,
+    this.worldSimulationService.applyTurn({
+      session,
       userMessage,
       assistantMessage,
-      turnId: assistantMessage.id
+      actionEnvelope,
+      actionError
     });
 
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled, globalConfig });
@@ -106,6 +114,10 @@ export class AgentService {
       this.sessionService.getSession(sessionId)
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
+    this.worldSimulationService.prepareSession(session, {
+      characterCard: activeConfig.characterCard,
+      groupMembers: globalConfig.groupMembers
+    });
     const provider = getActiveProvider(globalConfig, session);
     const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
     const userMessage = createMessage('user', content);
@@ -129,16 +141,18 @@ export class AgentService {
       options: session.settings
     });
 
+    const streamFilter = createHiddenBlockStreamFilter(onToken);
     const assistantResult = await this.completeAssistantContentStream({
       provider,
       messages: assembled.messages,
-      onToken,
+      onToken: streamFilter.push,
       fallbackChain,
       taskKey: 'chat'
     });
-    const assistantContent = assistantResult.content;
-    const speaker = extractSpeaker(assistantContent);
-    const parsedReply = extractRecommendedActions(assistantContent);
+    await streamFilter.end();
+    const parsedOutput = parseAssistantOutput(assistantResult.content);
+    const speaker = parsedOutput.speaker;
+    const parsedReply = parsedOutput.reply;
     const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
     const assistantMessage = createMessage('assistant', parsedReply.content, {
       recommendedActions: parsedReply.recommendedActions,
@@ -153,11 +167,12 @@ export class AgentService {
     });
 
     session.messages.push(userMessage, assistantMessage);
-    session.memory = appendTurnEvent({
-      memory: session.memory,
+    this.worldSimulationService.applyTurn({
+      session,
       userMessage,
       assistantMessage,
-      turnId: assistantMessage.id
+      actionEnvelope: parsedOutput.actionEnvelope,
+      actionError: parsedOutput.actionError
     });
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled, globalConfig });
 
@@ -184,7 +199,8 @@ export class AgentService {
       messages,
       taskKey
     });
-    const parsed = extractRecommendedActions(result.content);
+    const actionParsed = extractActionEnvelope(result.content);
+    const parsed = extractRecommendedActions(actionParsed.content);
     for (const token of chunkText(parsed.content)) {
       await onToken?.(token);
     }
@@ -197,6 +213,10 @@ export class AgentService {
       this.sessionService.getSession(sessionId)
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
+    this.worldSimulationService.prepareSession(session, {
+      characterCard: activeConfig.characterCard,
+      groupMembers: globalConfig.groupMembers
+    });
     const index = findMessageIndex(session, messageId);
     const message = session.messages[index];
 
@@ -206,6 +226,9 @@ export class AgentService {
       if (!message.swipes.includes(newContent)) message.swipes.push(newContent);
       message.content = newContent;
       message.activeSwipeIndex = Math.max(0, message.swipes.indexOf(message.content));
+      message.swipeMetadata = normalizeSwipeMetadata(message, message.swipes);
+      message.swipeMetadata[message.activeSwipeIndex] = emptySwipeMetadata();
+      clearMessageWorldUpdate(message);
       message.updatedAt = new Date().toISOString();
       session.messages = session.messages.slice(0, index + 1);
       this.invalidateVectorIndex(session);
@@ -227,16 +250,18 @@ export class AgentService {
     message.updatedAt = new Date().toISOString();
     session.messages = session.messages.slice(0, index + 1);
     this.invalidateVectorIndex(session);
+    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
 
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: message.content
     });
-    const { assistantMessage, assembled } = await this.generateAssistantMessage({
+    const { assistantMessage, assembled, actionEnvelope, actionError } = await this.generateAssistantMessage({
       config: activeConfig,
       session,
       provider,
       userMessage: message,
+      groupMembers: globalConfig.groupMembers,
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       fallbackChain,
@@ -244,7 +269,13 @@ export class AgentService {
     });
 
     session.messages.push(assistantMessage);
-    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+    this.worldSimulationService.applyTurn({
+      session,
+      userMessage: message,
+      assistantMessage,
+      actionEnvelope,
+      actionError
+    });
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled, globalConfig });
 
     session.updatedAt = new Date().toISOString();
@@ -263,8 +294,10 @@ export class AgentService {
       throw new Error('INVALID_SWIPE_INDEX');
     }
     message.swipes = swipes;
+    message.swipeMetadata = normalizeSwipeMetadata(message, swipes);
     message.activeSwipeIndex = targetIndex;
     message.content = swipes[targetIndex];
+    applySwipeMetadata(message, message.swipeMetadata[targetIndex]);
     message.updatedAt = new Date().toISOString();
     session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
     session.updatedAt = new Date().toISOString();
@@ -279,6 +312,10 @@ export class AgentService {
       this.sessionService.getSession(sessionId)
     ]);
     const activeConfig = await this.resolveSessionConfig(session);
+    this.worldSimulationService.prepareSession(session, {
+      characterCard: activeConfig.characterCard,
+      groupMembers: globalConfig.groupMembers
+    });
     const provider = getActiveProvider(globalConfig, session);
     const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
     const index = findMessageIndex(session, messageId);
@@ -289,6 +326,7 @@ export class AgentService {
     if (!userMessage || userMessage.role !== 'user') throw new Error('MISSING_USER_MESSAGE');
 
     session.messages = session.messages.slice(0, index);
+    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
     this.invalidateVectorIndex(session);
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
@@ -299,6 +337,7 @@ export class AgentService {
       session,
       provider,
       userMessage,
+      groupMembers: globalConfig.groupMembers,
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       fallbackChain,
@@ -306,16 +345,26 @@ export class AgentService {
     });
     const nextSwipe = result.assistantMessage.content;
     const swipes = normalizeSwipes(assistantMessage.swipes, assistantMessage.content);
+    const swipeMetadata = normalizeSwipeMetadata(assistantMessage, swipes);
     swipes.push(nextSwipe);
+    swipeMetadata.push(metadataFromMessage(result.assistantMessage));
 
     assistantMessage.content = nextSwipe;
     assistantMessage.swipes = swipes;
+    assistantMessage.swipeMetadata = swipeMetadata;
     assistantMessage.activeSwipeIndex = swipes.length - 1;
     assistantMessage.usage = result.assistantMessage.usage;
     linkUsageLedgerEntry(session, assistantMessage.usage?.callId, assistantMessage.id);
     assistantMessage.updatedAt = new Date().toISOString();
+    applySwipeMetadata(assistantMessage, swipeMetadata.at(-1));
     session.messages.push(assistantMessage);
-    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+    this.worldSimulationService.applyTurn({
+      session,
+      userMessage,
+      assistantMessage,
+      actionEnvelope: result.actionEnvelope,
+      actionError: result.actionError
+    });
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled: result.assembled, globalConfig });
 
     session.updatedAt = new Date().toISOString();
@@ -346,12 +395,15 @@ export class AgentService {
       messages: assembled.messages,
       taskKey: 'chat'
     });
-    const speaker = extractSpeaker(assistantResult.content);
-    const parsedReply = extractRecommendedActions(assistantResult.content);
+    const parsedOutput = parseAssistantOutput(assistantResult.content);
+    const speaker = parsedOutput.speaker;
+    const parsedReply = parsedOutput.reply;
     const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
     const assistantMessage = createMessage('assistant', parsedReply.content, {
       recommendedActions: parsedReply.recommendedActions,
-      usage
+      usage,
+      actionEnvelope: parsedOutput.actionEnvelope,
+      actionError: parsedOutput.actionError
     });
     if (speaker) assistantMessage.speaker = speaker;
     appendUsageLedgerEntry(session, {
@@ -361,7 +413,12 @@ export class AgentService {
       routing: assistantResult.routing
     });
 
-    return { assistantMessage, assembled };
+    return {
+      assistantMessage,
+      assembled,
+      actionEnvelope: parsedOutput.actionEnvelope,
+      actionError: parsedOutput.actionError
+    };
   }
 
   async rewriteText({ sessionId = 'main', target = 'chat-input', text, instruction = '' }) {
@@ -472,17 +529,20 @@ export class AgentService {
 
     assembled.messages.push({ role: 'assistant', content: continuationContent });
 
+    const streamFilter = createHiddenBlockStreamFilter(onToken);
     const assistantResult = await this.completeAssistantContentStream({
       provider,
       messages: assembled.messages,
-      onToken,
+      onToken: streamFilter.push,
       fallbackChain,
       taskKey: 'chat'
     });
+    await streamFilter.end();
+    const parsedContinuation = parseAssistantOutput(assistantResult.content);
     const usage = buildUsageSnapshot({
       provider,
       assembled,
-      content: assistantResult.content,
+      content: parsedContinuation.reply.content,
       providerResult: assistantResult
     });
     appendUsageLedgerEntry(session, {
@@ -491,12 +551,23 @@ export class AgentService {
       usage,
       routing: assistantResult.routing
     });
-    const continuedContent = continuationContent + '\n' + String(assistantResult.content || '').trim();
+    const continuedContent = continuationContent + '\n' + String(parsedContinuation.reply.content || '').trim();
     const parsedReply = extractRecommendedActions(continuedContent);
 
     lastMessage.content = parsedReply.content;
+    lastMessage.actionEnvelope = mergeActionEnvelopes(lastMessage.actionEnvelope, parsedContinuation.actionEnvelope);
+    if (!lastMessage.actionEnvelope) delete lastMessage.actionEnvelope;
+    if (parsedContinuation.actionError) {
+      lastMessage.actionError = {
+        code: parsedContinuation.actionError.code,
+        detail: String(parsedContinuation.actionError.detail || parsedContinuation.actionError.message || '')
+      };
+    }
+    delete lastMessage.adjudication;
     lastMessage.swipes = normalizeSwipes(lastMessage.swipes, lastMessage.content);
     lastMessage.activeSwipeIndex = Math.max(0, lastMessage.swipes.indexOf(lastMessage.content));
+    lastMessage.swipeMetadata = normalizeSwipeMetadata(lastMessage, lastMessage.swipes);
+    lastMessage.swipeMetadata[lastMessage.activeSwipeIndex] = metadataFromMessage(lastMessage);
     lastMessage.updatedAt = new Date().toISOString();
 
     session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
@@ -741,6 +812,16 @@ function createMessage(role, content, extras = {}) {
   if (extras.usage && typeof extras.usage === 'object' && !Array.isArray(extras.usage)) {
     message.usage = extras.usage;
   }
+  if (extras.actionEnvelope && typeof extras.actionEnvelope === 'object') {
+    message.actionEnvelope = structuredClone(extras.actionEnvelope);
+  }
+  if (extras.actionError) {
+    message.actionError = {
+      code: String(extras.actionError.code || 'ACTION_PARSE_FAILED'),
+      detail: String(extras.actionError.detail || extras.actionError.message || '')
+    };
+  }
+  message.swipeMetadata = [metadataFromMessage(message)];
   return message;
 }
 
@@ -946,6 +1027,119 @@ function normalizeSwipes(swipes, fallbackContent) {
   const fallback = String(fallbackContent || '');
   if (fallback && !values.includes(fallback)) values.push(fallback);
   return values;
+}
+
+function parseAssistantOutput(rawContent) {
+  const actionParsed = extractActionEnvelope(rawContent);
+  const reply = extractRecommendedActions(actionParsed.content);
+  return {
+    reply,
+    speaker: extractSpeaker(actionParsed.content),
+    actionEnvelope: actionParsed.envelope,
+    actionError: actionParsed.error
+  };
+}
+
+function mergeActionEnvelopes(left, right) {
+  if (!left && !right) return null;
+  if (!left) return structuredClone(right);
+  if (!right) return structuredClone(left);
+  return {
+    spec: left.spec || right.spec || 'lra.action/v1',
+    id: left.id || right.id,
+    actorId: right.actorId || left.actorId || 'narrator',
+    summary: [left.summary, right.summary].filter(Boolean).join('；').slice(0, 240),
+    baseRevision: null,
+    actions: [
+      ...(Array.isArray(left.actions) ? structuredClone(left.actions) : []),
+      ...(Array.isArray(right.actions) ? structuredClone(right.actions) : [])
+    ].slice(0, 20)
+  };
+}
+
+function createHiddenBlockStreamFilter(onToken) {
+  const markers = ['```lra-actions', '<lra-actions>', '<recommended_actions>'];
+  const tailLength = Math.max(...markers.map((marker) => marker.length)) - 1;
+  let buffer = '';
+  let hidden = false;
+  const emit = async (value) => {
+    if (value) await onToken?.(value);
+  };
+  return {
+    push: async (chunk) => {
+      if (hidden) return;
+      buffer += String(chunk || '');
+      const lower = buffer.toLowerCase();
+      const indexes = markers.map((marker) => lower.indexOf(marker)).filter((index) => index >= 0);
+      if (indexes.length) {
+        const first = Math.min(...indexes);
+        await emit(buffer.slice(0, first));
+        buffer = '';
+        hidden = true;
+        return;
+      }
+      const safeLength = Math.max(0, buffer.length - tailLength);
+      if (safeLength) {
+        await emit(buffer.slice(0, safeLength));
+        buffer = buffer.slice(safeLength);
+      }
+    },
+    end: async () => {
+      if (!hidden) await emit(buffer);
+      buffer = '';
+    }
+  };
+}
+
+function normalizeSwipeMetadata(message, swipes) {
+  const metadata = Array.isArray(message?.swipeMetadata)
+    ? message.swipeMetadata.map(normalizeSwipeMetadataEntry)
+    : [];
+  while (metadata.length < swipes.length) metadata.push(emptySwipeMetadata());
+  const activeIndex = Number(message?.activeSwipeIndex || 0);
+  if (metadata[activeIndex] && !metadata[activeIndex].actionEnvelope && message?.actionEnvelope) {
+    metadata[activeIndex] = metadataFromMessage(message);
+  }
+  return metadata.slice(0, swipes.length);
+}
+
+function normalizeSwipeMetadataEntry(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return emptySwipeMetadata();
+  return {
+    actionEnvelope: value.actionEnvelope ? structuredClone(value.actionEnvelope) : null,
+    actionError: value.actionError ? structuredClone(value.actionError) : null,
+    adjudication: value.adjudication ? structuredClone(value.adjudication) : null,
+    recommendedActions: Array.isArray(value.recommendedActions) ? structuredClone(value.recommendedActions) : []
+  };
+}
+
+function metadataFromMessage(message) {
+  return normalizeSwipeMetadataEntry({
+    actionEnvelope: message?.actionEnvelope,
+    actionError: message?.actionError,
+    adjudication: message?.adjudication,
+    recommendedActions: message?.recommendedActions
+  });
+}
+
+function emptySwipeMetadata() {
+  return { actionEnvelope: null, actionError: null, adjudication: null, recommendedActions: [] };
+}
+
+function applySwipeMetadata(message, metadata) {
+  clearMessageWorldUpdate(message);
+  const normalized = normalizeSwipeMetadataEntry(metadata);
+  if (normalized.actionEnvelope) message.actionEnvelope = normalized.actionEnvelope;
+  if (normalized.actionError) message.actionError = normalized.actionError;
+  if (normalized.adjudication) message.adjudication = normalized.adjudication;
+  if (normalized.recommendedActions.length) message.recommendedActions = normalized.recommendedActions;
+  else delete message.recommendedActions;
+}
+
+function clearMessageWorldUpdate(message) {
+  delete message.actionEnvelope;
+  delete message.actionError;
+  delete message.adjudication;
 }
 
 function extractRecommendedActions(rawContent) {

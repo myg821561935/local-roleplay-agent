@@ -505,6 +505,9 @@ test('POST /api/content-packs/:packId/apply synchronizes prompt world character 
   assert.equal(payload.session.memory.worldState.protagonist.name, '陈默');
   assert.equal(payload.session.memory.ruleSystem.id, 'lingyi-rule-system');
   assert.ok(payload.session.memory.memoryCards.find((fact) => fact.id === 'fact-lingyi-current-case'));
+  assert.equal(payload.session.config.contentPackId, 'lingyi');
+  assert.equal(payload.session.config.characterPresets.length >= 4, true);
+  assert.equal(payload.session.memory.simulation.actors.length >= 4, true);
   assert.equal(state.config.characterCard.name, '陈默');
   assert.ok(state.config.worldBook.find((entry) => entry.id === 'quest-smile-murders'));
   assert.equal(state.session.memory.worldState.flags.genre, 'lingyi');
@@ -988,10 +991,10 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.2.2',
-    releaseChannel: 'preview-local',
-    dataSchemaVersion: 2,
-    targetDataSchemaVersion: 2
+    version: '0.4.0',
+    releaseChannel: 'release-candidate-local',
+    dataSchemaVersion: 3,
+    targetDataSchemaVersion: 3
   });
 });
 
@@ -1514,6 +1517,130 @@ test('static PNG assets return image/png content type', async () => {
   assert.equal(response.status, 200);
   assert.match(response.headers['content-type'], /^image\/png/);
   assert.equal(response.headers['cache-control'], 'public, max-age=86400');
+});
+
+test('world simulation APIs keep private NPC state out of the public projection', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const saved = await request(app, {
+    method: 'PUT',
+    url: '/api/sessions/main/simulation/actors',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      actors: [{
+        id: 'luo-qing',
+        name: '洛青',
+        role: '巡夜人',
+        location: '南门',
+        publicKnowledge: ['城中正在宵禁'],
+        privateKnowledge: ['密令来自内廷'],
+        schedule: [{ at: '09:00', location: '旧档房', activity: '暗查卷宗', visibility: 'private' }],
+        agenda: [{ title: '找出泄密者', visibility: 'private' }]
+      }]
+    }
+  });
+  const director = (await request(app, { url: '/api/sessions/main/simulation?view=director' })).json().snapshot;
+  const publicView = (await request(app, { url: '/api/sessions/main/simulation?view=public' })).json().snapshot;
+
+  assert.equal(saved.status, 200);
+  assert.deepEqual(director.simulation.actors[0].privateKnowledge, ['密令来自内廷']);
+  assert.equal(director.simulation.actors[0].schedule.length, 1);
+  assert.equal(Object.hasOwn(publicView.simulation.actors[0], 'privateKnowledge'), false);
+  assert.equal(publicView.simulation.actors[0].schedule.length, 0);
+  assert.equal(publicView.simulation.actors[0].agenda.length, 0);
+});
+
+test('legacy content-pack sessions lazily restore their NPC roster', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({ rootDir });
+  await request(app, {
+    method: 'POST',
+    url: '/api/content-packs/lingyi/apply',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+  const sessionFile = path.join(rootDir, 'data', 'sessions', 'main.json');
+  const legacySession = JSON.parse(await readFile(sessionFile, 'utf8'));
+  delete legacySession.config.contentPackId;
+  delete legacySession.config.characterPresets;
+  legacySession.memory.simulation.actors = [];
+  legacySession.memory.simulation.revision = 0;
+  delete legacySession.memory.simulation.settings.rosterInitialized;
+  await writeFile(sessionFile, `${JSON.stringify(legacySession, null, 2)}\n`, 'utf8');
+
+  const response = await request(app, { url: '/api/sessions/main/simulation?view=director' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.snapshot.simulation.actors.length >= 4, true);
+  assert.ok(payload.snapshot.simulation.actors.find((actor) => actor.name === '唐月'));
+  assert.ok(payload.snapshot.simulation.actors.find((actor) => actor.name === '张婆婆'));
+});
+
+test('action preview is dry-run while commit and clock advance append durable ledger events', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'PUT',
+    url: '/api/sessions/main/simulation/actors',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      actors: [{
+        id: 'luo-qing',
+        name: '洛青',
+        schedule: [{ at: '09:00', location: '旧档房', activity: '暗查卷宗', visibility: 'private' }]
+      }]
+    }
+  });
+
+  const action = {
+    actorId: 'creator',
+    summary: '把密信交给主角',
+    actions: [{ type: 'state.append', path: 'protagonist.inventory', value: '密信' }]
+  };
+  const preview = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/actions/preview',
+    headers: { 'content-type': 'application/json' },
+    body: { envelope: action }
+  });
+  const afterPreview = (await request(app, { url: '/api/sessions/main/simulation' })).json().snapshot;
+  const committed = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/actions/commit',
+    headers: { 'content-type': 'application/json' },
+    body: { envelope: action }
+  });
+  const ledgerAfterCommit = (await request(app, { url: '/api/sessions/main/events?view=director' })).json();
+  const advanced = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/simulation/advance',
+    headers: { 'content-type': 'application/json' },
+    body: { minutes: 60, reason: '测试推进' }
+  });
+  const ledger = (await request(app, { url: '/api/sessions/main/events?view=director' })).json();
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.json().snapshot.worldState.protagonist.inventory, ['密信']);
+  assert.deepEqual(afterPreview.worldState.protagonist.inventory, []);
+  assert.equal(committed.status, 200);
+  assert.ok(ledgerAfterCommit.events.some((event) => event.kind === 'manual-action'));
+  assert.deepEqual(committed.json().snapshot.worldState.protagonist.inventory, ['密信']);
+  assert.equal(advanced.status, 200);
+  assert.equal(advanced.json().snapshot.simulation.clock.label, '第1日 09:00');
+  assert.equal(advanced.json().snapshot.simulation.actors[0].location, '旧档房');
+  assert.ok(ledger.events.some((event) => event.kind === 'manual-action'));
+  assert.ok(ledger.events.some((event) => event.kind === 'simulation-tick'));
+});
+
+test('simulation action routes reject malformed action envelopes', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/actions/commit',
+    headers: { 'content-type': 'application/json' },
+    body: { envelope: { actions: [] } }
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.json().error, 'ACTION_LIST_EMPTY');
 });
 
 test('static path traversal attempt returns non-200 and does not expose files', async () => {

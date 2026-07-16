@@ -1,4 +1,5 @@
 import { normalizeSemver, satisfiesSemver } from '../lib/semver.js';
+import { APP_VERSION } from '../releaseInfo.js';
 
 export const CONTENT_PACK_SPEC = 'lra.content-pack/v1';
 export const DEFAULT_CONTENT_PACK_ENGINE_RANGE = '>=0.2.2 <1.0.0';
@@ -100,7 +101,7 @@ export function normalizeContentPackManifest(input = {}) {
 }
 
 export function inspectContentPackBundle(input = {}, {
-  appVersion = '0.2.2',
+  appVersion = APP_VERSION,
   installedPlugins = [],
   contentPacks = []
 } = {}) {
@@ -277,6 +278,13 @@ function inferCapabilities(pack) {
   if (pack.promptModules?.length) capabilities.push('prompt');
   if (pack.ruleSystem) capabilities.push('rule-system');
   if (pack.memory) capabilities.push('memory-seed');
+  if ((pack.characterPresets || []).some((preset) => {
+    const extensions = preset?.characterCard?.extensions || preset?.extensions || {};
+    return extensions.npcCard
+      || extensions.privateKnowledge?.length
+      || extensions.schedule?.length
+      || extensions.agenda?.length;
+  })) capabilities.push('world-simulation');
   return capabilities;
 }
 

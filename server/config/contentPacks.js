@@ -1,6 +1,7 @@
 import { createYingxiongzhiContentPack } from './yingxiongzhiPack.js';
 import { genreNarrativeModules, genreWorldBookExpansions } from './genreExpansions.js';
 import { createContentPackManifest, summarizeContentPackManifest } from '../content/contentPackManifest.js';
+import { buildContentPackCharacterPresets } from './contentPackNpcRosters.js';
 import {
   GENRE_INSPIRATION_REFS as genreInspirationRefs,
   buildGenreReferenceMethodContent,
@@ -998,6 +999,9 @@ const contentPacks = {
 };
 
 for (const pack of Object.values(contentPacks)) {
+  if (!Array.isArray(pack.characterPresets) || !pack.characterPresets.length) {
+    pack.characterPresets = buildContentPackCharacterPresets(pack.id, pack.characterCard);
+  }
   pack.manifest = createContentPackManifest(pack, {
     manifestId: pack.id,
     version: '1.0.0',

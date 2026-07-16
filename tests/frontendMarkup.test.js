@@ -456,7 +456,7 @@ test('desktop launch defaults to an immersive stage instead of a configuration w
   assert.match(html, /<aside id="provider-panel" class="panel provider-panel collapsed"/);
   assert.match(html, /<aside id="inspector-panel" class="panel inspector-panel collapsed"/);
   assert.match(html, /data-tab="status"[\s\S]*aria-selected="true">状态/);
-  assert.match(html, /<section class="tab-pane active" data-pane="status"/);
+  assert.match(html, /<section class="tab-pane[^\"]*active" data-pane="status"/);
   assert.match(html, /data-tab="memory"[\s\S]*aria-selected="false">记忆/);
   assert.match(css, /\.immersive-right-sidebar\s*\{[\s\S]*top:\s*108px;[\s\S]*bottom:\s*126px;/);
   assert.match(css, /\.immersive-sidebar-tab\s*\{[\s\S]*min-height:\s*86px;[\s\S]*opacity:\s*0\.74;/);
@@ -706,7 +706,7 @@ test('Hero script is wired through selectors, visuals, guided opening and dynami
   assert.match(html, /<option value="yingxiongzhi">英雄志<\/option>/);
   assert.match(app, /id: 'yingxiongzhi'/);
   assert.match(app, /CONTENT_PACK_VISUAL_PRESETS[\s\S]*yingxiongzhi:/);
-  assert.match(app, /loadContentPackCharacterPresets\('yingxiongzhi'/);
+  assert.match(app, /loadContentPackCharacterPresets\(getAppliedContentPackId\(\) \|\| 'xuanhuan'/);
   assert.match(app, /generateYingxiongzhiProtagonistCard/);
   assert.match(app, /extensions\?\.visibility/);
   assert.match(css, /\.epic-genre-grid\s*\{[\s\S]*grid-template-columns:\s*repeat\(5,/);
@@ -716,4 +716,31 @@ test('Hero script is wired through selectors, visuals, guided opening and dynami
   assert.ok(template.genres.yingxiongzhi.sidebar.tabs.includes('剧情节点'));
   assert.ok(template.genres.yingxiongzhi.fields.knownInformation);
   assert.ok(template.genres.yingxiongzhi.fields.blindSpot);
+});
+
+test('v0.4 status inspector exposes world clock, NPC projections and event ledger', async () => {
+  const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(html, /id="simulation-view-switch"/);
+  assert.match(html, /data-simulation-view="director"/);
+  assert.match(html, /data-simulation-view="public"/);
+  assert.match(html, /id="simulation-actors"/);
+  assert.match(html, /id="simulation-events"/);
+  assert.match(html, /data-simulation-advance="1440"/);
+  assert.match(html, /id="simulation-actors-editor"/);
+
+  assert.match(app, /function renderWorldSimulation/);
+  assert.match(app, /async function advanceWorldSimulation/);
+  assert.match(app, /async function saveSimulationActors/);
+  assert.match(app, /\/api\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/simulation\?view=\$\{view\}/);
+  assert.match(app, /\/simulation\/advance/);
+  assert.match(app, /\/simulation\/actors/);
+  assert.match(app, /state\.simulationPublicSnapshot/);
+
+  assert.match(css, /\.world-simulation-panel\s*\{/);
+  assert.match(css, /\.simulation-view-switch\s*\{/);
+  assert.match(css, /\.simulation-actors-editor-panel \.json-editor/);
+  assert.match(css, /\.status-pane\s*\{[\s\S]*overflow-y:\s*auto;/);
 });

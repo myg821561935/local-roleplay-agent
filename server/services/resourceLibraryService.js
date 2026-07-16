@@ -21,6 +21,7 @@ import {
   evaluateResourceCandidate,
   estimateResourceTokens
 } from '../resources/resourceEvaluator.js';
+import { APP_VERSION } from '../releaseInfo.js';
 
 const RESOURCE_DIR = 'library/resources';
 const PACK_DIR = 'library/packs';
@@ -29,7 +30,7 @@ const RESOURCE_KINDS = new Set(['character', 'worldbook', 'prompt']);
 export class ResourceLibraryService {
   constructor(store, {
     now = () => new Date(),
-    appVersion = '0.2.2',
+    appVersion = APP_VERSION,
     pluginRegistry = null,
     resolveBuiltInPack = () => null,
     listBuiltInPacks = () => []

@@ -3,6 +3,8 @@ import { normalizeFactCards } from './factCards.js';
 import { retrieveCards } from './memoryRetriever.js';
 import { expandMacros } from './macroEngine.js';
 import { buildNarrativeControlPrompt, resolveNarrativeContext } from './narrativeControl.js';
+import { buildActionProtocolPrompt } from '../simulation/actionProtocol.js';
+import { renderSimulationPrompt } from '../simulation/npcSimulation.js';
 
 export function assemblePrompt({
   promptModules,
@@ -31,6 +33,8 @@ export function assemblePrompt({
   const renderedPromptModules = getRenderablePromptModules(safePromptModules);
   const narrativeContext = resolveNarrativeContext({ memory, mode: options.narrativeMode });
   const narrativeControlPrompt = buildNarrativeControlPrompt({ memory, mode: narrativeContext.mode });
+  const simulationPrompt = renderSimulationPrompt(memory, { targetSpeaker });
+  const actionProtocolPrompt = buildActionProtocolPrompt({ memory, targetSpeaker });
 
   // 宏展开上下文
   const macroContext = {
@@ -78,11 +82,13 @@ export function assemblePrompt({
     renderPersona(expandedPersona),
     renderPromptModules(expandedPromptModules),
     renderWorldState(memory?.worldState),
+    simulationPrompt,
     renderRollingSummary(memory?.rollingSummary),
     topCardsText,
     renderVectorMemory(vectorHits),
     renderSpeakerInstruction({ groupMembers, targetSpeaker, characterCard }),
-    renderRecommendationInstruction()
+    renderRecommendationInstruction(),
+    actionProtocolPrompt
   ].filter(Boolean);
 
   const recentMessages = safeMessages
@@ -157,6 +163,8 @@ export function assemblePrompt({
       narrativeMode: narrativeContext.mode,
       narrativeGenre: narrativeContext.genre,
       narrativeArc: narrativeContext.activeArc,
+      simulationRevision: Number(memory?.simulation?.revision || 0),
+      simulationActorCount: Array.isArray(memory?.simulation?.actors) ? memory.simulation.actors.length : 0,
       injectedCardIds: injectedCards.map((card) => card.id)
     }
   };
