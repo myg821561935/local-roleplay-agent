@@ -45,7 +45,9 @@ export class WorldSimulationService {
       actionEnvelope: assistantMessage.actionEnvelope ? structuredClone(assistantMessage.actionEnvelope) : null,
       actionError: assistantMessage.actionError ? structuredClone(assistantMessage.actionError) : null,
       adjudication: assistantMessage.adjudication ? structuredClone(assistantMessage.adjudication) : null,
-      recommendedActions: Array.isArray(assistantMessage.recommendedActions) ? structuredClone(assistantMessage.recommendedActions) : []
+      recommendedActions: Array.isArray(assistantMessage.recommendedActions) ? structuredClone(assistantMessage.recommendedActions) : [],
+      roleplayPanels: assistantMessage.roleplayPanels ? structuredClone(assistantMessage.roleplayPanels) : null,
+      speaker: assistantMessage.speaker ? String(assistantMessage.speaker).slice(0, 30) : ''
     };
     assistantMessage.swipeMetadata = swipeMetadata;
     session.memory = appendTurnEvent({

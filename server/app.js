@@ -25,6 +25,9 @@ import { APP_NAME, APP_VERSION, DATA_SCHEMA_VERSION, RELEASE_CHANNEL } from './r
 import { sanitizeProviderTestError, testProviderConnection } from './services/providerTestService.js';
 import { ResourceLibraryService } from './services/resourceLibraryService.js';
 import { WorldSimulationService } from './services/worldSimulationService.js';
+import { StoryProjectService, summarizeStoryProject } from './services/storyProjectService.js';
+import { AuthoringService } from './services/authoringService.js';
+import { listAgentProfiles, normalizeAgentProfileId } from './authoring/agentProfiles.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -61,6 +64,8 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   const store = new JsonStore(path.join(appRoot, 'data'));
   const configService = new ConfigService(store);
   const sessionService = new SessionService(store);
+  const storyProjectService = new StoryProjectService(store);
+  const authoringService = new AuthoringService({ sessionService });
   const assetService = new AssetService(store);
   const resourceLibraryService = new ResourceLibraryService(store, {
     appVersion: APP_VERSION,
@@ -113,6 +118,8 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
           appRoot,
           configService,
           sessionService,
+          storyProjectService,
+          authoringService,
           agentService,
           worldSimulationService,
           assetService,
@@ -133,7 +140,7 @@ export function createApp({ rootDir = process.cwd(), providerClient: providerCli
   };
 }
 
-async function handleApi({ req, res, url, appRoot, configService, sessionService, agentService, worldSimulationService, assetService, resourceLibraryService, importSourceService, mcpRegistry, backupService, providerClient, fetchImpl }) {
+async function handleApi({ req, res, url, appRoot, configService, sessionService, storyProjectService, authoringService, agentService, worldSimulationService, assetService, resourceLibraryService, importSourceService, mcpRegistry, backupService, providerClient, fetchImpl }) {
   if (req.method === 'GET' && url.pathname === '/api/health') {
     const dataSchema = await readDataSchemaStatus(appRoot);
     writeJson(res, 200, {
@@ -208,6 +215,19 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     });
     const arrayBuffer = await proxyResponse.arrayBuffer();
     res.end(Buffer.from(arrayBuffer));
+    return;
+  }
+
+  const characterImageRoute = url.pathname.match(/^\/api\/character-images\/([a-f0-9]{64})\.png$/);
+  if (characterImageRoute && req.method === 'GET') {
+    const image = await assetService.readCharacterPortrait(characterImageRoute[1]);
+    if (!image) throw new ApiError(404, 'CHARACTER_IMAGE_NOT_FOUND');
+    res.writeHead(200, {
+      'content-type': 'image/png',
+      'content-length': image.length,
+      'cache-control': 'public, max-age=31536000, immutable'
+    });
+    res.end(image);
     return;
   }
 
@@ -297,6 +317,37 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
+  if (req.method === 'PATCH' && url.pathname === '/api/resource-library/resources') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.resourceIds)) {
+      throw new ApiError(400, 'RESOURCE_BATCH_METADATA_INVALID');
+    }
+    const result = await resourceLibraryService.updateResourcesMetadata(body.resourceIds, body);
+    writeJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/resource-library/resources/export') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.resourceIds)) {
+      throw new ApiError(400, 'RESOURCE_EXPORT_INVALID');
+    }
+    writeJson(res, 200, { bundle: await resourceLibraryService.exportResourceBundle(body.resourceIds) });
+    return;
+  }
+
+  if (req.method === 'DELETE' && url.pathname === '/api/resource-library/resources') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.resourceIds)) {
+      throw new ApiError(400, 'RESOURCE_BATCH_DELETE_INVALID');
+    }
+    writeJson(res, 200, await resourceLibraryService.removeResources(body.resourceIds));
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/resource-library/packs') {
     writeJson(res, 200, { packs: await resourceLibraryService.listPacks() });
     return;
@@ -314,12 +365,43 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
-  const resourceDeleteRoute = matchResourceLibraryDeleteRoute(url.pathname);
-  if (resourceDeleteRoute && req.method === 'DELETE') {
+  const resourceRoute = matchResourceLibraryResourceRoute(url.pathname);
+  if (resourceRoute && req.method === 'PATCH') {
     validateMutatingRequest(req);
-    const removed = await resourceLibraryService.removeResource(resourceDeleteRoute.resourceId);
+    const body = await readRequestJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new ApiError(400, 'RESOURCE_METADATA_INVALID');
+    }
+    const resource = await resourceLibraryService.updateResourceMetadata(resourceRoute.resourceId, body);
+    if (!resource) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
+    writeJson(res, 200, { resource });
+    return;
+  }
+
+  if (resourceRoute && req.method === 'DELETE') {
+    validateMutatingRequest(req);
+    const removed = await resourceLibraryService.removeResource(resourceRoute.resourceId);
     if (!removed) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
     writeJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/resource-library/packs/inspect') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const basePack = body.basePackId
+      ? await resolveContentPack(resourceLibraryService, body.basePackId)
+      : null;
+    if (body.basePackId && !basePack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    try {
+      const composition = await resourceLibraryService.inspectPackComposition(body, { basePack });
+      writeJson(res, 200, { composition });
+    } catch (error) {
+      if (String(error.message || '').startsWith('RESOURCE_NOT_FOUND:')) {
+        throw new ApiError(404, 'RESOURCE_NOT_FOUND', error.message.split(':').slice(1).join(':'));
+      }
+      throw new ApiError(400, 'RESOURCE_PACK_INVALID', error.message);
+    }
     return;
   }
 
@@ -352,8 +434,89 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
   }
 
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
-    const sessions = await sessionService.listSessions();
-    writeJson(res, 200, { sessions });
+    const [sessions, sessionSummaries] = await Promise.all([
+      sessionService.listSessions(),
+      sessionService.listSessionSummaries()
+    ]);
+    writeJson(res, 200, { sessions, sessionSummaries });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent-profiles') {
+    writeJson(res, 200, { profiles: listAgentProfiles() });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/story-projects') {
+    const projects = await storyProjectService.listProjects();
+    writeJson(res, 200, { projects: projects.map(summarizeStoryProject) });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/story-projects') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const pack = await resolveContentPack(resourceLibraryService, body.basePackId);
+    if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    const project = await storyProjectService.createProject({
+      title: body.title || pack.sessionTitle || pack.title,
+      description: body.description || pack.description,
+      basePackId: pack.id,
+      basePackTitle: pack.title,
+      basePackVersion: pack.manifest?.version || pack.version || '1.0.0',
+      visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
+      bindings: buildStoryProjectBindings(pack),
+      runtimePolicy: body.runtimePolicy
+    });
+    writeJson(res, 200, { project, summary: summarizeStoryProject(project) });
+    return;
+  }
+
+  const storyProjectRoute = url.pathname.match(/^\/api\/story-projects\/([^/]+)$/);
+  if (storyProjectRoute && req.method === 'GET') {
+    const project = await storyProjectService.getProject(decodeURIComponent(storyProjectRoute[1]));
+    if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+    writeJson(res, 200, { project });
+    return;
+  }
+
+  const storyProjectSessionRoute = url.pathname.match(/^\/api\/story-projects\/([^/]+)\/sessions$/);
+  if (storyProjectSessionRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const projectId = decodeURIComponent(storyProjectSessionRoute[1]);
+    const project = await storyProjectService.getProject(projectId);
+    if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+    const pack = await resolveContentPack(resourceLibraryService, project.basePackId);
+    if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    const session = await createSessionFromContentPack({
+      sessionService,
+      worldSimulationService,
+      pack,
+      body,
+      project
+    });
+    const updatedProject = await storyProjectService.attachSession(project.id, session.id);
+    writeJson(res, 200, {
+      session,
+      project: updatedProject,
+      visualPackId: project.visualPackId || pack.visualPackId || pack.id
+    });
+    return;
+  }
+
+  const authoringRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/authoring$/);
+  if (authoringRoute && req.method === 'GET') {
+    const sessionId = decodeURIComponent(authoringRoute[1]);
+    writeJson(res, 200, await authoringService.getBySession(sessionId));
+    return;
+  }
+
+  if (authoringRoute && req.method === 'PUT') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const sessionId = decodeURIComponent(authoringRoute[1]);
+    writeJson(res, 200, await authoringService.saveBySession(sessionId, body));
     return;
   }
 
@@ -473,40 +636,50 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     const body = await readRequestJson(req);
 
     let config = { characterCard: {}, worldBook: [], promptModules: [] };
-    let memory;
-    let selectedPack = null;
-    let title = body.title || '新的故事';
+    let selectedPack;
+    let project;
 
-    if (body.packId) {
-       selectedPack = await resolveContentPack(resourceLibraryService, body.packId);
-       if (selectedPack) {
-         config.characterCard = selectedPack.characterCard;
-         config.worldBook = selectedPack.worldBook;
-         config.promptModules = selectedPack.promptModules;
-         memory = withPackRuleSystem(selectedPack.memory, selectedPack.ruleSystem);
-         title = body.title || selectedPack.sessionTitle || title;
-       }
+    if (body.projectId) {
+      project = await storyProjectService.getProject(body.projectId);
+      if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+      selectedPack = await resolveContentPack(resourceLibraryService, project.basePackId);
+      if (!selectedPack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    } else if (body.packId) {
+      selectedPack = await resolveContentPack(resourceLibraryService, body.packId);
+      if (!selectedPack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    }
+
+    if (selectedPack) {
+      const session = await createSessionFromContentPack({
+        sessionService,
+        worldSimulationService,
+        pack: selectedPack,
+        body,
+        project
+      });
+      if (project) await storyProjectService.attachSession(project.id, session.id);
+      writeJson(res, 200, { session });
+      return;
     } else {
-       const assets = await assetService.listAssets();
-       const char = assets.characters.find(c => c.id === body.characterCardId);
-       if (char) config.characterCard = char;
+      const assets = await assetService.listAssets();
+      const char = assets.characters.find(c => c.id === body.characterCardId);
+      if (char) config.characterCard = char;
 
-       const wbs = assets.worldBooks.filter(wb => (body.worldBookIds || []).includes(wb.id));
-       config.worldBook = wbs.flatMap(wb => wb.entries || []);
+      const wbs = assets.worldBooks.filter(wb => (body.worldBookIds || []).includes(wb.id));
+      config.worldBook = wbs.flatMap(wb => wb.entries || []);
 
-       const prompts = assets.promptModules.filter(p => (body.promptModuleIds || []).includes(p.id));
-       config.promptModules = prompts;
+      const prompts = assets.promptModules.filter(p => (body.promptModuleIds || []).includes(p.id));
+      config.promptModules = prompts;
     }
 
     const session = await sessionService.createSessionWithConfig({
-       id: body.id,
-       title,
-       config,
-       memory
+      id: body.id,
+      title: body.title || '新的故事',
+      config
     });
     worldSimulationService.prepareSession(session, {
       characterCard: config.characterCard,
-      characterPresets: selectedPack?.characterPresets || []
+      characterPresets: []
     });
     await sessionService.saveSession(session);
 
@@ -1048,7 +1221,13 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
   if (req.method === 'POST' && url.pathname === '/api/import/commit') {
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
-    const result = await commitImport({ assetService, resourceLibraryService, body });
+    const result = await commitImport({
+      assetService,
+      configService,
+      sessionService,
+      resourceLibraryService,
+      body
+    });
     writeJson(res, 200, result);
     return;
   }
@@ -1065,6 +1244,8 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
     const imported = importCharacterCardFromPayload(body);
+    const portrait = await saveImportedCharacterPortrait(assetService, body);
+    if (portrait) imported.characterCard.portrait = portrait;
     const characterCard = await assetService.saveCharacter(imported.characterCard);
     let worldBook = [];
     if (imported.worldBook?.length) {
@@ -1083,7 +1264,8 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     const config = await configService.getAll();
     const characterCard = config.characterCard;
     const worldBook = config.worldBook;
-    const png = exportCharacterCardPng(characterCard, worldBook);
+    const basePortrait = await assetService.readCharacterPortrait(characterCard?.portrait?.assetId);
+    const png = exportCharacterCardPng(characterCard, worldBook, basePortrait);
     const filename = `${encodeURIComponent(characterCard?.name || 'character')}.png`;
     res.writeHead(200, {
       'content-type': 'image/png',
@@ -1301,7 +1483,7 @@ async function sendChat({ agentService, body }) {
     if (error.message === 'NO_ACTIVE_PROVIDER') {
       throw new ApiError(409, 'NO_ACTIVE_PROVIDER');
     }
-    throw new ApiError(502, 'PROVIDER_ERROR');
+    throw new ApiError(502, resolveProviderErrorCode(error));
   }
 }
 
@@ -1353,9 +1535,13 @@ function previewImport(payload) {
   }
 }
 
-async function commitImport({ assetService, resourceLibraryService, body }) {
+async function commitImport({ assetService, configService, sessionService, resourceLibraryService, body }) {
   const payload = body.payload ?? body;
   const preview = previewImport(payload);
+  if (preview.kind === 'character-card') {
+    const portrait = await saveImportedCharacterPortrait(assetService, payload);
+    if (portrait) preview.importData.characterCard.portrait = portrait;
+  }
   const source = body.source || {};
   const inspection = await resourceLibraryService.inspectPreview(preview, source);
   if (inspection.verdict === 'blocked') {
@@ -1403,21 +1589,35 @@ async function commitImport({ assetService, resourceLibraryService, body }) {
   }
   if (preview.kind === 'character-card') {
     const characterCard = await assetService.saveCharacter(preview.importData.characterCard);
-    let worldBook = [];
+    let importedWorldBook = [];
     if (preview.importData.worldBook?.length) {
        const wbAsset = await assetService.saveWorldBook(
          null,
          characterCard.name + '的设定集',
          preview.importData.worldBook
        );
-       worldBook = wbAsset.entries;
+       importedWorldBook = wbAsset.entries;
+    }
+    let worldBook = importedWorldBook;
+    if (body.sessionId) {
+      const session = await getApiSession(sessionService, body.sessionId);
+      session.config = await getEditableSessionConfig({ configService, session });
+      const existingWorldBook = Array.isArray(session.config.worldBook) ? session.config.worldBook : [];
+      const existingIds = new Set(existingWorldBook.map(worldBookIdentity));
+      const additions = importedWorldBook.filter((entry) => !existingIds.has(worldBookIdentity(entry)));
+      session.config.characterCard = characterCard;
+      session.config.worldBook = [...existingWorldBook, ...additions];
+      await sessionService.saveSession(session);
+      worldBook = session.config.worldBook;
+    } else {
+      await configService.saveCharacterCard(characterCard);
     }
     return {
       preview,
       applyMode: 'active-config',
       characterCard,
       worldBook,
-      importedWorldBookCount: worldBook.length,
+      importedWorldBookCount: importedWorldBook.length,
       libraryResources: libraryResult.resources
     };
   }
@@ -1436,6 +1636,17 @@ async function commitImport({ assetService, resourceLibraryService, body }) {
   throw new ApiError(400, 'INVALID_IMPORT_PAYLOAD');
 }
 
+async function saveImportedCharacterPortrait(assetService, payload) {
+  try {
+    return await assetService.saveCharacterPortrait(payload);
+  } catch (error) {
+    if (error?.code === 'CHARACTER_IMAGE_TOO_LARGE') {
+      throw new ApiError(413, 'CHARACTER_IMAGE_TOO_LARGE');
+    }
+    throw error;
+  }
+}
+
 async function streamChat({ agentService, body, res }) {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
@@ -1452,7 +1663,7 @@ async function streamChat({ agentService, body, res }) {
     });
     writeSse(res, 'done', result);
   } catch (error) {
-    const code = error.message === 'NO_ACTIVE_PROVIDER' ? 'NO_ACTIVE_PROVIDER' : 'PROVIDER_ERROR';
+    const code = error.message === 'NO_ACTIVE_PROVIDER' ? 'NO_ACTIVE_PROVIDER' : resolveProviderErrorCode(error);
     writeSse(res, 'error', { error: code });
   } finally {
     res.end();
@@ -1473,11 +1684,18 @@ async function streamContinue({ agentService, body, res }) {
     });
     writeSse(res, 'done', result);
   } catch (error) {
-    const code = error.message === 'NO_ACTIVE_PROVIDER' ? 'NO_ACTIVE_PROVIDER' : 'PROVIDER_ERROR';
+    const code = error.message === 'NO_ACTIVE_PROVIDER' ? 'NO_ACTIVE_PROVIDER' : resolveProviderErrorCode(error);
     writeSse(res, 'error', { error: code });
   } finally {
     res.end();
   }
+}
+
+function resolveProviderErrorCode(error) {
+  const message = String(error?.message || '');
+  if (message.startsWith('PROVIDER_REASONING_ONLY_RESPONSE')) return 'PROVIDER_REASONING_ONLY_RESPONSE';
+  if (message === 'PROVIDER_EMPTY_RESPONSE') return 'PROVIDER_EMPTY_RESPONSE';
+  return 'PROVIDER_ERROR';
 }
 
 function writeSse(res, event, data) {
@@ -1621,6 +1839,7 @@ async function applyContentPack({ configService, sessionService, body, packId, r
       ruleSystem: pack.ruleSystem,
       custom: pack.custom === true,
       visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
+      stageBackground: structuredClone(pack.stageBackground || null),
       basePackId: pack.resourceManifest?.basePackId || '',
       manifest: pack.manifest || null,
       compatibility: {
@@ -1639,6 +1858,56 @@ async function resolveContentPack(resourceLibraryService, packId) {
   return getContentPack(packId) || await resourceLibraryService.getPack(packId);
 }
 
+async function createSessionFromContentPack({ sessionService, worldSimulationService, pack, body = {}, project = null }) {
+  const config = {
+    characterCard: structuredClone(pack.characterCard || {}),
+    worldBook: structuredClone(pack.worldBook || []),
+    promptModules: structuredClone(pack.promptModules || [])
+  };
+  const visualPackId = String(
+    project?.visualPackId
+    || pack.visualPackId
+    || pack.resourceManifest?.basePackId
+    || pack.id
+  );
+  const session = await sessionService.createSessionWithConfig({
+    id: body.id,
+    title: body.title || pack.sessionTitle || pack.title || '新的故事',
+    config,
+    memory: withPackRuleSystem(pack.memory, pack.ruleSystem),
+    storyProjectId: project?.id || '',
+    basePackId: pack.id
+  });
+  session.settings = {
+    ...session.settings,
+    ...(project?.runtimePolicy || {}),
+    visualContentPack: visualPackId,
+    ...(pack.stageBackground?.url ? {
+      backgroundImage: pack.stageBackground.url,
+      backgroundFit: pack.stageBackground.fit || 'portrait',
+      backgroundSource: pack.stageBackground.source || 'character-portrait'
+    } : {})
+  };
+  worldSimulationService.prepareSession(session, {
+    characterCard: config.characterCard,
+    characterPresets: Array.isArray(pack.characterPresets) ? pack.characterPresets : []
+  });
+  await sessionService.saveSession(session);
+  return session;
+}
+
+function buildStoryProjectBindings(pack) {
+  const manifest = pack.resourceManifest || {};
+  return {
+    protagonistResourceId: manifest.characterResourceId || '',
+    npcResourceIds: [],
+    loreModuleIds: manifest.worldBookResourceIds || [],
+    ruleModuleIds: [],
+    stylePromptIds: manifest.promptResourceIds || [],
+    scenarioModuleIds: []
+  };
+}
+
 function summarizeResolvedPack(pack) {
   return {
     id: pack.id,
@@ -1646,6 +1915,8 @@ function summarizeResolvedPack(pack) {
     description: pack.description,
     sessionTitle: pack.sessionTitle,
     characterName: pack.characterCard?.name || '',
+    characterPortrait: structuredClone(pack.characterCard?.portrait || null),
+    stageBackground: structuredClone(pack.stageBackground || null),
     custom: pack.custom === true,
     visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
     basePackId: pack.resourceManifest?.basePackId || '',
@@ -1725,6 +1996,7 @@ function normalizeSessionSettings(settings = {}) {
     maxPromptTokens: normalizePositiveInteger(settings.maxPromptTokens, 8000),
     maxInjectedCards: normalizePositiveInteger(settings.maxInjectedCards, 5),
     narrativeMode: normalizeSessionSettingChoice(settings.narrativeMode, ['free', 'stable', 'strict']) || 'stable',
+    activeAgentProfileId: normalizeAgentProfileId(settings.activeAgentProfileId),
     providerId: String(settings.providerId || '').trim(),
     taskProviderOverrides: normalizeSessionTaskProviderOverrides(settings.taskProviderOverrides),
     taskFallbackOverrides: normalizeSessionTaskFallbackOverrides(settings.taskFallbackOverrides),
@@ -1818,7 +2090,9 @@ async function importSession({ sessionService, body }) {
     messages: Array.isArray(source.messages) ? source.messages : [],
     memory: source.memory || null,
     settings: source.settings || { providerId: '', recentPairs: 8, maxPromptTokens: 8000, maxInjectedCards: 5, narrativeMode: 'stable' },
-    config: source.config || undefined
+    config: source.config || undefined,
+    storyProjectId: String(source.storyProjectId || ''),
+    basePackId: String(source.basePackId || '')
   };
   await sessionService.saveSession(session);
   return session;
@@ -1862,7 +2136,7 @@ function matchContentPackCharactersRoute(pathname) {
   return { packId: decodeURIComponent(match[1]) };
 }
 
-function matchResourceLibraryDeleteRoute(pathname) {
+function matchResourceLibraryResourceRoute(pathname) {
   const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)$/);
   if (!match) return null;
   return { resourceId: decodeURIComponent(match[1]) };

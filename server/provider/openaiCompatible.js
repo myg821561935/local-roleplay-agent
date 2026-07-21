@@ -81,6 +81,8 @@ export async function streamOpenAICompatible({ provider, messages, onToken, fetc
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
+  let reasoningObserved = false;
+  let finishReason = '';
 
   try {
     while (true) {
@@ -90,30 +92,48 @@ export async function streamOpenAICompatible({ provider, messages, onToken, fetc
       const events = buffer.split('\n\n');
       buffer = events.pop() || '';
       for (const eventText of events) {
-        const token = readStreamToken(eventText);
-        if (!token) continue;
-        content += token;
-        await onToken?.(token);
+        const delta = readStreamDelta(eventText);
+        if (!delta) continue;
+        if (delta.reasoningObserved) reasoningObserved = true;
+        if (delta.finishReason) finishReason = delta.finishReason;
+        if (!delta.content) continue;
+        content += delta.content;
+        await onToken?.(delta.content);
       }
     }
   } finally {
     await reader.cancel().catch(() => {});
   }
 
-  return { content, raw: null };
+  if (!content.trim()) {
+    if (reasoningObserved) {
+      throw new Error(`PROVIDER_REASONING_ONLY_RESPONSE${finishReason ? `:${finishReason}` : ''}`);
+    }
+    throw new Error('PROVIDER_EMPTY_RESPONSE');
+  }
+
+  return {
+    content,
+    raw: { finishReason, reasoningObserved }
+  };
 }
 
-function readStreamToken(eventText) {
+function readStreamDelta(eventText) {
   const lines = String(eventText || '').split('\n');
   for (const line of lines) {
     if (!line.startsWith('data: ')) continue;
     const data = line.slice(6).trim();
     if (!data || data === '[DONE]') continue;
     const payload = JSON.parse(data);
-    const token = payload?.choices?.[0]?.delta?.content;
-    if (typeof token === 'string') return token;
+    const choice = payload?.choices?.[0];
+    const delta = choice?.delta || {};
+    return {
+      content: typeof delta.content === 'string' ? delta.content : '',
+      reasoningObserved: typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0,
+      finishReason: String(choice?.finish_reason || '')
+    };
   }
-  return '';
+  return null;
 }
 
 export async function readOpenAICompatibleResponse(response) {
@@ -129,8 +149,12 @@ export async function readOpenAICompatibleResponse(response) {
     throw new Error(`Provider error ${response.status}: ${JSON.stringify(payload).slice(0, 240)}`);
   }
 
-  const content = payload?.choices?.[0]?.message?.content;
+  const choice = payload?.choices?.[0];
+  const content = choice?.message?.content;
   if (typeof content !== 'string' || content.length === 0) {
+    if (typeof choice?.message?.reasoning_content === 'string' && choice.message.reasoning_content.length > 0) {
+      throw new Error(`PROVIDER_REASONING_ONLY_RESPONSE${choice?.finish_reason ? `:${choice.finish_reason}` : ''}`);
+    }
     throw new Error(`Provider response missing assistant content: ${JSON.stringify(payload).slice(0, 240)}`);
   }
 

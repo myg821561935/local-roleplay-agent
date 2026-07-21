@@ -50,6 +50,7 @@ export function createContentPackBundle(pack = {}, options = {}) {
       sessionTitle: String(pack.sessionTitle || pack.title || '').trim(),
       visualPackId: String(pack.visualPackId || pack.resourceManifest?.basePackId || '').trim(),
       characterCard: structuredClone(pack.characterCard || {}),
+      stageBackground: normalizeStageBackground(pack.stageBackground, pack.characterCard),
       worldBook: structuredClone(Array.isArray(pack.worldBook) ? pack.worldBook : []),
       promptModules: structuredClone(Array.isArray(pack.promptModules) ? pack.promptModules : []),
       memory: structuredClone(pack.memory || {}),
@@ -193,6 +194,7 @@ export function contentPackFromBundle(bundle, internalId, { importedAt = new Dat
     sessionTitle: String(content.sessionTitle || manifest.title).trim(),
     visualPackId: String(content.visualPackId || 'xuanhuan').trim(),
     characterCard: structuredClone(content.characterCard || {}),
+    stageBackground: normalizeStageBackground(content.stageBackground, content.characterCard),
     worldBook: structuredClone(Array.isArray(content.worldBook) ? content.worldBook : []),
     promptModules: structuredClone(Array.isArray(content.promptModules) ? content.promptModules : []),
     memory: structuredClone(content.memory || {}),
@@ -306,6 +308,21 @@ function dimension(id, label, score, summary) {
 
 function uniqueStrings(values) {
   return [...new Set((Array.isArray(values) ? values : []).map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function normalizeStageBackground(value, characterCard = {}) {
+  if (!isPlainObject(value) || String(value.source || '') !== 'character-portrait') return null;
+  const portrait = isPlainObject(characterCard?.portrait) ? characterCard.portrait : {};
+  const assetId = String(portrait.assetId || '').trim().toLowerCase();
+  const url = String(portrait.url || '').trim();
+  if (!/^[a-f0-9]{64}$/.test(assetId) || url !== `/api/character-images/${assetId}.png`) return null;
+  return {
+    url,
+    assetId,
+    source: 'character-portrait',
+    fit: 'portrait',
+    label: String(value.label || `${characterCard.name || '角色'}立绘`).trim().slice(0, 80)
+  };
 }
 
 function isPlainObject(value) {

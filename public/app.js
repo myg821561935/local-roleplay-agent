@@ -1,4 +1,20 @@
 import { renderSafeMarkdown } from './markdown.js';
+import { createChatController } from './modules/chat.js';
+import {
+  createInspectorController,
+  createWorldbookController
+} from './modules/inspector.js';
+import { createMcpController } from './modules/mcp.js';
+import { createVoiceController } from './modules/voice.js';
+import { createAssetCenterController } from './modules/assetCenter.js';
+import { createAuthoringController } from './modules/authoring.js';
+import { extractRoleplayPresentation, splitCharacterStatus } from './modules/roleplayResponse.js';
+import {
+  STORY_CATEGORY_LABELS,
+  filterStoryPacks,
+  getStoryPackCategories as getPackCategories,
+  getStoryPackVisualId as resolveStoryPackVisualId
+} from './modules/storyLauncher.js';
 
 const MASKED_SECRET = '********';
 const CUSTOM_MODEL_VALUE = '__custom_model__';
@@ -153,10 +169,10 @@ const OPENING_GENRE_OPTIONS = [
   }
 ];
 const WORK_MODES = {
-  creative: { label: '创作', defaultTab: 'status', activeView: 'chat' },
-  immersive: { label: '沉浸', defaultTab: 'status', activeView: 'chat' },
-  settings: { label: '设定', defaultTab: 'worldbook', activeView: 'inspector' },
-  debug: { label: '调试', defaultTab: 'memory', activeView: 'inspector' }
+  creative: { label: '创作', panelTitle: '检查器', defaultTab: 'status', activeView: 'chat' },
+  immersive: { label: '沉浸', panelTitle: '检查器', defaultTab: 'status', activeView: 'chat' },
+  settings: { label: '设定', panelTitle: '内容设定', defaultTab: 'worldbook', activeView: 'inspector' },
+  debug: { label: '调试', panelTitle: '运行调试', defaultTab: 'memory', activeView: 'inspector' }
 };
 const WORLD_BOOK_TYPE_LABELS = {
   'world-premise': '世界总纲',
@@ -361,6 +377,133 @@ const PROLOGUE_RANDOM_POOLS = {
   }
 };
 
+const STORY_CATALOG_VIEW_KEY = 'localRoleplayStoryCatalogView';
+const STORY_CATALOG_CATEGORY_KEY = 'localRoleplayStoryCatalogCategory';
+const CUSTOM_STORY_DRAFT_KEY = 'localRoleplayCustomStoryDraft';
+const CUSTOM_STORY_BASE_PACK_ID = '__original__';
+const CUSTOM_BASELINE_TEMPLATES = {
+  blank: {
+    label: '纯原创空白',
+    genre: '',
+    premise: '',
+    proseStyle: '',
+    hardRules: '',
+    visualPackId: 'xuanhuan'
+  },
+  wuxia: {
+    label: '古典武侠',
+    genre: '低魔武侠 · 架空王朝',
+    premise: '朝廷、地方豪强与江湖门派彼此制衡。武学能改变个人命运，却不能脱离军阵、钱粮、身份与人情网络。故事围绕旧案、门派利益和乱世选择展开。',
+    proseStyle: '重人物立场与对白潜台词；武斗讲究环境、招式代价和胜负后果，日常场景保留市井风物与礼法细节。',
+    hardRules: '不得出现飞升、无限复活和随意摧城的个人伟力；公开身份、路引、钱粮、伤势与政治后果必须持续有效。',
+    visualPackId: 'yingxiongzhi'
+  },
+  xuanhuan: {
+    label: '东方玄幻',
+    genre: '东方玄幻 · 宗门与王朝',
+    premise: '力量体系、宗门资源和王朝秩序共同塑造世界。机缘必须伴随代价，境界差距真实存在，但联盟、阵法、地势和制度仍能改变强弱关系。',
+    proseStyle: '宏大场景服务于人物抉择；升级过程强调资源、师承与因果，不以连续奇遇替代剧情推进。',
+    hardRules: '境界不可无因跳跃；法宝与功法必须有来源、条件和上限；支线不能长期取代主线矛盾。',
+    visualPackId: 'xuanhuan'
+  },
+  xianxia: {
+    label: '仙侠修真',
+    genre: '仙侠修真 · 因果与道统',
+    premise: '仙门、世族、散修与凡俗政权共同存在。修行依赖灵脉、传承、资源与心性，道统延续和因果债务比短期胜负更重要。',
+    proseStyle: '节制空泛玄语，以修行日常、宗门制度、资源交换和人物心性承载仙意。',
+    hardRules: '修为、寿元、灵根和功法相互约束；因果与承诺必须兑现；秘境和天材地宝不能成为无限供给。',
+    visualPackId: 'xianxia'
+  },
+  folklore: {
+    label: '民俗灵异',
+    genre: '中式民俗灵异 · 调查叙事',
+    premise: '异常依附于地方习俗、旧案与人际关系。线索可验证，禁忌有来源，鬼神规则稳定但不向角色完整公开。',
+    proseStyle: '以日常细节积累不安，减少直接解释；调查依靠证词、物证、时间线和地方知识推进。',
+    hardRules: '异常不能随剧情方便改变规则；每项超自然结论需要线索支撑；谜团、危险与人物关系必须保持因果闭环。',
+    visualPackId: 'lingyi'
+  },
+  history: {
+    label: '历史演义',
+    genre: '历史演义 · 制度与生存',
+    premise: '政令、财政、军队、交通与地方社会构成叙事骨架。人物可以改变局部历史，但必须面对信息延迟、组织成本和时代观念。',
+    proseStyle: '对白符合身份与时代，战争落到钱粮、军纪和地理，权谋通过制度流程与利益交换展开。',
+    hardRules: '禁止现代知识无成本碾压时代；官职、礼法、交通和生产力边界持续有效；重大改变必须经历组织过程。',
+    visualPackId: 'mingmo'
+  },
+  suspense: {
+    label: '都市悬疑',
+    genre: '现代都市 · 犯罪悬疑',
+    premise: '案件发生在利益密集的现代城市，证据链、社会关系和机构程序共同限制调查。每个秘密都应对应持有人、动机与暴露代价。',
+    proseStyle: '近距离视角、短场景与克制对白；用行动和物证传递信息，避免旁白提前揭底。',
+    hardRules: '推理结论必须可回溯到已出现线索；技术与机构能力符合现实；反派不能靠作者临时添加能力脱身。',
+    visualPackId: 'lingyi'
+  },
+  apocalypse: {
+    label: '末日生存',
+    genre: '近未来末日 · 聚落生存',
+    premise: '灾变后的资源、疾病、交通和群体信任决定生存。外部探索可以出现，但聚落治理、人员关系与长期供给始终是主轴。',
+    proseStyle: '重物资清单、路线风险和群体决策，以有限信息制造压力，不把每个场景都写成连续战斗。',
+    hardRules: '食物、药品、弹药与伤势不可自动恢复；地图与时间连续；新威胁不能无限升级以抹去既有建设成果。',
+    visualPackId: 'lingyi'
+  },
+  scifi: {
+    label: '科幻星际',
+    genre: '科幻星际 · 舰队与殖民地',
+    premise: '航行时间、能源、通信延迟和政治授权约束星际行动。技术改变社会结构，但不能作为无条件解决一切问题的魔法。',
+    proseStyle: '技术信息服务于人物选择，场景强调尺度、程序与未知环境；关键概念保持术语一致。',
+    hardRules: '先定义推进、通信、能源和人工智能边界；技术突破需要资源与验证；跨星系信息不能无视延迟。',
+    visualPackId: 'xuanhuan'
+  },
+  fantasy: {
+    label: '西方奇幻',
+    genre: '西方奇幻 · 城邦与魔法',
+    premise: '王权、教会、行会与族群共同塑造大陆秩序。魔法来自明确媒介与传统，不同地区拥有相互冲突的历史记忆。',
+    proseStyle: '以旅行、城镇生活和政治谈判展示世界；战斗强调装备、队伍协作与魔法代价。',
+    hardRules: '魔法必须遵循施法条件与代价；复活和预言稀缺且会改变社会秩序；族群文化不能只作为外观标签。',
+    visualPackId: 'xuanhuan'
+  }
+};
+
+function createCustomBaselineDraft(value = {}) {
+  return {
+    templateId: String(value.templateId || 'blank'),
+    worldName: String(value.worldName || '').slice(0, 80),
+    genre: String(value.genre || '').slice(0, 100),
+    premise: String(value.premise || '').slice(0, 5000),
+    proseStyle: String(value.proseStyle || '').slice(0, 2500),
+    hardRules: String(value.hardRules || '').slice(0, 2500),
+    visualPackId: String(value.visualPackId || 'xuanhuan')
+  };
+}
+
+function createCustomStoryDraft(value = {}) {
+  return {
+    basePackId: String(value.basePackId || ''),
+    title: String(value.title || '').slice(0, 80),
+    titleCustomized: value.titleCustomized === true,
+    characterResourceId: String(value.characterResourceId || ''),
+    useCharacterPortraitAsBackground: value.useCharacterPortraitAsBackground !== false,
+    worldBookResourceIds: Array.isArray(value.worldBookResourceIds)
+      ? Array.from(new Set(value.worldBookResourceIds.map((id) => String(id || '')).filter(Boolean)))
+      : [],
+    worldBookMergeMode: ['smart', 'base-first', 'resources-only'].includes(value.worldBookMergeMode)
+      ? value.worldBookMergeMode
+      : 'smart',
+    customBaseline: createCustomBaselineDraft(value.customBaseline)
+  };
+}
+
+function loadCustomStoryDraft() {
+  const fallback = createCustomStoryDraft();
+  try {
+    const saved = JSON.parse(localStorage.getItem(CUSTOM_STORY_DRAFT_KEY) || 'null');
+    if (!saved || typeof saved !== 'object') return fallback;
+    return createCustomStoryDraft(saved);
+  } catch {
+    return fallback;
+  }
+}
+
 const state = {
   config: {
     providers: { activeProviderId: '', providers: [] },
@@ -380,13 +523,22 @@ const state = {
   pendingJourneyDraft: null,
   contentPackCharacterPresets: {},
   contentPacks: [],
+  sessionSummaries: [],
+  storyProjects: [],
+  storyLauncherInitialized: false,
+  storyCatalogView: localStorage.getItem(STORY_CATALOG_VIEW_KEY) === 'list' ? 'list' : 'grid',
+  storyCatalogCategory: localStorage.getItem(STORY_CATALOG_CATEGORY_KEY) || 'all',
+  customStoryDraft: loadCustomStoryDraft(),
+  customStoryComposition: { key: '', status: 'idle', report: null, error: '' },
   resourceLibrary: [],
   resourcePacks: [],
   resourceAdapters: [],
   plugins: [],
   simulationView: 'director',
   simulationPublicSnapshot: null,
-  simulationBusy: false
+  simulationBusy: false,
+  chatStreaming: false,
+  recommendedActionPending: false
 };
 
 let currentSessionId = localStorage.getItem('localRoleplaySessionId') || 'main';
@@ -394,11 +546,61 @@ let pendingImportPayload = null;
 let pendingImportSource = null;
 let pendingImportCanCommit = false;
 let pendingImportKind = '';
+let pendingImportIntent = '';
+let pendingImportBasePackId = '';
 let importSources = FALLBACK_IMPORT_SOURCES;
 let sourceResultItems = [];
 let usageRefreshTimer = null;
+let customStoryInspectionTimer = null;
+let customStoryInspectionRequest = 0;
 
 const els = {
+  assetCenter: document.querySelector('#asset-center'),
+  openAssetCenter: document.querySelector('#open-asset-center'),
+  storyLauncher: document.querySelector('#story-launcher'),
+  openStoryLauncher: document.querySelector('#open-story-launcher'),
+  closeStoryLauncher: document.querySelector('#close-story-launcher'),
+  storyContinuePanel: document.querySelector('#story-continue-panel'),
+  storyContinueTitle: document.querySelector('#story-continue-title'),
+  storyContinueMeta: document.querySelector('#story-continue-meta'),
+  continueLastStory: document.querySelector('#continue-last-story'),
+  storyProjectCount: document.querySelector('#story-project-count'),
+  storyProjectList: document.querySelector('#story-project-list'),
+  storyPackSearch: document.querySelector('#story-pack-search'),
+  storyCategoryFilter: document.querySelector('#story-category-filter'),
+  storyViewButtons: Array.from(document.querySelectorAll('[data-story-view]')),
+  storyPackGrid: document.querySelector('#story-pack-grid'),
+  openStoryCustomDialog: document.querySelector('#open-story-custom-dialog'),
+  storyCustomDialog: document.querySelector('#story-custom-dialog'),
+  closeStoryCustomDialog: document.querySelector('#close-story-custom-dialog'),
+  cancelStoryCustomDialog: document.querySelector('#cancel-story-custom-dialog'),
+  storyImportBase: document.querySelector('#story-import-base'),
+  storyImportTrigger: document.querySelector('#story-import-trigger'),
+  storyImportFile: document.querySelector('#story-import-file'),
+  storyCustomTitle: document.querySelector('#story-custom-title'),
+  storyCustomCharacter: document.querySelector('#story-custom-character'),
+  storyCustomCharacterBackgroundOption: document.querySelector('#story-custom-character-background-option'),
+  storyCustomCharacterBackground: document.querySelector('#story-custom-character-background'),
+  storyCustomCharacterBackgroundPreview: document.querySelector('#story-custom-character-background-preview'),
+  storyCustomWorldbookMode: document.querySelector('#story-custom-worldbook-mode'),
+  storyCustomBaselineFields: document.querySelector('#story-custom-baseline-fields'),
+  storyCustomBaselineTemplate: document.querySelector('#story-custom-baseline-template'),
+  storyCustomWorldName: document.querySelector('#story-custom-world-name'),
+  storyCustomGenre: document.querySelector('#story-custom-genre'),
+  storyCustomVisualPack: document.querySelector('#story-custom-visual-pack'),
+  storyCustomPremise: document.querySelector('#story-custom-premise'),
+  storyCustomProseStyle: document.querySelector('#story-custom-prose-style'),
+  storyCustomHardRules: document.querySelector('#story-custom-hard-rules'),
+  storyCustomWorldbookList: document.querySelector('#story-custom-worldbook-list'),
+  storyCustomReadinessBadge: document.querySelector('#story-custom-readiness-badge'),
+  storyCustomTokenEstimate: document.querySelector('#story-custom-token-estimate'),
+  storyCustomChecklist: document.querySelector('#story-custom-checklist'),
+  storyCustomConflicts: document.querySelector('#story-custom-conflicts'),
+  storyCustomGuidance: document.querySelector('#story-custom-guidance'),
+  storyCustomCreate: document.querySelector('#story-custom-create'),
+  storyCustomStatus: document.querySelector('#story-custom-status'),
+  storyLauncherStatus: document.querySelector('#story-launcher-status'),
+  openAdvancedSession: document.querySelector('#open-advanced-session'),
   sessionSelect: document.querySelector('#session-select'),
   openNewSession: document.querySelector('#open-new-session'),
   exportSession: document.querySelector('#export-session'),
@@ -481,6 +683,8 @@ const els = {
   messages: document.querySelector('#messages'),
   chatForm: document.querySelector('#chat-form'),
   chatInput: document.querySelector('#chat-input'),
+  sendMessageButton: document.querySelector('#send-message'),
+  composerStatus: document.querySelector('#composer-status'),
   rewriteChatInput: document.querySelector('#rewrite-chat-input'),
   continueMessage: document.querySelector('#continue-message'),
   toggleAuthorNote: document.querySelector('#toggle-author-note'),
@@ -529,6 +733,7 @@ const els = {
   exitImmersiveMode: document.querySelector('#exit-immersive-mode'),
   narrativeModeButtons: Array.from(document.querySelectorAll('#narrative-mode-switch .narrative-mode-button[data-narrative-mode]')),
   inspectorPanel: document.querySelector('.inspector-panel'),
+  inspectorPanelTitle: document.querySelector('#inspector-panel-title'),
   inspectorTabSelect: document.querySelector('#inspector-tab-select'),
   providerPanel: document.querySelector('.provider-panel'),
   toggleInspectorPanel: document.querySelector('#toggle-inspector-panel'),
@@ -575,6 +780,8 @@ const els = {
   characterCardEditor: document.querySelector('#character-card-editor'),
   characterCardImport: document.querySelector('#character-card-import'),
   importReviewDialog: document.querySelector('#import-review-dialog'),
+  importReviewKicker: document.querySelector('#import-review-kicker'),
+  importReviewTitle: document.querySelector('#import-review-title'),
   closeImportReview: document.querySelector('#close-import-review'),
   importPreview: document.querySelector('#import-preview'),
   confirmImport: document.querySelector('#confirm-import'),
@@ -652,9 +859,86 @@ const els = {
   immersiveSidebarBody: document.querySelector('#immersive-sidebar-body'),
   immersiveSidebarTabs: document.querySelector('#immersive-sidebar-tabs'),
   stageActions: document.querySelector('.stage-actions'),
+  authoringAgentProfile: document.querySelector('#authoring-agent-profile'),
+  authoringSceneTitle: document.querySelector('#authoring-scene-title'),
+  authoringSceneObjective: document.querySelector('#authoring-scene-objective'),
+  authoringScenePov: document.querySelector('#authoring-scene-pov'),
+  authoringSceneLocation: document.querySelector('#authoring-scene-location'),
+  authoringSceneTime: document.querySelector('#authoring-scene-time'),
+  authoringSceneTone: document.querySelector('#authoring-scene-tone'),
+  authoringMustReveal: document.querySelector('#authoring-must-reveal'),
+  authoringMustHide: document.querySelector('#authoring-must-hide'),
+  authoringForbidden: document.querySelector('#authoring-forbidden'),
+  authoringEndingHook: document.querySelector('#authoring-ending-hook'),
+  authoringPromises: document.querySelector('#authoring-promises'),
+  authoringDecisions: document.querySelector('#authoring-decisions'),
+  addAuthoringPromise: document.querySelector('#add-authoring-promise'),
+  addAuthoringDecision: document.querySelector('#add-authoring-decision'),
+  saveAuthoring: document.querySelector('#save-authoring'),
+  authoringStatus: document.querySelector('#authoring-status'),
+  authoringSummary: document.querySelector('#authoring-summary'),
   tabButtons: Array.from(document.querySelectorAll('[data-tab]')),
   tabPanes: Array.from(document.querySelectorAll('[data-pane]'))
 };
+
+const inspectorController = createInspectorController({
+  panel: els.inspectorPanel,
+  tabSelect: els.inspectorTabSelect,
+  syncTabSelect: syncInspectorTabSelect,
+  activateResourceView,
+  openAdvancedTool: openProviderSettings
+});
+const authoringController = createAuthoringController({
+  state,
+  els,
+  apiRequest,
+  setStatus,
+  getSessionId: () => currentSessionId
+});
+const worldbookController = createWorldbookController({
+  state,
+  els,
+  typeLabels: WORLD_BOOK_TYPE_LABELS,
+  prettyJson,
+  setStatus,
+  confirmAction: (message) => confirm(message)
+});
+const mcpController = createMcpController({ els, apiRequest, setStatus, escapeHtmlText });
+const voiceController = createVoiceController({
+  state,
+  els,
+  setStatus,
+  escapeHtmlText,
+  humanizeApiError
+});
+const assetCenterController = createAssetCenterController({
+  root: els.assetCenter,
+  getResources: () => state.resourceLibrary,
+  getPacks: () => state.resourcePacks,
+  onRefresh: () => loadResourceLibrary(),
+  onImport: () => els.characterCardImport?.click(),
+  onUseAsset: useAssetFromCenter,
+  onOpenComposer: openAssetComposer,
+  onSaveMetadata: saveAssetMetadata,
+  onDeleteAsset: deleteAssetFromCenter,
+  onBatchMetadata: saveAssetBatchMetadata,
+  onExportAssets: exportAssetsFromCenter,
+  onBatchDelete: deleteAssetsFromCenter
+});
+const chatController = createChatController({
+  state,
+  els,
+  getCurrentSessionId: () => currentSessionId,
+  applyBackgroundImage,
+  renderImmersiveSidebar,
+  renderJourneyDraft,
+  setStatus,
+  resolvePrologueTemplate,
+  renderOpeningWorkflow,
+  startGuidedJourney,
+  createMessageNode,
+  openProviderSettings
+});
 
 document.addEventListener('DOMContentLoaded', () => {
   renderProviderPresetOptions();
@@ -669,15 +953,150 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function bindEvents() {
+  assetCenterController.bindEvents();
+  els.openAssetCenter?.addEventListener('click', () => openAssetCenter());
+  els.openStoryLauncher?.addEventListener('click', () => openStoryLauncher());
+  els.closeStoryLauncher?.addEventListener('click', () => closeStoryLauncher());
+  els.continueLastStory?.addEventListener('click', continueLastStory);
+  els.storyPackSearch?.addEventListener('input', renderStoryPackGrid);
+  els.storyCategoryFilter?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-story-category]');
+    if (button) setStoryCatalogCategory(button.dataset.storyCategory);
+  });
+  els.storyViewButtons.forEach((button) => {
+    button.addEventListener('click', () => setStoryCatalogView(button.dataset.storyView));
+  });
+  els.openStoryCustomDialog?.addEventListener('click', () => openCustomStoryDialog());
+  els.closeStoryCustomDialog?.addEventListener('click', closeCustomStoryDialog);
+  els.cancelStoryCustomDialog?.addEventListener('click', closeCustomStoryDialog);
+  els.storyCustomDialog?.addEventListener('click', (event) => {
+    if (event.target === els.storyCustomDialog) closeCustomStoryDialog();
+  });
+  els.storyImportBase?.addEventListener('change', () => {
+    state.customStoryDraft.basePackId = els.storyImportBase.value;
+    if (!state.customStoryDraft.titleCustomized) {
+      state.customStoryDraft.title = getCustomStorySuggestedTitle();
+    }
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    renderCustomStoryBuilder();
+  });
+  els.storyCustomTitle?.addEventListener('input', () => {
+    state.customStoryDraft.title = els.storyCustomTitle.value;
+    state.customStoryDraft.titleCustomized = true;
+    persistCustomStoryDraft();
+    renderCustomStoryReadiness();
+  });
+  els.storyCustomCharacter?.addEventListener('change', () => {
+    const resources = Array.isArray(state.resourceLibrary) ? state.resourceLibrary : [];
+    const previousCharacter = resources.find((item) => item.id === state.customStoryDraft.characterResourceId);
+    const previousCompanions = new Set(getCompanionWorldBooks(previousCharacter, resources).map((item) => item.id));
+    state.customStoryDraft.characterResourceId = els.storyCustomCharacter.value;
+    const nextCharacter = resources.find((item) => item.id === state.customStoryDraft.characterResourceId);
+    state.customStoryDraft.useCharacterPortraitAsBackground = Boolean(getCharacterPortraitUrl(nextCharacter?.payload));
+    const nextCompanions = getCompanionWorldBooks(nextCharacter, resources).map((item) => item.id);
+    state.customStoryDraft.worldBookResourceIds = Array.from(new Set([
+      ...state.customStoryDraft.worldBookResourceIds.filter((id) => !previousCompanions.has(id)),
+      ...nextCompanions
+    ]));
+    if (!state.customStoryDraft.titleCustomized) {
+      state.customStoryDraft.title = getCustomStorySuggestedTitle();
+    }
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    renderCustomStoryBuilder();
+  });
+  els.storyCustomCharacterBackground?.addEventListener('change', () => {
+    state.customStoryDraft.useCharacterPortraitAsBackground = els.storyCustomCharacterBackground.checked;
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    renderCustomStoryReadiness();
+  });
+  els.storyCustomWorldbookMode?.addEventListener('change', () => {
+    state.customStoryDraft.worldBookMergeMode = els.storyCustomWorldbookMode.value;
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    renderCustomStoryReadiness();
+  });
+  els.storyCustomBaselineTemplate?.addEventListener('change', () => {
+    applyCustomBaselineTemplate(els.storyCustomBaselineTemplate.value);
+  });
+  [
+    ['storyCustomWorldName', 'worldName'],
+    ['storyCustomGenre', 'genre'],
+    ['storyCustomPremise', 'premise'],
+    ['storyCustomProseStyle', 'proseStyle'],
+    ['storyCustomHardRules', 'hardRules']
+  ].forEach(([elementKey, draftKey]) => {
+    els[elementKey]?.addEventListener('input', () => {
+      state.customStoryDraft.customBaseline[draftKey] = els[elementKey].value;
+      state.customStoryDraft.customBaseline.templateId = 'blank';
+      if (!state.customStoryDraft.titleCustomized) {
+        state.customStoryDraft.title = getCustomStorySuggestedTitle();
+        if (els.storyCustomTitle) els.storyCustomTitle.value = state.customStoryDraft.title;
+      }
+      invalidateCustomStoryInspection();
+      persistCustomStoryDraft();
+      renderCustomStoryReadiness();
+    });
+  });
+  els.storyCustomVisualPack?.addEventListener('change', () => {
+    state.customStoryDraft.customBaseline.visualPackId = els.storyCustomVisualPack.value;
+    state.customStoryDraft.customBaseline.templateId = 'blank';
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    renderCustomStoryReadiness();
+  });
+  els.storyCustomWorldbookList?.addEventListener('change', (event) => {
+    if (!event.target.matches('input[type="checkbox"]')) return;
+    state.customStoryDraft.worldBookResourceIds = Array.from(
+      els.storyCustomWorldbookList.querySelectorAll('input:checked')
+    ).map((input) => input.value);
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    renderCustomStoryReadiness();
+  });
+  els.storyCustomCreate?.addEventListener('click', createCustomStoryFromDraft);
+  els.storyImportTrigger?.addEventListener('click', () => els.storyImportFile?.click());
+  els.storyImportFile?.addEventListener('change', () => {
+    const basePackId = els.storyImportBase?.value || '';
+    if (!basePackId) {
+      setStatus(els.storyCustomStatus, '请先选择题材基线。', 'error');
+      if (els.storyImportFile) els.storyImportFile.value = '';
+      return;
+    }
+    void importCharacterCardFile(els.storyImportFile, {
+      intent: 'create-story',
+      basePackId
+    });
+  });
+  els.storyPackGrid?.addEventListener('click', (event) => {
+    const action = event.target.closest('[data-start-story-pack]');
+    if (action) void startStoryFromPack(action.dataset.startStoryPack, action);
+  });
+  els.storyPackGrid?.addEventListener('pointerover', previewStoryPackFromEvent);
+  els.storyPackGrid?.addEventListener('focusin', previewStoryPackFromEvent);
+  els.storyProjectList?.addEventListener('click', (event) => {
+    const action = event.target.closest('[data-open-story-session]');
+    if (action) {
+      void openStorySession(action.dataset.openStorySession);
+      return;
+    }
+    const projectAction = event.target.closest('[data-open-story-project]');
+    if (projectAction) void continueStoryProject(projectAction.dataset.openStoryProject);
+  });
+  els.openAdvancedSession?.addEventListener('click', () => {
+    closeStoryLauncher();
+    openNewSessionDialog();
+  });
   els.openProviderPanel?.addEventListener('click', () => setWorkspacePanelExpanded('provider', true));
   els.toggleProviderPanel?.addEventListener('click', () => setWorkspacePanelExpanded('provider', false));
   els.openInspectorPanel?.addEventListener('click', () => setWorkspacePanelExpanded('inspector', true));
   els.toggleInspectorPanel?.addEventListener('click', () => setWorkspacePanelExpanded('inspector', false));
   els.exitImmersiveMode?.addEventListener('click', () => activateWorkMode('creative'));
-  Array.from(els.inspectorPanel?.querySelectorAll('.tab-button[data-tab]') || []).forEach((button) => {
-    button.addEventListener('click', () => activateTab(button.dataset.tab));
-  });
-  els.inspectorTabSelect?.addEventListener('change', () => activateTab(els.inspectorTabSelect.value));
+  inspectorController.bindEvents();
+  authoringController.bindEvents();
+  authoringController.loadProfiles();
 
   document.querySelector('#provider-form').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -698,16 +1117,8 @@ function bindEvents() {
   els.generateImage?.addEventListener('click', generateImageAction);
   els.insertImageToBackground?.addEventListener('click', insertGeneratedImageAsBackground);
 
-  els.mcpSaveServer?.addEventListener('click', saveMcpServer);
-  els.mcpClearForm?.addEventListener('click', clearMcpForm);
-  els.mcpCallExecute?.addEventListener('click', callMcpTool);
-
-  els.ttsSpeak?.addEventListener('click', speakTts);
-  els.sttRecord?.addEventListener('click', startSttRecording);
-  els.sttStopRecord?.addEventListener('click', stopSttRecording);
-  els.sttTranscribe?.addEventListener('click', transcribeStt);
-  els.sttAudioInput?.addEventListener('change', onSttFileSelected);
-  els.sttInsertToInput?.addEventListener('click', insertSttToChatInput);
+  mcpController.bindEvents();
+  voiceController.bindEvents();
 
   els.chatForm.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -725,7 +1136,10 @@ function bindEvents() {
   els.backgroundPresets?.addEventListener('click', (event) => {
     const preset = event.target.closest('[data-bg-preset]');
     if (!preset) return;
-    setBackgroundImage(preset.dataset.bgPreset);
+    setBackgroundImage(preset.dataset.bgPreset, {
+      fit: preset.dataset.bgFit || 'cover',
+      source: preset.dataset.bgSource || 'preset'
+    });
   });
   els.savePersona?.addEventListener('click', savePersona);
   els.addQuickReply?.addEventListener('click', () => addQuickReplyRow());
@@ -773,6 +1187,10 @@ function bindEvents() {
   document.addEventListener('click', handleModuleHelpClick);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (els.storyLauncher && !els.storyLauncher.classList.contains('is-hidden')) {
+      closeStoryLauncher();
+      return;
+    }
     closeModuleHint();
     if (els.workspace?.dataset.workMode === 'immersive') activateWorkMode('creative');
   });
@@ -849,7 +1267,7 @@ function bindEvents() {
     localStorage.setItem('localRoleplaySessionId', currentSessionId);
     loadState();
   });
-  els.openNewSession?.addEventListener('click', openNewSessionDialog);
+  els.openNewSession?.addEventListener('click', () => openStoryLauncher());
   els.exportSession?.addEventListener('click', exportCurrentSession);
   els.importSession?.addEventListener('click', () => els.importSessionFile?.click());
   els.importSessionFile?.addEventListener('change', handleImportSessionFile);
@@ -859,7 +1277,7 @@ function bindEvents() {
   els.messages.addEventListener('click', (event) => {
     const recommendation = event.target.closest('[data-recommended-action]');
     if (recommendation) {
-      useRecommendedAction(recommendation.dataset.recommendedAction);
+      useRecommendedAction(recommendation.dataset.recommendedAction, recommendation);
       return;
     }
 
@@ -974,6 +1392,7 @@ async function loadState() {
     const [
       stateResult,
       sessionsResult,
+      storyProjectsResult,
       assetsResult,
       prologueResult,
       resourcesResult,
@@ -985,6 +1404,7 @@ async function loadState() {
     ] = await Promise.allSettled([
       fetch(`/api/state?sessionId=${encodeURIComponent(currentSessionId)}`),
       fetch('/api/sessions'),
+      fetch('/api/story-projects'),
       fetch('/api/assets'),
       fetch('/prologue-template.json'),
       fetch('/api/resource-library/resources'),
@@ -1012,10 +1432,18 @@ async function loadState() {
     }
 
     if (sessionsResult.status === 'fulfilled' && sessionsResult.value.ok) {
-      const { sessions } = await sessionsResult.value.json();
+      const { sessions, sessionSummaries } = await sessionsResult.value.json();
+      state.sessionSummaries = Array.isArray(sessionSummaries) ? sessionSummaries : [];
       renderSessionSelect(sessions);
     } else {
+      state.sessionSummaries = [];
       renderSessionSelect([]);
+    }
+
+    if (storyProjectsResult.status === 'fulfilled' && storyProjectsResult.value.ok) {
+      state.storyProjects = (await storyProjectsResult.value.json()).projects || [];
+    } else {
+      state.storyProjects = [];
     }
 
     if (assetsResult.status === 'fulfilled' && assetsResult.value.ok) {
@@ -1041,6 +1469,8 @@ async function loadState() {
 
     renderContentPackOptions();
     renderAll();
+    renderStoryLauncher();
+    initializeStoryLauncherVisibility();
     await loadContentPackCharacterPresets(getAppliedContentPackId() || 'xuanhuan', { silent: true });
     loadUsageStats({ silent: true });
     setStatus(els.appStatus, '工作台已就绪', 'ok');
@@ -1065,9 +1495,1021 @@ function renderSessionSelect(sessions) {
   }
 }
 
+function initializeStoryLauncherVisibility() {
+  if (state.storyLauncherInitialized) return;
+  state.storyLauncherInitialized = true;
+  const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
+  if (!state.session?.storyProjectId && messages.length === 0) {
+    openStoryLauncher({ focusSearch: false });
+  }
+}
+
+function openStoryLauncher(options = {}) {
+  if (!els.storyLauncher) return;
+  renderStoryLauncher();
+  const packId = getAppliedContentPackId()
+    || getMostRecentSessionSummary()?.packId
+    || state.contentPacks?.[0]?.id
+    || 'xuanhuan';
+  setStoryLauncherBackground(packId);
+  els.storyLauncher.classList.remove('is-hidden');
+  els.storyLauncher.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('story-launcher-open');
+  if (options.focusSearch !== false) {
+    window.setTimeout(() => els.storyPackSearch?.focus(), 0);
+  }
+}
+
+function closeStoryLauncher() {
+  if (!els.storyLauncher) return;
+  if (els.storyCustomDialog?.open) els.storyCustomDialog.close();
+  els.storyLauncher.classList.add('is-hidden');
+  els.storyLauncher.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('story-launcher-open');
+}
+
+function openAssetCenter() {
+  closeStoryLauncher();
+  assetCenterController.open();
+}
+
+function useAssetFromCenter(item) {
+  if (!item) return;
+  if (item.kind === 'pack') {
+    openStoryLauncher({ focusSearch: false });
+    if (els.storyPackSearch) els.storyPackSearch.value = item.title || '';
+    renderStoryPackGrid();
+    return;
+  }
+  if (item.kind === 'prompt') {
+    openAssetComposer(item);
+    return;
+  }
+
+  if (item.kind === 'character') {
+    state.customStoryDraft.characterResourceId = item.id;
+    state.customStoryDraft.useCharacterPortraitAsBackground = Boolean(getCharacterPortraitUrl(item.payload));
+    if (!state.customStoryDraft.titleCustomized) {
+      state.customStoryDraft.title = `${item.title || '新角色'} · 新卷`;
+    }
+    const companions = getCompanionWorldBooks(item.raw, state.resourceLibrary).map((resource) => resource.id);
+    state.customStoryDraft.worldBookResourceIds = Array.from(new Set([
+      ...state.customStoryDraft.worldBookResourceIds,
+      ...companions
+    ]));
+  } else if (item.kind === 'worldbook') {
+    state.customStoryDraft.worldBookResourceIds = Array.from(new Set([
+      ...state.customStoryDraft.worldBookResourceIds,
+      item.id
+    ]));
+    if (!state.customStoryDraft.titleCustomized) {
+      state.customStoryDraft.title = `${item.title || '新世界'} · 新卷`;
+    }
+  }
+  invalidateCustomStoryInspection();
+  persistCustomStoryDraft();
+  openCustomStoryDialog();
+}
+
+function openAssetComposer(item = null) {
+  activateWorkMode('settings');
+  activateTab('sources');
+  activateResourceView('composer');
+  renderResourcePackBuilder();
+  if (!item) return;
+  if (item.kind === 'character' && els.resourcePackCharacter) {
+    els.resourcePackCharacter.value = item.id;
+  }
+  const picker = item.kind === 'worldbook'
+    ? els.resourcePackWorldbooks
+    : item.kind === 'prompt'
+      ? els.resourcePackPrompts
+      : null;
+  const checkbox = picker?.querySelector(`input[value="${CSS.escape(item.id)}"]`);
+  if (checkbox) checkbox.checked = true;
+}
+
+async function saveAssetMetadata(item, updates) {
+  if (!item?.id || item.kind === 'pack') return;
+  await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}`, {
+    method: 'PATCH',
+    body: updates
+  });
+}
+
+async function deleteAssetFromCenter(item) {
+  if (!item?.id) return;
+  const path = item.kind === 'pack'
+    ? `/api/resource-library/packs/${encodeURIComponent(item.id)}`
+    : `/api/resource-library/resources/${encodeURIComponent(item.id)}`;
+  await apiRequest(path, { method: 'DELETE', body: {} });
+}
+
+async function saveAssetBatchMetadata(items, updates) {
+  const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
+  if (!resourceIds.length) return;
+  await apiRequest('/api/resource-library/resources', {
+    method: 'PATCH',
+    body: { resourceIds, ...updates }
+  });
+}
+
+async function exportAssetsFromCenter(items) {
+  const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
+  if (!resourceIds.length) return;
+  const { bundle } = await apiRequest('/api/resource-library/resources/export', {
+    method: 'POST',
+    body: { resourceIds }
+  });
+  downloadJsonFile(bundle, `roleplay-assets-${new Date().toISOString().slice(0, 10)}.json`);
+}
+
+async function deleteAssetsFromCenter(items) {
+  const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
+  if (!resourceIds.length) return;
+  await apiRequest('/api/resource-library/resources', {
+    method: 'DELETE',
+    body: { resourceIds }
+  });
+}
+
+function downloadJsonFile(payload, fileName) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function openCustomStoryDialog(options = {}) {
+  if (!els.storyCustomDialog) return;
+  renderStoryImportBaseOptions();
+  renderCustomStoryBuilder();
+  if (!els.storyCustomDialog.open) els.storyCustomDialog.showModal();
+  if (options.resetStatus !== false) {
+    setStatus(els.storyCustomStatus, '选择基线与素材后，系统会先检查完整性再创建剧本。');
+  }
+  window.setTimeout(() => els.storyImportBase?.focus(), 0);
+}
+
+function closeCustomStoryDialog() {
+  if (els.storyCustomDialog?.open) els.storyCustomDialog.close();
+}
+
+function renderStoryLauncher() {
+  if (!els.storyLauncher) return;
+  renderStoryContinuePanel();
+  renderStoryProjects();
+  renderStoryImportBaseOptions();
+  renderCustomStoryBuilder();
+  renderStoryCatalogFilters();
+  renderStoryPackGrid();
+}
+
+function renderStoryImportBaseOptions() {
+  if (!els.storyImportBase) return;
+  const previous = state.customStoryDraft.basePackId || els.storyImportBase.value;
+  const packs = (Array.isArray(state.contentPacks) ? state.contentPacks : [])
+    .filter((pack) => pack.custom !== true)
+    .filter((pack) => pack.compatibility?.compatible !== false || Number(pack.compatibility?.blockingCount || 0) === 0);
+  els.storyImportBase.innerHTML = '';
+  const original = document.createElement('option');
+  original.value = CUSTOM_STORY_BASE_PACK_ID;
+  original.textContent = '原创空白基线（自行定义）';
+  els.storyImportBase.append(original);
+  packs.forEach((pack) => {
+    const option = document.createElement('option');
+    option.value = pack.id;
+    option.textContent = pack.title || pack.id;
+    els.storyImportBase.append(option);
+  });
+  const preferred = previous || getAppliedContentPackId() || 'xuanhuan';
+  const available = preferred === CUSTOM_STORY_BASE_PACK_ID || packs.some((pack) => pack.id === preferred);
+  els.storyImportBase.value = available ? preferred : (packs[0]?.id || CUSTOM_STORY_BASE_PACK_ID);
+  state.customStoryDraft.basePackId = els.storyImportBase.value;
+  if (els.storyImportTrigger) els.storyImportTrigger.disabled = false;
+  persistCustomStoryDraft();
+}
+
+function persistCustomStoryDraft() {
+  localStorage.setItem(CUSTOM_STORY_DRAFT_KEY, JSON.stringify(state.customStoryDraft));
+}
+
+function getCustomStorySuggestedTitle() {
+  const basePack = (state.contentPacks || []).find((pack) => pack.id === state.customStoryDraft.basePackId);
+  const character = (state.resourceLibrary || []).find((item) => item.id === state.customStoryDraft.characterResourceId);
+  if (character) return `${character.title || character.payload?.name || '新角色'} · 新卷`;
+  if (state.customStoryDraft.basePackId === CUSTOM_STORY_BASE_PACK_ID) {
+    const worldName = state.customStoryDraft.customBaseline?.worldName?.trim();
+    return worldName ? `${worldName} · 第一卷` : '原创世界 · 第一卷';
+  }
+  return basePack ? `${basePack.title || basePack.id} · 自定义卷` : '自定义故事';
+}
+
+function applyCustomBaselineTemplate(templateId) {
+  const template = CUSTOM_BASELINE_TEMPLATES[templateId] || CUSTOM_BASELINE_TEMPLATES.blank;
+  const current = state.customStoryDraft.customBaseline || createCustomBaselineDraft();
+  state.customStoryDraft.customBaseline = createCustomBaselineDraft({
+    ...template,
+    templateId: CUSTOM_BASELINE_TEMPLATES[templateId] ? templateId : 'blank',
+    worldName: current.worldName
+  });
+  if (!state.customStoryDraft.titleCustomized) {
+    state.customStoryDraft.title = getCustomStorySuggestedTitle();
+  }
+  invalidateCustomStoryInspection();
+  persistCustomStoryDraft();
+  renderCustomStoryBuilder();
+}
+
+function renderCustomBaselineEditor() {
+  if (!els.storyCustomBaselineFields) return;
+  const isOriginal = state.customStoryDraft.basePackId === CUSTOM_STORY_BASE_PACK_ID;
+  els.storyCustomBaselineFields.hidden = !isOriginal;
+  if (!isOriginal) return;
+
+  if (els.storyCustomBaselineTemplate && !els.storyCustomBaselineTemplate.options.length) {
+    Object.entries(CUSTOM_BASELINE_TEMPLATES).forEach(([id, template]) => {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = template.label;
+      els.storyCustomBaselineTemplate.append(option);
+    });
+  }
+  if (els.storyCustomVisualPack) {
+    const visualOptions = new Map();
+    (state.contentPacks || []).filter((pack) => pack.custom !== true).forEach((pack) => {
+      visualOptions.set(getStoryPackVisualId(pack), pack.title || getStoryPackVisualId(pack));
+    });
+    Object.values(CUSTOM_BASELINE_TEMPLATES).forEach((template) => {
+      if (!visualOptions.has(template.visualPackId)) visualOptions.set(template.visualPackId, template.label);
+    });
+    els.storyCustomVisualPack.innerHTML = '';
+    visualOptions.forEach((label, id) => {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = label;
+      els.storyCustomVisualPack.append(option);
+    });
+  }
+
+  const baseline = state.customStoryDraft.customBaseline;
+  if (els.storyCustomBaselineTemplate) els.storyCustomBaselineTemplate.value = baseline.templateId;
+  if (els.storyCustomWorldName) els.storyCustomWorldName.value = baseline.worldName;
+  if (els.storyCustomGenre) els.storyCustomGenre.value = baseline.genre;
+  if (els.storyCustomVisualPack) els.storyCustomVisualPack.value = baseline.visualPackId;
+  if (els.storyCustomPremise) els.storyCustomPremise.value = baseline.premise;
+  if (els.storyCustomProseStyle) els.storyCustomProseStyle.value = baseline.proseStyle;
+  if (els.storyCustomHardRules) els.storyCustomHardRules.value = baseline.hardRules;
+}
+
+function getResourceImportBatchKey(resource) {
+  const source = resource?.source || {};
+  if (source.importBatchId) return `batch:${source.importBatchId}`;
+  if (source.fileName && source.importedAt) return `legacy:${source.fileName}:${source.importedAt}`;
+  return '';
+}
+
+function getCompanionWorldBooks(character, resources = state.resourceLibrary) {
+  if (!character || character.kind !== 'character') return [];
+  const batchKey = getResourceImportBatchKey(character);
+  if (!batchKey) return [];
+  return (Array.isArray(resources) ? resources : [])
+    .filter((item) => item.kind === 'worldbook' && getResourceImportBatchKey(item) === batchKey);
+}
+
+function invalidateCustomStoryInspection() {
+  window.clearTimeout(customStoryInspectionTimer);
+  customStoryInspectionRequest += 1;
+  state.customStoryComposition = { key: '', status: 'idle', report: null, error: '' };
+}
+
+function buildCustomPackRequest({ title = '' } = {}) {
+  const draft = state.customStoryDraft;
+  const isOriginal = draft.basePackId === CUSTOM_STORY_BASE_PACK_ID;
+  const resolvedTitle = String(title || draft.title || getCustomStorySuggestedTitle()).trim();
+  const baseline = createCustomBaselineDraft(draft.customBaseline);
+  return {
+    title: resolvedTitle,
+    sessionTitle: resolvedTitle,
+    description: isOriginal
+      ? `原创世界《${baseline.worldName || resolvedTitle}》，由本地素材组装生成。`
+      : '由本地素材创建，继承所选内容包的规则、主题与叙事基线。',
+    basePackId: isOriginal ? '' : draft.basePackId,
+    characterResourceId: draft.characterResourceId,
+    useCharacterPortraitAsBackground: draft.useCharacterPortraitAsBackground,
+    worldBookResourceIds: [...draft.worldBookResourceIds],
+    promptResourceIds: [],
+    includeBaseContent: true,
+    worldBookMergeMode: draft.worldBookMergeMode,
+    visualPackId: isOriginal ? baseline.visualPackId : '',
+    customBaseline: isOriginal ? baseline : null
+  };
+}
+
+function renderCustomStoryBuilder() {
+  if (!els.storyCustomCharacter || !els.storyCustomWorldbookList) return;
+  const resources = Array.isArray(state.resourceLibrary) ? state.resourceLibrary : [];
+  const characters = resources.filter((item) => item.kind === 'character');
+  const worldBooks = resources.filter((item) => item.kind === 'worldbook');
+  const basePack = (state.contentPacks || []).find((pack) => pack.id === state.customStoryDraft.basePackId);
+  const isOriginal = state.customStoryDraft.basePackId === CUSTOM_STORY_BASE_PACK_ID;
+
+  const selectedCharacterId = characters.some((item) => item.id === state.customStoryDraft.characterResourceId)
+    ? state.customStoryDraft.characterResourceId
+    : '';
+  state.customStoryDraft.characterResourceId = selectedCharacterId;
+  els.storyCustomCharacter.innerHTML = '';
+  const inherited = document.createElement('option');
+  inherited.value = '';
+  inherited.textContent = isOriginal
+    ? '进入开局时创建主角'
+    : basePack?.characterName
+    ? `沿用基线角色 · ${basePack.characterName}`
+    : '沿用题材基线角色';
+  els.storyCustomCharacter.append(inherited);
+  characters.forEach((resource) => {
+    const option = document.createElement('option');
+    option.value = resource.id;
+    const score = Number(resource.diagnostics?.score || 0);
+    option.textContent = `${resource.title || resource.payload?.name || '未命名角色'}${score ? ` · ${score}分` : ''}`;
+    els.storyCustomCharacter.append(option);
+  });
+  els.storyCustomCharacter.value = selectedCharacterId;
+  renderCustomStoryCharacterBackground(
+    characters.find((item) => item.id === selectedCharacterId)
+  );
+
+  const availableWorldBookIds = new Set(worldBooks.map((item) => item.id));
+  state.customStoryDraft.worldBookResourceIds = state.customStoryDraft.worldBookResourceIds
+    .filter((id) => availableWorldBookIds.has(id));
+  els.storyCustomWorldbookList.innerHTML = '';
+  if (!worldBooks.length) {
+    const empty = document.createElement('p');
+    empty.className = 'story-custom-resource-empty';
+    empty.textContent = isOriginal
+      ? '素材库中暂无世界书，可先用原创总纲创建，之后继续补充。'
+      : '素材库中暂无世界书，将完整沿用题材基线。';
+    els.storyCustomWorldbookList.append(empty);
+  } else {
+    const selected = new Set(state.customStoryDraft.worldBookResourceIds);
+    worldBooks.forEach((resource) => {
+      const label = document.createElement('label');
+      label.className = 'story-custom-resource-option';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = resource.id;
+      input.checked = selected.has(resource.id);
+      const copy = document.createElement('span');
+      const title = document.createElement('strong');
+      title.textContent = resource.title || '未命名世界书';
+      const meta = document.createElement('small');
+      const entryCount = Number(resource.payload?.entries?.length || 0);
+      const score = Number(resource.diagnostics?.score || 0);
+      const companion = getCompanionWorldBooks(
+        resources.find((item) => item.id === state.customStoryDraft.characterResourceId),
+        resources
+      ).some((item) => item.id === resource.id);
+      meta.textContent = [companion ? '角色卡附带' : '', entryCount ? `${entryCount} 条` : '', score ? `${score}分` : '', resource.source?.site || '本地']
+        .filter(Boolean)
+        .join(' · ');
+      copy.append(title, meta);
+      label.append(input, copy);
+      els.storyCustomWorldbookList.append(label);
+    });
+  }
+
+  if (els.storyCustomWorldbookMode) els.storyCustomWorldbookMode.value = state.customStoryDraft.worldBookMergeMode;
+  renderCustomBaselineEditor();
+  if (!state.customStoryDraft.title) {
+    state.customStoryDraft.title = getCustomStorySuggestedTitle();
+  }
+  if (els.storyCustomTitle) els.storyCustomTitle.value = state.customStoryDraft.title;
+  persistCustomStoryDraft();
+  renderCustomStoryReadiness();
+}
+
+function renderCustomStoryCharacterBackground(character) {
+  if (!els.storyCustomCharacterBackgroundOption || !els.storyCustomCharacterBackground) return;
+  const portraitUrl = getCharacterPortraitUrl(character?.payload);
+  const available = Boolean(portraitUrl);
+  els.storyCustomCharacterBackgroundOption.hidden = !available;
+  els.storyCustomCharacterBackground.disabled = !available;
+  els.storyCustomCharacterBackground.checked = available && state.customStoryDraft.useCharacterPortraitAsBackground;
+  if (els.storyCustomCharacterBackgroundPreview) {
+    if (available) {
+      els.storyCustomCharacterBackgroundPreview.src = portraitUrl;
+      els.storyCustomCharacterBackgroundPreview.alt = `${character?.title || character?.payload?.name || '角色'}立绘预览`;
+    } else {
+      els.storyCustomCharacterBackgroundPreview.removeAttribute('src');
+    }
+  }
+}
+
+function getCustomStoryReadiness() {
+  const draft = state.customStoryDraft;
+  const isOriginal = draft.basePackId === CUSTOM_STORY_BASE_PACK_ID;
+  const basePack = (state.contentPacks || []).find((pack) => pack.id === draft.basePackId);
+  const resources = Array.isArray(state.resourceLibrary) ? state.resourceLibrary : [];
+  const character = resources.find((item) => item.id === draft.characterResourceId && item.kind === 'character');
+  const worldBooks = resources.filter((item) => draft.worldBookResourceIds.includes(item.id) && item.kind === 'worldbook');
+  const selectedResources = [character, ...worldBooks].filter(Boolean);
+  const blockingIssues = selectedResources.flatMap((item) => item.diagnostics?.blockingIssues || []);
+  const missingFields = character?.diagnostics?.missingFields || [];
+  const warningCount = selectedResources.reduce((sum, item) => sum + Number(item.diagnostics?.warnings?.length || 0), 0);
+  const estimatedTokens = selectedResources.reduce((sum, item) => sum + Number(item.diagnostics?.estimatedTokens || 0), 0);
+  const baseCounts = basePack?.counts || basePack?.manifest?.counts || {};
+  const baseWorldBookCount = Number(baseCounts.worldBook || basePack?.worldBook?.length || 0);
+  const basePromptCount = Number(baseCounts.promptModules || basePack?.promptModules?.length || 0);
+  const addedWorldBookEntries = worldBooks.reduce((sum, item) => sum + Number(item.payload?.entries?.length || 0), 0);
+  const baseBlocked = basePack?.compatibility?.compatible === false && Number(basePack.compatibility?.blockingCount || 0) > 0;
+  const baseline = createCustomBaselineDraft(draft.customBaseline);
+  const originalWorldBookCount = [baseline.premise, baseline.hardRules].filter((item) => item.trim()).length;
+  const originalPromptCount = [baseline.proseStyle, baseline.hardRules].some((item) => item.trim()) ? 1 : 0;
+  const originalReady = isOriginal && Boolean(baseline.premise.trim() || addedWorldBookEntries > 0);
+  const baselineReady = Boolean(basePack) || originalReady;
+  const compositionSummary = state.customStoryComposition.report?.summary || {};
+  const conflictCount = Number(compositionSummary.sameTitleConflicts || 0)
+    + Number(compositionSummary.constantConflicts || 0)
+    + Number(compositionSummary.triggerOverlaps || 0);
+  const canCreate = baselineReady && !baseBlocked && blockingIssues.length === 0;
+  const needsReview = missingFields.length > 0 || warningCount > 0 || estimatedTokens > 60000 || conflictCount > 0;
+  const effectiveBaseWorldBookCount = isOriginal ? originalWorldBookCount : baseWorldBookCount;
+  const effectiveBasePromptCount = isOriginal ? originalPromptCount : basePromptCount;
+
+  const checks = [
+    {
+      label: '题材基线',
+      value: isOriginal
+        ? (originalReady ? `${baseline.worldName || '原创世界'} · 总纲可用` : '原创基线至少需要世界总纲或补充世界书')
+        : (basePack ? `${basePack.title || basePack.id} · 已提供世界规则` : '尚未选择'),
+      tone: (isOriginal ? originalReady : Boolean(basePack && !baseBlocked)) ? 'ready' : 'blocked'
+    },
+    {
+      label: '主角角色卡',
+      value: character
+        ? `${character.title || character.payload?.name || '自定义角色'}${missingFields.length ? ` · 缺 ${missingFields.length} 项` : ' · 字段可用'}`
+        : (isOriginal ? '开局时创建主角' : `沿用基线角色${basePack?.characterName ? ` · ${basePack.characterName}` : ''}`),
+      tone: character && missingFields.length ? 'review' : 'ready'
+    },
+    {
+      label: '舞台背景',
+      value: character && getCharacterPortraitUrl(character.payload) && draft.useCharacterPortraitAsBackground
+        ? `使用${character.title || character.payload?.name || '角色'}立绘`
+        : `跟随${isOriginal ? '所选舞台氛围' : '题材基线'}`,
+      tone: 'ready'
+    },
+    {
+      label: '世界设定',
+      value: worldBooks.length
+        ? `${draft.worldBookMergeMode === 'resources-only' ? '所选' : `基线 ${effectiveBaseWorldBookCount} 条 + 补充`} ${addedWorldBookEntries} 条`
+        : (isOriginal ? `原创总纲 ${effectiveBaseWorldBookCount} 条` : `沿用基线 ${effectiveBaseWorldBookCount} 条`),
+      tone: effectiveBaseWorldBookCount + addedWorldBookEntries > 0 ? 'ready' : 'review'
+    },
+    {
+      label: '叙事规则',
+      value: isOriginal
+        ? (effectiveBasePromptCount ? '已生成原创叙事规则' : '尚未填写叙事风格或硬规则')
+        : `继承基线 ${effectiveBasePromptCount} 个规则模块`,
+      tone: effectiveBasePromptCount > 0 ? 'ready' : 'review'
+    }
+  ];
+
+  let guidance = '条件齐备，可以直接创建；之后仍可在创作模式继续补充设定。';
+  if (isOriginal && !originalReady) guidance = '原创剧本至少需要一段世界总纲，或选择一本世界书作为设定基础。';
+  else if (!isOriginal && !basePack) guidance = '请先选择一个题材基线，系统需要它提供运行规则与视觉主题。';
+  else if (baseBlocked || blockingIssues.length) guidance = `存在 ${Number(basePack?.compatibility?.blockingCount || 0) + blockingIssues.length} 个阻断项，请先修复后再创建。`;
+  else if (missingFields.length) guidance = `角色卡可创建，但缺少：${missingFields.map((item) => item.label || item.field).join('、')}。这些字段将暂由模型与基线补足。`;
+  else if (conflictCount) guidance = `检测到 ${conflictCount} 组潜在设定重叠。当前合并策略可以继续创建，也可先查看下方冲突摘要。`;
+  else if (estimatedTokens > 60000) guidance = `素材可直接创建，但增量约 ${formatTokenCount(estimatedTokens)} tokens；建议后续压缩常驻条目，避免每轮上下文过重。`;
+  else if (warningCount) guidance = `素材可直接创建，评定器还有 ${warningCount} 条改进建议，可在资源库中稍后处理。`;
+  else if (!character && !worldBooks.length && !isOriginal) guidance = '当前未添加自定义素材，将以所选题材基线创建一个可继续扩写的新剧本。';
+
+  return {
+    isOriginal,
+    basePack,
+    baseline,
+    character,
+    worldBooks,
+    checks,
+    canCreate,
+    needsReview,
+    estimatedTokens,
+    guidance
+  };
+}
+
+function renderCustomStoryReadiness() {
+  if (!els.storyCustomChecklist || !els.storyCustomCreate) return;
+  const readiness = getCustomStoryReadiness();
+  els.storyCustomChecklist.innerHTML = '';
+  readiness.checks.forEach((check) => {
+    const item = document.createElement('li');
+    item.className = `is-${check.tone}`;
+    const marker = document.createElement('span');
+    marker.className = 'story-check-marker';
+    marker.setAttribute('aria-hidden', 'true');
+    const copy = document.createElement('span');
+    const label = document.createElement('strong');
+    label.textContent = check.label;
+    const value = document.createElement('small');
+    value.textContent = check.value;
+    copy.append(label, value);
+    item.append(marker, copy);
+    els.storyCustomChecklist.append(item);
+  });
+  const tone = readiness.canCreate ? (readiness.needsReview ? 'review' : 'ready') : 'blocked';
+  els.storyCustomReadinessBadge.className = `story-readiness-badge is-${tone}`;
+  els.storyCustomReadinessBadge.textContent = readiness.canCreate
+    ? (readiness.needsReview ? '可创建 · 建议审阅' : '可以直接创建')
+    : '暂不可创建';
+  els.storyCustomTokenEstimate.textContent = readiness.estimatedTokens
+    ? `增量 ${formatTokenCount(readiness.estimatedTokens)} tokens`
+    : (readiness.isOriginal ? '原创轻量基线' : '使用基线体量');
+  els.storyCustomGuidance.textContent = readiness.guidance;
+  els.storyCustomCreate.disabled = !readiness.canCreate;
+  renderCustomStoryConflicts();
+  scheduleCustomStoryInspection(readiness);
+}
+
+function renderCustomStoryConflicts() {
+  if (!els.storyCustomConflicts) return;
+  const composition = state.customStoryComposition;
+  if (composition.status === 'loading') {
+    els.storyCustomConflicts.className = 'story-custom-conflicts is-loading';
+    els.storyCustomConflicts.textContent = '正在比对基线与所选世界书...';
+    return;
+  }
+  if (composition.status === 'error') {
+    els.storyCustomConflicts.className = 'story-custom-conflicts is-error';
+    els.storyCustomConflicts.textContent = `冲突预检暂不可用：${composition.error}`;
+    return;
+  }
+  const report = composition.report;
+  if (!report) {
+    els.storyCustomConflicts.className = 'story-custom-conflicts';
+    els.storyCustomConflicts.textContent = '选择素材后将自动检查同名设定、常驻规则和触发词重叠。';
+    return;
+  }
+  const summary = report.summary || {};
+  const reviewCount = Number(summary.sameTitleConflicts || 0)
+    + Number(summary.constantConflicts || 0)
+    + Number(summary.triggerOverlaps || 0);
+  els.storyCustomConflicts.className = `story-custom-conflicts ${reviewCount ? 'is-review' : 'is-clean'}`;
+  els.storyCustomConflicts.innerHTML = '';
+  const title = document.createElement('strong');
+  title.textContent = reviewCount ? `发现 ${reviewCount} 组需留意的设定重叠` : '世界书合并检查通过';
+  const meta = document.createElement('span');
+  meta.textContent = [
+    `最终 ${Number(summary.finalEntries || 0)} 条`,
+    Number(summary.exactDuplicates || 0) ? `去重 ${summary.exactDuplicates}` : '',
+    Number(summary.sameTitleConflicts || 0) ? `同名 ${summary.sameTitleConflicts}` : '',
+    Number(summary.constantConflicts || 0) ? `常驻冲突 ${summary.constantConflicts}` : '',
+    Number(summary.triggerOverlaps || 0) ? `触发重叠 ${summary.triggerOverlaps}` : ''
+  ].filter(Boolean).join(' · ');
+  els.storyCustomConflicts.append(title, meta);
+  const samples = Array.isArray(report.conflicts) ? report.conflicts.slice(0, 3) : [];
+  if (samples.length) {
+    const list = document.createElement('ul');
+    samples.forEach((item) => {
+      const row = document.createElement('li');
+      row.textContent = item.message || item.title || '设定重叠';
+      list.append(row);
+    });
+    els.storyCustomConflicts.append(list);
+  }
+}
+
+function scheduleCustomStoryInspection(readiness = getCustomStoryReadiness()) {
+  if (!readiness.canCreate) return;
+  const request = buildCustomPackRequest();
+  const key = JSON.stringify(request);
+  if (state.customStoryComposition.key === key
+    && ['scheduled', 'loading', 'ready', 'error'].includes(state.customStoryComposition.status)) return;
+  window.clearTimeout(customStoryInspectionTimer);
+  const requestId = ++customStoryInspectionRequest;
+  state.customStoryComposition = { key, status: 'scheduled', report: null, error: '' };
+  customStoryInspectionTimer = window.setTimeout(async () => {
+    state.customStoryComposition = { key, status: 'loading', report: null, error: '' };
+    renderCustomStoryConflicts();
+    try {
+      const payload = await apiRequest('/api/resource-library/packs/inspect', {
+        method: 'POST',
+        body: request
+      });
+      if (requestId !== customStoryInspectionRequest) return;
+      state.customStoryComposition = { key, status: 'ready', report: payload.composition, error: '' };
+    } catch (error) {
+      if (requestId !== customStoryInspectionRequest) return;
+      state.customStoryComposition = { key, status: 'error', report: null, error: humanizeApiError(error) };
+    }
+    renderCustomStoryReadiness();
+  }, 180);
+}
+
+function getStoryPackCategories(pack) {
+  return getPackCategories(pack, {
+    packs: state.contentPacks,
+    visualPackIds: new Set(Object.keys(CONTENT_PACK_VISUAL_PRESETS))
+  });
+}
+
+function renderStoryCatalogFilters() {
+  if (!els.storyCategoryFilter) return;
+  const packs = Array.isArray(state.contentPacks) ? state.contentPacks : [];
+  const categories = ['all', 'xuanhuan', 'xianxia', 'lingyi', 'mingmo', 'yingxiongzhi', 'custom']
+    .map((id) => ({
+      id,
+      label: STORY_CATEGORY_LABELS[id],
+      count: id === 'all' ? packs.length : packs.filter((pack) => getStoryPackCategories(pack).includes(id)).length
+    }))
+    .filter((item) => item.id === 'all' || item.count > 0);
+  if (!categories.some((item) => item.id === state.storyCatalogCategory)) {
+    state.storyCatalogCategory = 'all';
+  }
+  els.storyCategoryFilter.innerHTML = '';
+  categories.forEach((category) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'story-category-button';
+    button.dataset.storyCategory = category.id;
+    const active = category.id === state.storyCatalogCategory;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+    const label = document.createElement('span');
+    label.textContent = category.label;
+    const count = document.createElement('small');
+    count.textContent = String(category.count);
+    button.append(label, count);
+    els.storyCategoryFilter.append(button);
+  });
+  els.storyViewButtons.forEach((button) => {
+    const active = button.dataset.storyView === state.storyCatalogView;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function setStoryCatalogCategory(category) {
+  state.storyCatalogCategory = STORY_CATEGORY_LABELS[category] ? category : 'all';
+  localStorage.setItem(STORY_CATALOG_CATEGORY_KEY, state.storyCatalogCategory);
+  renderStoryCatalogFilters();
+  renderStoryPackGrid();
+}
+
+function setStoryCatalogView(view) {
+  state.storyCatalogView = view === 'list' ? 'list' : 'grid';
+  localStorage.setItem(STORY_CATALOG_VIEW_KEY, state.storyCatalogView);
+  renderStoryCatalogFilters();
+  renderStoryPackGrid();
+}
+
+function getMostRecentSessionSummary() {
+  const summaries = Array.isArray(state.sessionSummaries) ? state.sessionSummaries : [];
+  return summaries.find((item) => Number(item.messageCount) > 0)
+    || summaries.find((item) => item.storyProjectId)
+    || summaries.find((item) => item.id !== 'main')
+    || null;
+}
+
+function renderStoryContinuePanel() {
+  if (!els.storyContinuePanel) return;
+  const summary = getMostRecentSessionSummary();
+  els.storyContinuePanel.hidden = !summary;
+  if (!summary) return;
+  const pack = (state.contentPacks || []).find((item) => item.id === (summary.packId || summary.basePackId));
+  const packTitle = pack?.title || summary.packId || '旧版会话';
+  els.storyContinueTitle.textContent = summary.title || summary.id;
+  els.storyContinueMeta.textContent = [
+    packTitle,
+    `${Number(summary.messageCount || 0)} 条消息`,
+    formatStoryDate(summary.updatedAt)
+  ].filter(Boolean).join(' · ');
+  els.continueLastStory.dataset.sessionId = summary.id;
+}
+
+function renderStoryProjects() {
+  if (!els.storyProjectList) return;
+  const projects = Array.isArray(state.storyProjects) ? state.storyProjects : [];
+  els.storyProjectCount.textContent = String(projects.length);
+  els.storyProjectList.innerHTML = '';
+  if (!projects.length) {
+    const empty = document.createElement('p');
+    empty.className = 'story-empty-copy';
+    empty.textContent = '从右侧选择一个剧本，建立第一卷。旧会话仍可从“继续上次故事”进入。';
+    els.storyProjectList.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  projects.forEach((project) => {
+    const item = document.createElement('article');
+    item.className = 'story-project-item';
+
+    const copy = document.createElement('div');
+    copy.className = 'story-project-copy';
+    const title = document.createElement('strong');
+    title.textContent = project.title || '未命名故事';
+    const meta = document.createElement('span');
+    meta.textContent = [
+      project.basePackTitle || project.basePackId,
+      `${Number(project.sessionCount || 0)} 个存档`,
+      formatStoryDate(project.updatedAt)
+    ].filter(Boolean).join(' · ');
+    copy.append(title, meta);
+
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'story-project-open';
+    open.dataset.openStoryProject = project.id;
+    open.setAttribute('aria-label', `打开${project.title || '故事'}`);
+    open.title = project.activeSessionId ? '继续故事' : '创建第一卷';
+    open.textContent = '›';
+    item.append(copy, open);
+    fragment.append(item);
+  });
+  els.storyProjectList.append(fragment);
+}
+
+function renderStoryPackGrid() {
+  if (!els.storyPackGrid) return;
+  const query = String(els.storyPackSearch?.value || '').trim().toLowerCase();
+  const category = state.storyCatalogCategory || 'all';
+  const packs = filterStoryPacks(state.contentPacks, {
+    category,
+    query,
+    visualPackIds: new Set(Object.keys(CONTENT_PACK_VISUAL_PRESETS))
+  });
+  els.storyPackGrid.classList.toggle('is-list-view', state.storyCatalogView === 'list');
+  els.storyPackGrid.dataset.view = state.storyCatalogView;
+  els.storyPackGrid.innerHTML = '';
+  if (!packs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'story-launcher-empty';
+    empty.textContent = query || category !== 'all' ? '当前筛选下没有匹配的剧本。' : '尚未安装内容包。';
+    els.storyPackGrid.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  packs.forEach((pack) => fragment.append(createStoryPackCard(pack)));
+  els.storyPackGrid.append(fragment);
+}
+
+function createStoryPackCard(pack) {
+  const visualPackId = getStoryPackVisualId(pack);
+  const visual = getContentPackVisualPreset(visualPackId);
+  const presentation = STORY_PACK_PRESENTATION[visual.packId] || STORY_PACK_PRESENTATION.xuanhuan;
+  const counts = pack.counts || pack.manifest?.counts || {};
+  const blocked = pack.compatibility?.compatible === false && Number(pack.compatibility?.blockingCount) > 0;
+
+  const card = document.createElement('article');
+  card.className = 'story-script-card';
+  card.dataset.storyPackCard = pack.id;
+  card.dataset.visualPackId = visual.packId;
+  const cardBackground = getStoryStageBackground(pack)?.url || visual.backgroundImage;
+  card.style.setProperty('--story-card-image', `url("${cardBackground}")`);
+  card.classList.toggle('has-character-stage', Boolean(getStoryStageBackground(pack)));
+  card.style.setProperty('--story-card-accent', presentation.accent);
+
+  const top = document.createElement('div');
+  top.className = 'story-card-top';
+  const identity = document.createElement('div');
+  identity.className = 'story-card-identity';
+  const portrait = createCharacterPortraitImage(pack.characterPortrait, 'story-card-portrait', pack.characterName);
+  const badge = document.createElement('span');
+  badge.className = 'story-card-badge';
+  badge.textContent = pack.custom ? '我的剧本' : presentation.badge;
+  const version = document.createElement('span');
+  version.className = 'story-card-version';
+  version.textContent = `v${pack.version || pack.manifest?.version || '1.0.0'}`;
+  if (portrait) identity.append(portrait);
+  identity.append(badge);
+  top.append(identity, version);
+
+  const body = document.createElement('div');
+  body.className = 'story-card-body';
+  const title = document.createElement('h4');
+  title.textContent = pack.title || pack.id;
+  const description = document.createElement('p');
+  description.textContent = pack.description || '从这个内容包建立新的故事工程。';
+  const stats = document.createElement('div');
+  stats.className = 'story-card-stats';
+  stats.append(
+    createStoryStat('世界书', counts.worldBook || 0),
+    createStoryStat('角色', counts.characterPresets || (pack.characterName ? 1 : 0)),
+    createStoryStat('规则', counts.promptModules || 0)
+  );
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = 'story-card-action';
+  action.dataset.startStoryPack = pack.id;
+  action.disabled = blocked;
+  action.textContent = blocked ? '依赖不完整，暂不可开局' : '以此剧本新开一局';
+  body.append(title, description, stats, action);
+  card.append(top, body);
+  return card;
+}
+
+function getCharacterPortraitUrl(characterOrPortrait) {
+  const portrait = characterOrPortrait?.portrait || characterOrPortrait?.characterPortrait || characterOrPortrait;
+  const url = String(portrait?.url || '').trim();
+  return /^\/api\/character-images\/[a-f0-9]{64}\.png$/.test(url) ? url : '';
+}
+
+function getStoryStageBackground(pack) {
+  const stage = pack?.stageBackground;
+  const url = getCharacterPortraitUrl(stage);
+  if (!url || stage?.source !== 'character-portrait') return null;
+  return {
+    url,
+    fit: 'portrait',
+    source: 'character-portrait',
+    label: String(stage.label || `${pack.characterName || '角色'}立绘`)
+  };
+}
+
+function createCharacterPortraitImage(characterOrPortrait, className, fallbackName = '') {
+  const url = getCharacterPortraitUrl(characterOrPortrait);
+  if (!url) return null;
+  const image = document.createElement('img');
+  image.className = className;
+  image.src = url;
+  image.alt = `${fallbackName || characterOrPortrait?.name || '角色'}立绘`;
+  image.loading = 'lazy';
+  image.decoding = 'async';
+  return image;
+}
+
+function createStoryStat(label, value) {
+  const item = document.createElement('span');
+  const number = document.createElement('strong');
+  number.textContent = String(value);
+  item.append(number, document.createTextNode(label));
+  return item;
+}
+
+function getStoryPackVisualId(packOrId) {
+  return resolveStoryPackVisualId(
+    packOrId,
+    state.contentPacks,
+    new Set(Object.keys(CONTENT_PACK_VISUAL_PRESETS))
+  );
+}
+
+function setStoryLauncherBackground(packOrId) {
+  if (!els.storyLauncher) return;
+  const pack = typeof packOrId === 'object'
+    ? packOrId
+    : (state.contentPacks || []).find((item) => item.id === packOrId);
+  const visual = getContentPackVisualPreset(getStoryPackVisualId(pack || packOrId));
+  const backgroundImage = getStoryStageBackground(pack)?.url || visual.backgroundImage;
+  els.storyLauncher.style.setProperty('--story-launcher-bg', `url("${backgroundImage}")`);
+  els.storyLauncher.classList.toggle('has-character-stage', Boolean(getStoryStageBackground(pack)));
+}
+
+function previewStoryPackFromEvent(event) {
+  const card = event.target.closest('[data-story-pack-card]');
+  if (card) setStoryLauncherBackground(card.dataset.storyPackCard);
+}
+
+async function createAndOpenStoryProject(pack, { title = '', description = '' } = {}) {
+  const projectPayload = await apiRequest('/api/story-projects', {
+    method: 'POST',
+    body: {
+      basePackId: pack.id,
+      title: title || pack.sessionTitle || pack.title,
+      description: description || pack.description || ''
+    }
+  });
+  const sessionPayload = await apiRequest(`/api/story-projects/${encodeURIComponent(projectPayload.project.id)}/sessions`, {
+    method: 'POST',
+    body: {}
+  });
+  currentSessionId = sessionPayload.session.id;
+  localStorage.setItem('localRoleplaySessionId', currentSessionId);
+  closeStoryLauncher();
+  await loadState();
+  const visualPackId = sessionPayload.visualPackId || getStoryPackVisualId(pack);
+  const stageBackground = getStoryStageBackground(pack);
+  await linkContentPackVisuals(visualPackId, {
+    persist: true,
+    backgroundImage: stageBackground?.url,
+    backgroundFit: stageBackground?.fit,
+    backgroundSource: stageBackground?.source
+  });
+  renderMessages();
+  return { project: projectPayload.project, session: sessionPayload.session, visualPackId };
+}
+
+async function createCustomStoryFromDraft() {
+  const readiness = getCustomStoryReadiness();
+  if (!readiness.canCreate) {
+    setStatus(els.storyCustomStatus, readiness.guidance, 'error');
+    return;
+  }
+  const title = String(els.storyCustomTitle?.value || state.customStoryDraft.title || getCustomStorySuggestedTitle()).trim();
+  state.customStoryDraft.title = title;
+  persistCustomStoryDraft();
+  els.storyCustomCreate.disabled = true;
+  els.storyCustomCreate.textContent = '正在建立剧本...';
+  setStatus(els.storyCustomStatus, `正在组装《${title}》并创建第一卷...`, 'busy');
+  try {
+    const packPayload = await apiRequest('/api/resource-library/packs', {
+      method: 'POST',
+      body: buildCustomPackRequest({ title })
+    });
+    const result = await createAndOpenStoryProject(packPayload.pack, { title });
+    state.customStoryDraft = createCustomStoryDraft({
+      basePackId: readiness.isOriginal ? CUSTOM_STORY_BASE_PACK_ID : readiness.basePack.id
+    });
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    setStatus(els.appStatus, `已建立《${result.project.title}》，请从封面进入主角塑成。`, 'ok');
+  } catch (error) {
+    setStatus(els.storyCustomStatus, `创建失败：${humanizeApiError(error)}`, 'error');
+  } finally {
+    els.storyCustomCreate.textContent = '创建剧本并进入';
+    renderCustomStoryReadiness();
+  }
+}
+
+async function startStoryFromPack(packId, trigger) {
+  const pack = (state.contentPacks || []).find((item) => item.id === packId);
+  if (!pack) {
+    setStatus(els.storyLauncherStatus, '找不到所选剧本，请刷新书架。', 'error');
+    return;
+  }
+  if (trigger) trigger.disabled = true;
+  setStatus(els.storyLauncherStatus, `正在为《${pack.title || pack.id}》建立独立故事工程...`, 'busy');
+  try {
+    await createAndOpenStoryProject(pack);
+    setStatus(els.appStatus, `已建立《${pack.title || pack.id}》，请从封面进入主角塑成。`, 'ok');
+  } catch (error) {
+    setStatus(els.storyLauncherStatus, `开局失败：${humanizeApiError(error)}`, 'error');
+  } finally {
+    if (trigger) trigger.disabled = false;
+  }
+}
+
+async function continueLastStory() {
+  const sessionId = els.continueLastStory?.dataset.sessionId || getMostRecentSessionSummary()?.id;
+  await openStorySession(sessionId);
+}
+
+async function continueStoryProject(projectId) {
+  const project = (state.storyProjects || []).find((item) => item.id === projectId);
+  if (!project) return;
+  if (project.activeSessionId) {
+    await openStorySession(project.activeSessionId);
+    return;
+  }
+  setStatus(els.storyLauncherStatus, `正在为《${project.title}》创建第一卷...`, 'busy');
+  try {
+    const payload = await apiRequest(`/api/story-projects/${encodeURIComponent(project.id)}/sessions`, {
+      method: 'POST',
+      body: {}
+    });
+    await openStorySession(payload.session.id, payload.visualPackId);
+  } catch (error) {
+    setStatus(els.storyLauncherStatus, `创建存档失败：${humanizeApiError(error)}`, 'error');
+  }
+}
+
+async function openStorySession(sessionId, visualPackId = '') {
+  if (!sessionId) return;
+  currentSessionId = sessionId;
+  localStorage.setItem('localRoleplaySessionId', currentSessionId);
+  closeStoryLauncher();
+  await loadState();
+  if (visualPackId && !state.session?.settings?.backgroundImage) {
+    await linkContentPackVisuals(visualPackId, { persist: true });
+    renderMessages();
+  }
+}
+
+function formatStoryDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(date);
+}
+
 function renderContentPackOptions() {
   const packs = Array.isArray(state.contentPacks) ? state.contentPacks : [];
   if (!packs.length) return;
+  const contentPackControls = els.contentPackSelect?.closest('.content-pack-controls');
+  if (contentPackControls) {
+    contentPackControls.hidden = Boolean(state.session?.storyProjectId);
+  }
   const appliedPack = state.session?.memory?.resourcePackId
     || state.session?.memory?.ruleSystem?.contentPackId
     || '';
@@ -1215,8 +2657,8 @@ function renderAll() {
   renderProviderForm();
   renderSessionSettings();
   renderVectorMemoryPanel();
-  renderMcpPanel();
-  renderVoicePanel();
+  mcpController.render();
+  voiceController.render();
   renderImportSourceOptions();
   renderMessages();
   renderInspector();
@@ -1250,7 +2692,10 @@ function syncSessionVisualState() {
 
   const theme = state.session?.settings?.theme;
   if (theme) applyTheme(theme);
-  applyBackgroundImage(state.session?.settings?.backgroundImage || '');
+  applyBackgroundImage(
+    state.session?.settings?.backgroundImage || '',
+    state.session?.settings?.backgroundFit || 'cover'
+  );
 }
 
 function startUsagePolling() {
@@ -1422,6 +2867,13 @@ const CONTENT_PACK_VISUAL_PRESETS = {
     backgroundImage: '/assets/wuxia-stage.png'
   }
 };
+const STORY_PACK_PRESENTATION = {
+  xuanhuan: { badge: '武道玄幻', accent: '#76c1b6' },
+  lingyi: { badge: '民俗悬疑', accent: '#c78f7a' },
+  mingmo: { badge: '历史生存', accent: '#d4aa59' },
+  xianxia: { badge: '仙侠修真', accent: '#83b7d4' },
+  yingxiongzhi: { badge: '群像武侠', accent: '#b18bd0' }
+};
 
 function toggleBackgroundPanel() {
   if (!els.backgroundPanel) return;
@@ -1432,7 +2884,9 @@ function toggleBackgroundPanel() {
 function renderBackgroundPresets() {
   if (!els.backgroundPresets) return;
   els.backgroundPresets.innerHTML = '';
-  for (const preset of BACKGROUND_PRESETS) {
+  const characterPreset = getActiveCharacterBackgroundPreset();
+  const presets = characterPreset ? [characterPreset, ...BACKGROUND_PRESETS] : BACKGROUND_PRESETS;
+  for (const preset of presets) {
     const img = document.createElement('img');
     img.className = 'background-preset-thumb';
     img.loading = 'lazy';
@@ -1442,6 +2896,9 @@ function renderBackgroundPresets() {
     const item = document.createElement('div');
     item.className = 'background-preset-item';
     item.dataset.bgPreset = img.src;
+    item.dataset.bgFit = preset.fit || 'cover';
+    item.dataset.bgSource = preset.source || 'preset';
+    item.classList.toggle('is-character-portrait', preset.source === 'character-portrait');
     item.title = preset.label;
 
     const label = document.createElement('span');
@@ -1452,26 +2909,41 @@ function renderBackgroundPresets() {
   }
 }
 
-async function setBackgroundImage(url) {
+function getActiveCharacterBackgroundPreset() {
+  const card = state.session?.config?.characterCard || state.config?.characterCard || {};
+  const url = getCharacterPortraitUrl(card);
+  if (!url) return null;
+  return {
+    label: `角色立绘 · ${card.name || '当前主角'}`,
+    url,
+    fit: 'portrait',
+    source: 'character-portrait'
+  };
+}
+
+async function setBackgroundImage(url, { fit = 'cover', source = 'manual' } = {}) {
   const bgUrl = String(url || '').trim();
+  const safeFit = fit === 'portrait' ? 'portrait' : 'cover';
   try {
     const settings = {
       ...(state.session?.settings || {}),
-      backgroundImage: bgUrl
+      backgroundImage: bgUrl,
+      backgroundFit: bgUrl ? safeFit : 'cover',
+      backgroundSource: bgUrl ? String(source || 'manual') : ''
     };
     const payload = await apiRequest('/api/session/settings', {
       method: 'PUT',
       body: { sessionId: currentSessionId, settings }
     });
     state.session = payload.session || state.session;
-    applyBackgroundImage(bgUrl);
-    setStatus(els.appStatus, '背景已更新', 'ok');
+    applyBackgroundImage(bgUrl, settings.backgroundFit);
+    setStatus(els.appStatus, safeFit === 'portrait' ? '已使用角色立绘作为舞台背景' : '背景已更新', 'ok');
   } catch (error) {
     setStatus(els.appStatus, `背景保存失败：${humanizeApiError(error)}`, 'error');
   }
 }
 
-function applyBackgroundImage(url) {
+function applyBackgroundImage(url, fit = state.session?.settings?.backgroundFit || 'cover') {
   const chatPanel = document.querySelector('.chat-panel');
   if (!chatPanel) return;
   const bg = String(url || '').trim();
@@ -1480,7 +2952,9 @@ function applyBackgroundImage(url) {
   } else {
     chatPanel.style.removeProperty('--chat-bg-image');
   }
-  updateBackgroundModeUi(bg);
+  chatPanel.classList.toggle('has-stage-background', Boolean(bg));
+  chatPanel.classList.toggle('background-fit-portrait', Boolean(bg) && fit === 'portrait');
+  updateBackgroundModeUi(bg, fit);
 }
 
 function normalizeBackgroundUrlForMatch(url) {
@@ -1501,13 +2975,18 @@ function backgroundUrlsMatch(left, right) {
 function getBackgroundLabelForUrl(url) {
   const bg = String(url || '').trim();
   if (!bg) return '';
+  const characterPreset = getActiveCharacterBackgroundPreset();
+  if (characterPreset && backgroundUrlsMatch(characterPreset.url, bg)) return characterPreset.label;
   const linkedPreset = Object.values(CONTENT_PACK_VISUAL_PRESETS)
     .find((preset) => backgroundUrlsMatch(preset.backgroundImage, bg));
   if (linkedPreset) return linkedPreset.label;
   return BACKGROUND_PRESETS.find((preset) => backgroundUrlsMatch(preset.url, bg))?.label || '';
 }
 
-function updateBackgroundModeUi(backgroundImage = state.session?.settings?.backgroundImage || '') {
+function updateBackgroundModeUi(
+  backgroundImage = state.session?.settings?.backgroundImage || '',
+  fit = state.session?.settings?.backgroundFit || 'cover'
+) {
   const bg = String(backgroundImage || '').trim();
   const isCustom = Boolean(bg);
   const label = getBackgroundLabelForUrl(bg);
@@ -1521,7 +3000,7 @@ function updateBackgroundModeUi(backgroundImage = state.session?.settings?.backg
   }
   if (els.backgroundStatus) {
     els.backgroundStatus.textContent = isCustom
-      ? `当前：${label || '自定义舞台背景'}。界面皮肤只影响工作台，不覆盖会话内容。`
+      ? `当前：${label || '自定义舞台背景'}${fit === 'portrait' ? '，使用人物聚焦构图' : ''}。界面皮肤只影响工作台，不覆盖会话内容。`
       : '当前：未设置舞台背景。界面皮肤只影响工作台，不覆盖会话内容。';
   }
 }
@@ -1534,7 +3013,7 @@ async function applyBackgroundUrl() {
 }
 
 async function clearBackgroundImage() {
-  await setBackgroundImage('');
+  await setBackgroundImage('', { fit: 'cover', source: '' });
 }
 
 function renderProviderPresetOptions() {
@@ -1793,11 +3272,23 @@ async function saveSessionVisualSettings(settingsPatch) {
 
 async function linkContentPackVisuals(packId, options = {}) {
   const preset = applyContentPackVisualState(packId);
+  const backgroundImage = String(options.backgroundImage || preset.backgroundImage || '');
+  const backgroundFit = options.backgroundFit === 'portrait' ? 'portrait' : 'cover';
+  const backgroundSource = String(options.backgroundSource || (backgroundFit === 'portrait' ? 'character-portrait' : 'content-pack'));
+  applyBackgroundImage(backgroundImage, backgroundFit);
+  state.session.settings = {
+    ...(state.session?.settings || {}),
+    backgroundImage,
+    backgroundFit,
+    backgroundSource
+  };
   const shouldPersist = options.persist !== false;
   if (shouldPersist) {
     await saveSessionVisualSettings({
       theme: normalizeTheme(preset.theme),
-      backgroundImage: preset.backgroundImage,
+      backgroundImage,
+      backgroundFit,
+      backgroundSource,
       visualContentPack: preset.packId
     });
   }
@@ -1866,39 +3357,51 @@ function setOpeningGenre(genre, options = {}) {
 function renderOpeningWorkflow(genre, tpl) {
   const safeGenre = openingGenreIds().includes(genre) ? genre : 'xuanhuan';
   const selected = getOpeningGenreOption(safeGenre);
+  const boundPackId = getBoundStoryPackId() || getAppliedContentPackId() || safeGenre;
+  const boundPack = (state.contentPacks || []).find((item) => item.id === boundPackId);
+  const counts = boundPack?.counts || boundPack?.manifest?.counts || {};
   const wrapper = document.createElement('div');
   wrapper.className = 'epic-start-flow';
 
   const steps = document.createElement('ol');
   steps.className = 'epic-flow-steps';
-  ['选择题材', '同步内容包', '锚定主角', '选择天命', '封存卷轴'].forEach((label, index) => {
+  ['剧本已定', '主角塑成', '天命抉择', '生成开局', '进入第一幕'].forEach((label, index) => {
     const item = document.createElement('li');
-    item.className = index === 0 ? 'active' : '';
+    item.className = index === 0 ? 'complete' : (index === 1 ? 'active' : '');
     const mark = document.createElement('span');
     mark.textContent = String(index + 1);
     item.append(mark, document.createTextNode(label));
     steps.append(item);
   });
 
-  const genres = document.createElement('div');
-  genres.className = 'epic-genre-grid';
-  OPENING_GENRE_OPTIONS.forEach((option) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `epic-genre-choice${option.id === safeGenre ? ' active' : ''}`;
-    button.dataset.openingGenre = option.id;
-    button.dataset.helpKey = 'openingGenre';
-    const title = document.createElement('strong');
-    title.textContent = option.title;
-    const hint = document.createElement('span');
-    hint.textContent = option.hint;
-    button.append(title, hint);
-    button.addEventListener('click', () => {
-      setOpeningGenre(option.id, { linkVisuals: false });
-      void handleContentPackSelectionChange();
-    });
-    genres.append(button);
+  const currentScript = document.createElement('section');
+  currentScript.className = 'epic-current-script';
+
+  const scriptCopy = document.createElement('div');
+  scriptCopy.className = 'epic-current-script-copy';
+  const scriptLabel = document.createElement('span');
+  scriptLabel.className = 'epic-current-script-label';
+  scriptLabel.textContent = '当前剧本';
+  const scriptTitle = document.createElement('strong');
+  scriptTitle.textContent = boundPack?.title || selected.title;
+  const scriptDescription = document.createElement('p');
+  scriptDescription.textContent = boundPack?.description || selected.hint;
+  scriptCopy.append(scriptLabel, scriptTitle, scriptDescription);
+
+  const scriptStats = document.createElement('div');
+  scriptStats.className = 'epic-current-script-stats';
+  [
+    ['世界书', counts.worldBook || state.config?.worldBook?.length || 0],
+    ['角色', counts.characterPresets || (boundPack?.characterName ? 1 : 0)],
+    ['规则', counts.promptModules || state.config?.promptModules?.length || 0]
+  ].forEach(([label, value]) => {
+    const stat = document.createElement('span');
+    const number = document.createElement('strong');
+    number.textContent = String(value);
+    stat.append(number, document.createTextNode(label));
+    scriptStats.append(stat);
   });
+  currentScript.append(scriptCopy, scriptStats);
 
   const status = document.createElement('div');
   status.className = 'epic-flow-status';
@@ -1915,11 +3418,17 @@ function renderOpeningWorkflow(genre, tpl) {
     status.append(chip);
   });
 
-  wrapper.append(steps, genres, status);
+  wrapper.append(steps, currentScript, status);
   return wrapper;
 }
 
 async function startGuidedJourney(genre) {
+  const boundPackId = getBoundStoryPackId();
+  if (boundPackId) {
+    setStatus(els.sessionStatus, `当前剧本：${getContentPackTitle(boundPackId)}`, 'ok');
+    renderSetupPanel(resolvePrologueTemplate().tpl);
+    return;
+  }
   setOpeningGenre(genre || getCurrentPrologueGenre(), { render: false, linkVisuals: false });
   setStatus(els.sessionStatus, '正在同步题材内容包...', 'busy');
   const applied = await applyContentPack();
@@ -2152,29 +3661,15 @@ function buildJourneyPrompt(formData, tpl, destinyCards = [], worldbookSnapshot 
 
   const tabEntries = getJourneyTabSummaries(tpl);
   if (tabEntries.length) {
-    promptText += `\n[ 开局世界书摘要 ]\n`;
-    tabEntries.forEach((tab) => {
-      promptText += `【${tab.label}】${tab.content}\n`;
-    });
+    promptText += `\n开局设定模块：${tabEntries.map((tab) => tab.label).join('、')}。\n`;
   }
 
   if (worldbookSnapshot.total) {
-    promptText += `\n[ 当前已加载 World Book 背景 ]\n`;
-    promptText += `本会话当前启用 ${worldbookSnapshot.total} 条世界书；以下条目作为开局全局背景参考：\n`;
+    promptText += `已加载 World Book：${worldbookSnapshot.total} 条`;
     if (worldbookSnapshot.hiddenTotal) {
-      promptText += `其中 ${worldbookSnapshot.hiddenTotal} 条为 GM 隐藏层，不在玩家开局稿中展开。\n`;
+      promptText += `（含 ${worldbookSnapshot.hiddenTotal} 条 GM 隐藏层）`;
     }
-    worldbookSnapshot.entries.forEach((entry) => {
-      const tags = [
-        entry.type,
-        entry.constant ? '常驻' : '',
-        `Depth ${entry.depth}`
-      ].filter(Boolean).join(' · ');
-      promptText += `- ${entry.title}${tags ? `（${tags}）` : ''}：${entry.content || '暂无内容'}\n`;
-      if (entry.keywords.length) {
-        promptText += `  触发词：${entry.keywords.join('、')}\n`;
-      }
-    });
+    promptText += `。具体内容已由系统上下文提供，此处不再重复。\n`;
   }
 
   promptText += `\n[ 主角锚点 ]\n`;
@@ -2336,71 +3831,7 @@ function renderJourneyDraft(draft) {
 }
 
 function renderMessages() {
-  const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
-  els.messages.innerHTML = '';
-  els.messages.classList.remove('has-cover-page', 'has-journey-draft');
-  applyBackgroundImage(state.session?.settings?.backgroundImage || '');
-  renderImmersiveSidebar();
-
-  if (!messages.length) {
-    if (state.pendingJourneyDraft) {
-      els.messages.classList.add('has-journey-draft');
-      els.messages.append(renderJourneyDraft(state.pendingJourneyDraft));
-      els.messages.scrollTop = 0;
-      setStatus(els.sessionStatus, `${currentSessionId} · 开局稿待发送`, 'ok');
-      return;
-    }
-
-    const empty = document.createElement('div');
-    empty.className = 'epic-cover-page';
-    els.messages.classList.add('has-cover-page');
-    const { genre, tpl } = resolvePrologueTemplate();
-
-    if (tpl) {
-      const title = document.createElement('h1');
-      title.textContent = tpl.title;
-      empty.dataset.prologueGenre = genre;
-
-      const subtitle = document.createElement('h2');
-      subtitle.textContent = tpl.subtitle;
-
-      const tagline = document.createElement('p');
-      tagline.className = 'epic-tagline';
-      tagline.textContent = tpl.tagline;
-
-      const workflow = renderOpeningWorkflow(genre, tpl);
-
-      const startBtn = document.createElement('button');
-      startBtn.className = 'epic-start-btn';
-      startBtn.type = 'button';
-      startBtn.dataset.helpKey = 'startJourney';
-      startBtn.textContent = genre === 'xuanhuan'
-        ? '[ 武破天穹 · 直入江湖 ]'
-        : tpl.buttonText;
-      startBtn.onclick = () => {
-        startGuidedJourney(genre);
-      };
-
-      const actions = document.createElement('div');
-      actions.className = 'epic-cover-actions';
-      actions.append(startBtn);
-
-      empty.append(title, subtitle, tagline, workflow, actions);
-    } else {
-      empty.textContent = '无法加载设定模板...';
-    }
-
-    els.messages.append(empty);
-  } else {
-    const fragment = document.createDocumentFragment();
-    messages.forEach((message) => fragment.append(createMessageNode(message)));
-    els.messages.append(fragment);
-    els.messages.scrollTop = els.messages.scrollHeight;
-  }
-
-  const sessionId = currentSessionId;
-  const count = messages.length;
-  setStatus(els.sessionStatus, `${sessionId} · ${count} 条消息`, '');
+  chatController.renderMessages();
 }
 
 function renderImmersiveSidebar() {
@@ -2437,9 +3868,757 @@ function renderImmersiveSidebar() {
   if (!expanded) return;
 
   els.immersiveSidebarTitle.textContent = state.immersiveSidebarTab;
+  if (/主角|档案|文书|调查者/.test(state.immersiveSidebarTab)) {
+    renderImmersiveProtagonistCard(genre);
+    return;
+  }
+  if (/互动|角色/.test(state.immersiveSidebarTab)) {
+    renderImmersiveCharacterCards(tpl);
+    return;
+  }
+  if (/梦入神机|梦如神机|记忆|回忆|纪事/.test(state.immersiveSidebarTab)) {
+    renderImmersiveMemoryLedger(state.immersiveSidebarTab, genre);
+    return;
+  }
+  if (/神府造化|神机造化|造化|秘籍|武学|修为|功法|资源|装备/.test(state.immersiveSidebarTab)) {
+    renderImmersiveProgressLedger(state.immersiveSidebarTab, tpl, genre);
+    return;
+  }
+  if (/天机榜单|榜单|传闻|风向|清单|账目|证据|线索|任务|势力/.test(state.immersiveSidebarTab)) {
+    renderImmersiveIntelligenceLedger(state.immersiveSidebarTab, tpl, genre);
+    return;
+  }
   els.immersiveSidebarBody.innerHTML = renderSafeMarkdown(
     buildImmersiveSidebarText(state.immersiveSidebarTab, tpl, genre)
   );
+}
+
+function renderImmersiveProtagonistCard(genre) {
+  if (!els.immersiveSidebarBody) return;
+  const character = state.config?.characterCard || {};
+  const memory = state.session?.memory || {};
+  const worldState = memory.worldState || {};
+  const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
+  const panels = resolveLatestRoleplayPanels(messages);
+  const statusName = inferStatusProtagonistName(panels.characterStatus);
+  const protagonistName = statusName || worldState.protagonist?.name || character.name || '未命名主角';
+  const protagonistNames = [protagonistName, character.name, worldState.protagonist?.name].filter(Boolean);
+  const status = splitCharacterStatus(panels.characterStatus, protagonistNames).protagonist;
+  const statusFields = parseImmersiveStatusFields(status);
+  const explicitRole = character.role && character.role !== character.creator
+    ? character.role
+    : '';
+  const identity = findImmersiveStatusValue(statusFields, ['身份', '身份/境界', '境界'])
+    || explicitRole
+    || worldState.protagonist?.realm
+    || '身份待定';
+
+  els.immersiveSidebarBody.innerHTML = '';
+  const profile = document.createElement('article');
+  profile.className = 'immersive-protagonist-card';
+
+  const hero = document.createElement('header');
+  hero.className = 'immersive-protagonist-hero';
+  const portrait = createCharacterPortraitImage(character, 'immersive-protagonist-portrait', protagonistName);
+  if (portrait) {
+    hero.append(portrait);
+  } else {
+    const monogram = document.createElement('div');
+    monogram.className = 'immersive-protagonist-monogram';
+    monogram.textContent = protagonistName.slice(0, 1);
+    hero.append(monogram);
+  }
+
+  const heading = document.createElement('div');
+  heading.className = 'immersive-protagonist-heading';
+  const eyebrow = document.createElement('span');
+  eyebrow.textContent = `${getOpeningGenreOption(genre).title} · 主角档案`;
+  const name = document.createElement('h3');
+  name.textContent = protagonistName;
+  const role = document.createElement('p');
+  role.textContent = identity;
+  heading.append(eyebrow, name, role);
+  hero.append(heading);
+  profile.append(hero);
+
+  const facts = mergeImmersiveFacts([
+    ['身份', identity],
+    ['性格', character.personality || worldState.protagonist?.traits],
+    ['当前地点', worldState.location?.current || findImmersiveStatusValue(statusFields, ['地点'])],
+    ['随身物品', worldState.inventory || findImmersiveStatusValue(statusFields, ['拥有物品', '物品栏', '物品'])],
+    ...statusFields.map(({ label, value }) => [label, value])
+  ], 12);
+  appendImmersiveFactGrid(profile, facts, 'immersive-protagonist-facts');
+
+  const description = cleanImmersiveSidebarText(character.description);
+  if (description) appendImmersiveProfileSection(profile, '人物说明', description);
+  const scenario = cleanImmersiveSidebarText(character.scenario);
+  if (scenario) appendImmersiveProfileSection(profile, '关系与处境', scenario);
+  if (panels.sceneStatus) appendImmersiveProfileSection(profile, '本幕坐标', cleanImmersiveSidebarText(panels.sceneStatus));
+  els.immersiveSidebarBody.append(profile);
+}
+
+function renderImmersiveCharacterCards(tpl) {
+  if (!els.immersiveSidebarBody) return;
+  const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
+  const panels = resolveLatestRoleplayPanels(messages);
+  const protagonistNames = [
+    inferStatusProtagonistName(panels.characterStatus),
+    state.session?.memory?.worldState?.protagonist?.name,
+    state.config?.characterCard?.name
+  ].filter(Boolean);
+  const characterPanels = splitCharacterStatus(panels.characterStatus, protagonistNames);
+  const castTab = Object.values(tpl?.tabs || {}).find((tab) => /互动|角色/.test(tab?.label || ''));
+  const members = getImmersiveCharacterMembers(
+    characterPanels.interactive,
+    castTab?.content,
+    panels.relationshipStatus
+  );
+
+  els.immersiveSidebarBody.innerHTML = '';
+  const list = document.createElement('div');
+  list.className = 'immersive-character-list';
+
+  if (!members.length) {
+    const empty = document.createElement('div');
+    empty.className = 'immersive-sidebar-empty';
+    empty.textContent = cleanImmersiveSidebarText(castTab?.content) || '尚未登记本幕互动角色。角色进入场景后会在这里形成档案。';
+    list.append(empty);
+  } else {
+    let renderedRelationshipCount = 0;
+    members.forEach((member) => {
+      const relationship = member.relationship || extractCharacterPanelExcerpt(panels.relationshipStatus, member.name);
+      if (relationship) renderedRelationshipCount += 1;
+      list.append(createImmersiveCharacterCard(member, {
+        status: extractCharacterPanelExcerpt(characterPanels.interactive, member.name),
+        relationship
+      }));
+    });
+    list.dataset.hasRelationships = String(renderedRelationshipCount > 0);
+  }
+
+  els.immersiveSidebarBody.append(list);
+  if (list.dataset.hasRelationships !== 'true') {
+    appendImmersiveSidebarNote('关系变化', panels.relationshipStatus, 'relationship');
+  }
+  appendImmersiveSidebarNote('下一幕建议', panels.nextCharacter, 'next');
+}
+
+function getImmersiveCharacterMembers(interactiveStatus, castContent, relationshipStatus) {
+  const configured = (Array.isArray(state.config?.groupMembers) ? state.config.groupMembers : [])
+    .filter((member) => member?.enabled !== false && String(member?.name || '').trim());
+  const members = [];
+  const addMember = (member) => {
+    const name = String(member?.name || '').trim();
+    if (!name || members.some((item) => item.name === name)) return;
+    members.push({ ...member, name });
+  };
+
+  const relationshipPattern = /当前角色[「"]([^」"]+)[」"]/g;
+  let relationshipMatch;
+  while ((relationshipMatch = relationshipPattern.exec(String(relationshipStatus || ''))) !== null) {
+    addMember({ name: relationshipMatch[1], role: '本幕关系' });
+  }
+  configured.forEach(addMember);
+
+  const catalogPattern = /(?:^|[。；;\n])\s*([\u3400-\u9fffA-Za-z·]{2,16})\s*[：:]\s*([^。；;\n]{2,160})/g;
+  let catalogMatch;
+  while ((catalogMatch = catalogPattern.exec(String(castContent || ''))) !== null) {
+    const name = catalogMatch[1].trim();
+    addMember({ name, role: '设定角色', description: catalogMatch[2].trim() });
+  }
+
+  const inferredNames = [];
+  String(interactiveStatus || '').split(/\r?\n/).forEach((line) => {
+    const match = line.match(/^\s*(?:#{1,4}\s*|[-*]\s*)?(?:姓名|角色)\s*[:：]\s*([\u3400-\u9fffA-Za-z·]{2,16})\s*$/)
+      || line.match(/^\s*#{1,4}\s+([\u3400-\u9fffA-Za-z·]{2,16})\s*$/);
+    if (match?.[1] && !inferredNames.includes(match[1])) inferredNames.push(match[1]);
+  });
+  inferredNames.forEach((name) => addMember({
+    name,
+    role: '本幕角色',
+    description: extractCharacterPanelExcerpt(interactiveStatus, name)
+  }));
+  return members;
+}
+
+function createImmersiveCharacterCard(member, { status = '', relationship = '' } = {}) {
+  const card = document.createElement('article');
+  card.className = 'immersive-character-card';
+
+  const portraitSource = resolveImmersiveCharacterPortrait(member);
+  const portrait = createCharacterPortraitImage(portraitSource, 'immersive-character-portrait', member.name);
+  if (portrait) {
+    card.append(portrait);
+  } else {
+    const monogram = document.createElement('div');
+    monogram.className = 'immersive-character-monogram';
+    monogram.textContent = String(member.name || '角').slice(0, 1);
+    monogram.setAttribute('aria-label', `${member.name || '角色'}暂无立绘`);
+    card.append(monogram);
+  }
+
+  const content = document.createElement('div');
+  content.className = 'immersive-character-copy';
+  const heading = document.createElement('div');
+  heading.className = 'immersive-character-heading';
+  const name = document.createElement('strong');
+  name.textContent = member.name || '未命名角色';
+  const role = document.createElement('span');
+  role.textContent = member.role || '互动角色';
+  heading.append(name, role);
+  content.append(heading);
+
+  const statusFields = parseImmersiveStatusFields(status);
+  const facts = mergeImmersiveFacts([
+    ['身份', member.role],
+    ['性格', member.personality],
+    ...statusFields.map(({ label, value }) => [label, value])
+  ], 7);
+  appendImmersiveFactGrid(content, facts, 'immersive-character-facts');
+
+  const description = cleanImmersiveSidebarText(member.description || member.personality);
+  if (description) appendImmersiveCharacterDetail(content, '人物', description, 'description');
+  const relationshipText = cleanImmersiveSidebarText(relationship);
+  if (relationshipText) appendImmersiveCharacterDetail(content, '关系', relationshipText, 'relationship');
+  const statusText = cleanImmersiveSidebarText(status);
+  if (!statusFields.length && statusText && statusText !== description) {
+    appendImmersiveCharacterDetail(content, '本幕', statusText, 'status');
+  }
+  if ([description, relationshipText, statusText].join(' ').length > 180) {
+    const expand = document.createElement('button');
+    expand.type = 'button';
+    expand.className = 'immersive-character-expand';
+    expand.textContent = '+';
+    expand.title = '展开人物详情';
+    expand.setAttribute('aria-label', `展开${member.name || '角色'}详情`);
+    expand.setAttribute('aria-expanded', 'false');
+    expand.addEventListener('click', () => {
+      const expanded = card.classList.toggle('is-expanded');
+      expand.textContent = expanded ? '−' : '+';
+      expand.title = expanded ? '收起人物详情' : '展开人物详情';
+      expand.setAttribute('aria-expanded', String(expanded));
+    });
+    content.append(expand);
+  }
+
+  card.append(content);
+  return card;
+}
+
+function resolveImmersiveCharacterPortrait(member) {
+  if (getCharacterPortraitUrl(member)) return member;
+  const name = String(member?.name || '').trim();
+  if (!name) return member;
+  const activeCharacter = state.config?.characterCard;
+  if (activeCharacter?.name === name && getCharacterPortraitUrl(activeCharacter)) return activeCharacter;
+  const preset = Object.values(state.contentPackCharacterPresets || {})
+    .map((item) => item?.characterCard)
+    .find((card) => card?.name === name && getCharacterPortraitUrl(card));
+  if (preset) return preset;
+  const resource = (Array.isArray(state.resourceLibrary) ? state.resourceLibrary : [])
+    .find((item) => item?.kind === 'character'
+      && item?.payload?.name === name
+      && getCharacterPortraitUrl(item.payload));
+  return resource?.payload || member;
+}
+
+function appendImmersiveCharacterDetail(container, label, value, kind) {
+  const block = document.createElement('div');
+  block.className = `immersive-character-detail immersive-character-${kind}`;
+  const title = document.createElement('span');
+  title.textContent = label;
+  const text = document.createElement('p');
+  text.textContent = value;
+  block.append(title, text);
+  container.append(block);
+}
+
+function parseImmersiveStatusFields(value) {
+  const fields = [];
+  String(value || '')
+    .replace(/```(?:ya?ml|json|markdown|md)?/gi, '')
+    .replace(/```/g, '')
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s*/, ''))
+    .filter(Boolean)
+    .forEach((line) => {
+      if (/^[『【\[].+(?:状态|档案)[』】\]]$/.test(line)) return;
+      const match = line.match(/^([^:：]{1,18})\s*[:：]\s*(.+)$/);
+      if (!match) return;
+      const label = match[1].replace(/[『』【】\[\]]/g, '').trim();
+      const fieldValue = match[2].trim();
+      if (!label || !fieldValue || fields.some((field) => field.label === label && field.value === fieldValue)) return;
+      fields.push({ label, value: fieldValue });
+    });
+  return fields.slice(0, 16);
+}
+
+function findImmersiveStatusValue(fields, labels) {
+  const wanted = Array.isArray(labels) ? labels : [];
+  return fields.find((field) => wanted.some((label) => field.label.includes(label)))?.value || '';
+}
+
+function mergeImmersiveFacts(entries, limit = 10) {
+  const facts = [];
+  (Array.isArray(entries) ? entries : []).forEach(([label, rawValue]) => {
+    const value = Array.isArray(rawValue) ? rawValue.join('、') : String(rawValue || '').trim();
+    if (!label || !value || facts.some((fact) => fact.label === label)) return;
+    facts.push({ label, value });
+  });
+  return facts.slice(0, limit);
+}
+
+function appendImmersiveFactGrid(container, facts, className) {
+  if (!Array.isArray(facts) || !facts.length) return;
+  const grid = document.createElement('dl');
+  grid.className = className;
+  facts.forEach(({ label, value }) => {
+    const item = document.createElement('div');
+    if (String(value).length > 34) item.classList.add('is-wide');
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const description = document.createElement('dd');
+    description.textContent = value;
+    const meterMatch = String(value).match(/(\d+)\s*\/\s*(\d+)/);
+    if (meterMatch && Number(meterMatch[2]) > 0) {
+      const meter = document.createElement('span');
+      meter.className = 'immersive-profile-meter';
+      const fill = document.createElement('i');
+      fill.style.width = `${Math.min(100, Math.round((Number(meterMatch[1]) / Number(meterMatch[2])) * 100))}%`;
+      meter.append(fill);
+      description.append(meter);
+    }
+    item.append(term, description);
+    grid.append(item);
+  });
+  container.append(grid);
+}
+
+function appendImmersiveProfileSection(container, label, value) {
+  if (!value) return;
+  const section = document.createElement('section');
+  section.className = 'immersive-profile-section';
+  const heading = document.createElement('h4');
+  heading.textContent = label;
+  const body = document.createElement('p');
+  body.textContent = value;
+  section.append(heading, body);
+  container.append(section);
+}
+
+function appendImmersiveSidebarNote(label, value, kind) {
+  const text = cleanImmersiveSidebarText(value);
+  if (!text || !els.immersiveSidebarBody) return;
+  const note = document.createElement('section');
+  note.className = `immersive-sidebar-note immersive-sidebar-note-${kind}`;
+  const heading = document.createElement('h4');
+  heading.textContent = label;
+  const body = document.createElement('p');
+  body.textContent = text;
+  note.append(heading, body);
+  els.immersiveSidebarBody.append(note);
+}
+
+function extractCharacterPanelExcerpt(value, name) {
+  const normalized = String(value || '')
+    .replace(/<\/?[A-Za-z][^>]*>/g, '')
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    .replace(/\*\*/g, '');
+  const escapedName = String(name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const statusMarker = new RegExp(`[『【\\[]${escapedName}(?:状态|档案)[』】\\]]`);
+  const statusMatch = normalized.match(statusMarker);
+  if (statusMatch?.index !== undefined) {
+    const contentStart = statusMatch.index + statusMatch[0].length;
+    const remainder = normalized.slice(contentStart);
+    const nextMarker = remainder.search(/^[『【\[][^\n『』【】\[\]]+(?:状态|档案)[』】\]]/m);
+    const statusBlock = nextMarker >= 0 ? remainder.slice(0, nextMarker) : remainder;
+    return `${statusMatch[0]}\n${statusBlock}`.trim().slice(0, 900);
+  }
+
+  const plainText = normalized
+    .replace(/\s+/g, ' ')
+    .trim();
+  const index = plainText.indexOf(name);
+  if (index < 0) return '';
+  const nextCharacter = plainText.indexOf('当前角色「', index + name.length);
+  const end = nextCharacter > index ? nextCharacter : index + 280;
+  return plainText.slice(index, end).trim().slice(0, 280);
+}
+
+function cleanImmersiveSidebarText(value) {
+  return String(value || '')
+    .replace(/<\/?[A-Za-z][^>]*>/g, ' ')
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    .replace(/\*\*/g, '')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 520);
+}
+
+function renderImmersiveIntelligenceLedger(label, tpl, genre) {
+  if (!els.immersiveSidebarBody) return;
+  const memory = state.session?.memory || {};
+  const worldState = memory.worldState || {};
+  const panels = resolveLatestRoleplayPanels(state.session?.messages || []);
+  const ruleSections = parseImmersiveDocumentSections(tpl?.tabs?.rules?.content)
+    .filter((section) => /榜|排名|铁律|规则|证据|禁忌/.test(section.title));
+  const crisisSections = parseImmersiveDocumentSections(tpl?.tabs?.currentCrisis?.content);
+  const factionSections = parseImmersiveDocumentSections(tpl?.tabs?.factions?.content);
+  const quests = normalizeImmersiveRecords(worldState.quests, '待办事项');
+  const factions = normalizeImmersiveRecords(worldState.factions, '势力动向');
+  const factCount = Array.isArray(memory.memoryCards)
+    ? memory.memoryCards.length
+    : Array.isArray(memory.facts) ? memory.facts.length : 0;
+
+  const dossier = createImmersiveDossier({
+    kind: 'intelligence',
+    eyebrow: `${getOpeningGenreOption(genre).title} · 局势卷宗`,
+    title: label,
+    summary: panels.sceneStatus
+      ? cleanImmersiveSidebarText(panels.sceneStatus)
+      : '只呈现当前角色能够接触到的榜单、传闻、任务与势力风向。',
+    metrics: [
+      ['任务', quests.length],
+      ['势力', factions.length],
+      ['事实', factCount]
+    ]
+  });
+
+  if (ruleSections.length) {
+    appendImmersiveLedgerSection(dossier.body, '榜单法则', ruleSections, { numbered: true });
+  }
+  if (crisisSections.length) {
+    appendImmersiveLedgerSection(dossier.body, '局势异动', crisisSections, { tone: 'warning' });
+  }
+  if (quests.length) {
+    appendImmersiveLedgerSection(dossier.body, '当前任务', quests, { numbered: true, tone: 'active' });
+  }
+  if (factions.length) {
+    appendImmersiveLedgerSection(dossier.body, '势力风向', factions, { tone: 'faction' });
+  } else if (factionSections.length) {
+    appendImmersiveLedgerSection(dossier.body, '势力风向', factionSections, { tone: 'faction' });
+  }
+  appendImmersiveDossierEmpty(dossier.body, '尚无公开榜单或局势记录。剧情推进后，这里会同步新的任务与风向。');
+  els.immersiveSidebarBody.replaceChildren(dossier.root);
+}
+
+function renderImmersiveProgressLedger(label, tpl, genre) {
+  if (!els.immersiveSidebarBody) return;
+  const character = state.config?.characterCard || {};
+  const memory = state.session?.memory || {};
+  const worldState = memory.worldState || {};
+  const protagonist = worldState.protagonist || {};
+  const panels = resolveLatestRoleplayPanels(state.session?.messages || []);
+  const protagonistNames = [protagonist.name, character.name].filter(Boolean);
+  const protagonistStatus = splitCharacterStatus(panels.characterStatus, protagonistNames).protagonist;
+  const statusFields = parseImmersiveStatusFields(protagonistStatus);
+  const ruleSections = parseImmersiveDocumentSections(tpl?.tabs?.rules?.content)
+    .filter((section) => /修行|境界|功法|武学|神通|武器|法宝|心魔|天劫|战力/.test(section.title));
+  const crisisSections = parseImmersiveDocumentSections(tpl?.tabs?.currentCrisis?.content)
+    .filter((section) => /神通|造化|功法|境界|伤|劫|资源/.test(section.title));
+  const resources = normalizeImmersiveRecords(
+    worldState.resourceLedger?.length ? worldState.resourceLedger : protagonist.inventory || worldState.inventory,
+    '随身资源'
+  );
+  const injuries = normalizeImmersiveRecords(protagonist.injuries, '伤势与代价');
+  const facts = mergeImmersiveFacts([
+    ['姓名', protagonist.name || character.name],
+    ['身份/境界', protagonist.realm || character.role],
+    ['性格/道心', protagonist.traits || character.personality],
+    ['当前位置', worldState.location?.current || worldState.location],
+    ...statusFields.map(({ label: fieldLabel, value }) => [fieldLabel, value])
+  ], 12);
+
+  const dossier = createImmersiveDossier({
+    kind: 'progress',
+    eyebrow: `${getOpeningGenreOption(genre).title} · 成长档案`,
+    title: label,
+    summary: protagonist.realm
+      ? `${protagonist.name || character.name || '主角'}当前处于${protagonist.realm}，修行所得与代价均以世界状态为准。`
+      : '能力、资源与代价会随世界状态同步，不以单次模型描写覆盖既有设定。',
+    metrics: [
+      ['状态', facts.length],
+      ['资源', resources.length],
+      ['代价', injuries.length]
+    ]
+  });
+
+  appendImmersiveFactGrid(dossier.body, facts, 'immersive-progress-facts');
+  if (injuries.length) {
+    appendImmersiveLedgerSection(dossier.body, '伤势与代价', injuries, { tone: 'warning' });
+  }
+  if (resources.length) {
+    appendImmersiveLedgerSection(dossier.body, '资源储备', resources, { tone: 'resource' });
+  }
+  if (crisisSections.length) {
+    appendImmersiveLedgerSection(dossier.body, '当前契机', crisisSections, { tone: 'active' });
+  }
+  if (ruleSections.length) {
+    appendImmersiveLedgerSection(dossier.body, '体系与边界', ruleSections);
+  }
+  appendImmersiveDossierEmpty(dossier.body, '尚未建立成长记录。完成开局或推进一轮剧情后会自动补全。');
+  els.immersiveSidebarBody.replaceChildren(dossier.root);
+}
+
+function renderImmersiveMemoryLedger(label, genre) {
+  if (!els.immersiveSidebarBody) return;
+  const memory = state.session?.memory || {};
+  const worldState = memory.worldState || {};
+  const timeline = normalizeImmersiveRecords(worldState.timeline, '剧情纪事');
+  const memoryCards = Array.isArray(memory.memoryCards)
+    ? memory.memoryCards
+    : Array.isArray(memory.facts) ? memory.facts : [];
+  const recentFacts = memoryCards.slice(-7).reverse().map((fact, index) => ({
+    title: fact.title || fact.subject || `事实 ${memoryCards.length - index}`,
+    detail: fact.content || fact.fact || [fact.subject, fact.predicate, fact.object].filter(Boolean).join(' '),
+    meta: formatImmersiveMemoryMeta(fact)
+  })).filter((item) => item.detail);
+  const recentTurns = getImmersiveRecentTurns(state.session?.messages || []);
+  const summary = cleanImmersiveSidebarText(memory.rollingSummary);
+
+  const dossier = createImmersiveDossier({
+    kind: 'memory',
+    eyebrow: `${getOpeningGenreOption(genre).title} · 叙事记忆`,
+    title: label,
+    summary: '长期摘要负责守住章节因果，近期纪事负责保留刚刚发生、尚未沉淀的客观信息。',
+    metrics: [
+      ['长期摘要', summary ? 1 : 0],
+      ['事实卡', memoryCards.length],
+      ['待整理回合', Number(memory.unsummarizedTurnCount || 0)]
+    ]
+  });
+
+  const longTerm = document.createElement('section');
+  longTerm.className = 'immersive-memory-block immersive-memory-long-term';
+  const longTermTitle = document.createElement('div');
+  longTermTitle.className = 'immersive-memory-block-title';
+  const longTermHeading = document.createElement('h4');
+  longTermHeading.textContent = '长期记忆';
+  const longTermBadge = document.createElement('span');
+  longTermBadge.textContent = summary ? '已沉淀' : '等待总结';
+  longTermTitle.append(longTermHeading, longTermBadge);
+  const longTermText = document.createElement('p');
+  longTermText.textContent = summary || '尚未形成章节摘要。达到总结阈值后，系统会把稳定因果沉淀到这里。';
+  longTerm.append(longTermTitle, longTermText);
+  dossier.body.append(longTerm);
+
+  if (recentFacts.length) {
+    appendImmersiveMemoryRows(dossier.body, '短期事实', recentFacts);
+  }
+  if (timeline.length) {
+    appendImmersiveMemoryRows(dossier.body, '剧情纪事', timeline.slice(-8).reverse());
+  }
+  if (recentTurns.length) {
+    appendImmersiveMemoryRows(dossier.body, '最近对话', recentTurns);
+  }
+  els.immersiveSidebarBody.replaceChildren(dossier.root);
+}
+
+function createImmersiveDossier({ kind, eyebrow, title, summary, metrics = [] }) {
+  const root = document.createElement('article');
+  root.className = `immersive-dossier immersive-dossier-${kind}`;
+  const header = document.createElement('header');
+  header.className = 'immersive-dossier-header';
+  const heading = document.createElement('div');
+  const kicker = document.createElement('span');
+  kicker.textContent = eyebrow;
+  const titleNode = document.createElement('h3');
+  titleNode.textContent = title;
+  heading.append(kicker, titleNode);
+  const summaryNode = document.createElement('p');
+  summaryNode.textContent = summary;
+  header.append(heading, summaryNode);
+  root.append(header);
+
+  if (metrics.length) {
+    const metricList = document.createElement('dl');
+    metricList.className = 'immersive-dossier-metrics';
+    metrics.forEach(([metricLabel, value]) => {
+      const item = document.createElement('div');
+      const number = document.createElement('dd');
+      number.textContent = String(value ?? 0);
+      const caption = document.createElement('dt');
+      caption.textContent = metricLabel;
+      item.append(number, caption);
+      metricList.append(item);
+    });
+    root.append(metricList);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'immersive-dossier-body';
+  root.append(body);
+  return { root, body };
+}
+
+function parseImmersiveDocumentSections(value) {
+  const sections = [];
+  let current = null;
+  String(value || '').split(/\r?\n/).forEach((rawLine) => {
+    const line = rawLine
+      .replace(/<\/?[A-Za-z][^>]*>/g, '')
+      .replace(/^\s*#{1,6}\s*/, '')
+      .replace(/^\s*[-*]\s*/, '')
+      .replace(/\*\*/g, '')
+      .trim();
+    if (!line) return;
+    const bracketed = line.match(/^【([^】]+)】\s*(.*)$/);
+    if (bracketed) {
+      current = { title: bracketed[1].trim(), detail: bracketed[2].trim(), meta: '' };
+      sections.push(current);
+      return;
+    }
+    const labeled = line.match(/^([^:：]{1,18})\s*[:：]\s*(.+)$/);
+    if (labeled) {
+      current = { title: labeled[1].trim(), detail: labeled[2].trim(), meta: '' };
+      sections.push(current);
+      return;
+    }
+    if (current) current.detail = `${current.detail} ${line}`.trim();
+    else sections.push({ title: '设定摘要', detail: line, meta: '' });
+  });
+  return sections.filter((section) => section.title || section.detail).slice(0, 16);
+}
+
+function normalizeImmersiveRecords(value, fallbackTitle) {
+  const records = Array.isArray(value) ? value : value ? [value] : [];
+  return records.map((record, index) => {
+    if (typeof record !== 'object' || record === null) {
+      return { title: fallbackTitle, detail: String(record), meta: '' };
+    }
+    const title = record.title || record.name || record.subject || record.time || `${fallbackTitle} ${index + 1}`;
+    const status = formatImmersiveRecordStatus(record.status);
+    const resourceDetail = [record.ownership, record.limits ? `限制：${record.limits}` : ''].filter(Boolean).join('；');
+    const detail = record.content || record.fact || record.event || record.state || record.stance
+      || record.description || resourceDetail || status || formatImmersiveRecordFallback(record);
+    const meta = [record.time && record.time !== title ? record.time : '', detail !== status ? status : '', record.holder, record.source]
+      .filter(Boolean)
+      .join(' · ');
+    return { title: String(title), detail: String(detail || '等待补充'), meta };
+  }).filter((record) => record.detail).slice(0, 16);
+}
+
+function formatImmersiveRecordStatus(status) {
+  const value = String(status || '').trim();
+  const labels = {
+    active: '进行中',
+    available: '可接取',
+    pending: '待处理',
+    completed: '已完成',
+    failed: '已失败',
+    paused: '已暂停'
+  };
+  return labels[value.toLowerCase()] || value;
+}
+
+function formatImmersiveRecordFallback(record) {
+  return Object.entries(record || {})
+    .filter(([key, value]) => !['id', 'title', 'name', 'subject', 'time'].includes(key) && value != null && value !== '')
+    .slice(0, 4)
+    .map(([key, value]) => `${key}：${Array.isArray(value) ? value.join('、') : String(value)}`)
+    .join('；');
+}
+
+function appendImmersiveLedgerSection(container, title, items, { numbered = false, tone = '' } = {}) {
+  if (!items?.length) return;
+  const section = document.createElement('section');
+  section.className = `immersive-ledger-section${tone ? ` is-${tone}` : ''}`;
+  const heading = document.createElement('h4');
+  heading.textContent = title;
+  const list = document.createElement('div');
+  list.className = 'immersive-ledger-list';
+  items.forEach((item, index) => {
+    const row = document.createElement('article');
+    row.className = 'immersive-ledger-row';
+    const marker = document.createElement('span');
+    marker.className = 'immersive-ledger-marker';
+    marker.textContent = numbered ? String(index + 1).padStart(2, '0') : '•';
+    const copy = document.createElement('div');
+    const itemTitle = document.createElement('strong');
+    itemTitle.textContent = item.title || title;
+    const detail = document.createElement('p');
+    detail.textContent = item.detail || item.content || '';
+    copy.append(itemTitle, detail);
+    if (item.meta) {
+      const meta = document.createElement('small');
+      meta.textContent = item.meta;
+      copy.append(meta);
+    }
+    row.append(marker, copy);
+    list.append(row);
+  });
+  section.append(heading, list);
+  container.append(section);
+}
+
+function appendImmersiveMemoryRows(container, title, items) {
+  if (!items?.length) return;
+  const section = document.createElement('section');
+  section.className = 'immersive-memory-block';
+  const heading = document.createElement('div');
+  heading.className = 'immersive-memory-block-title';
+  const titleNode = document.createElement('h4');
+  titleNode.textContent = title;
+  const count = document.createElement('span');
+  count.textContent = `${items.length} 条`;
+  heading.append(titleNode, count);
+  const list = document.createElement('div');
+  list.className = 'immersive-memory-list';
+  items.forEach((item, index) => {
+    const row = document.createElement('article');
+    row.className = 'immersive-memory-row';
+    const number = document.createElement('span');
+    number.textContent = String(index + 1).padStart(2, '0');
+    const copy = document.createElement('div');
+    const itemTitle = document.createElement('strong');
+    itemTitle.textContent = item.title || '叙事事实';
+    const detail = document.createElement('p');
+    detail.textContent = item.detail || '';
+    copy.append(itemTitle, detail);
+    if (item.meta) {
+      const meta = document.createElement('small');
+      meta.textContent = item.meta;
+      copy.append(meta);
+    }
+    row.append(number, copy);
+    list.append(row);
+  });
+  section.append(heading, list);
+  container.append(section);
+}
+
+function formatImmersiveMemoryMeta(fact) {
+  const timestamp = fact?.updatedAt || fact?.createdAt || fact?.time || '';
+  const category = fact?.category || fact?.type || fact?.source || '';
+  return [timestamp ? String(timestamp).slice(0, 16).replace('T', ' ') : '', category].filter(Boolean).join(' · ');
+}
+
+function getImmersiveRecentTurns(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter((message) => ['user', 'assistant'].includes(message?.role) && message?.content)
+    .slice(-6)
+    .reverse()
+    .map((message) => {
+      const presentation = message.role === 'assistant' ? extractRoleplayPresentation(message.content) : null;
+      const visibleContent = message.role === 'assistant' ? presentation?.content : message.content;
+      const detail = cleanImmersiveSidebarText(visibleContent);
+      return {
+        title: message.role === 'user' ? '主角行动' : (presentation?.speaker || '世界回应'),
+        detail,
+        meta: message.createdAt ? String(message.createdAt).slice(0, 16).replace('T', ' ') : ''
+      };
+    })
+    .filter((item) => item.detail);
+}
+
+function appendImmersiveDossierEmpty(container, message) {
+  if (!container || container.childElementCount) return;
+  const empty = document.createElement('div');
+  empty.className = 'immersive-sidebar-empty';
+  empty.textContent = message;
+  container.append(empty);
 }
 
 function selectImmersiveSidebarTab(label) {
@@ -2454,8 +4633,6 @@ function closeImmersiveSidebar() {
 
 function buildImmersiveSidebarText(label, tpl, genre) {
   const matchedTab = Object.values(tpl?.tabs || {}).find((tab) => tab?.label === label);
-  if (matchedTab?.content) return matchedTab.content;
-
   const character = state.config?.characterCard || {};
   const memory = state.session?.memory || {};
   const worldState = memory.worldState || {};
@@ -2464,24 +4641,51 @@ function buildImmersiveSidebarText(label, tpl, genre) {
     : 0;
   const facts = Array.isArray(memory.facts) ? memory.facts : [];
   const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
+  const panels = resolveLatestRoleplayPanels(messages);
+  const statusProtagonistName = inferStatusProtagonistName(panels.characterStatus);
+  const protagonistName = statusProtagonistName || worldState.protagonist?.name || character.name || '未命名主角';
+  const protagonistNames = statusProtagonistName
+    ? [statusProtagonistName]
+    : [worldState.protagonist?.name, character.name].filter(Boolean);
+  const characterPanels = splitCharacterStatus(panels.characterStatus, protagonistNames);
+  const characterMatchesProtagonist = character.name && character.name === protagonistName;
+  const protagonistIdentity = characterMatchesProtagonist
+    ? (character.role || inferStatusField(characterPanels.protagonist, ['身份', '武学/修真境界', '境界']))
+    : inferStatusField(characterPanels.protagonist, ['身份', '武学/修真境界', '境界']);
 
   if (/主角|档案|文书|调查者/.test(label)) {
     return [
-      `【姓名】${character.name || worldState.protagonist?.name || '未命名主角'}`,
-      `【身份】${character.role || worldState.protagonist?.realm || '待设定'}`,
-      `【题材】${getOpeningGenreOption(genre).title}`,
-      `【消息】${messages.length} 条`,
-      character.description ? `【概述】${character.description}` : ''
+      '## 主角档案',
+      `- **姓名**：${protagonistName}`,
+      `- **身份/境界**：${protagonistIdentity || worldState.protagonist?.realm || '见当前状态'}`,
+      `- **题材**：${getOpeningGenreOption(genre).title}`,
+      characterMatchesProtagonist && character.description ? `- **人物说明**：${character.description}` : '',
+      characterPanels.protagonist ? `\n## 当前状态\n${characterPanels.protagonist}` : ''
     ].filter(Boolean).join('\n');
   }
 
   if (/互动|角色/.test(label)) {
     const castTab = Object.values(tpl?.tabs || {}).find((tab) => /互动|角色/.test(tab?.label || ''));
-    return castTab?.content || `当前角色卡：${character.name || '未命名'}\n可在检查器的角色卡/群聊参与角色中补充更多 NPC。`;
+    const members = (Array.isArray(state.config?.groupMembers) ? state.config.groupMembers : [])
+      .filter((member) => member?.enabled !== false && member?.name)
+      .map((member) => [
+        `### ${member.name}`,
+        member.role ? `- **身份**：${member.role}` : '',
+        member.description ? `- **角色说明**：${member.description}` : '',
+        member.relationship ? `- **关系说明**：${member.relationship}` : ''
+      ].filter(Boolean).join('\n'));
+    return [
+      '## 互动角色',
+      members.join('\n\n') || castTab?.content || '尚未登记固定互动角色。',
+      characterPanels.interactive ? `\n## 本幕角色状态\n${characterPanels.interactive}` : '',
+      panels.relationshipStatus ? `\n## 关系变化\n${panels.relationshipStatus}` : '',
+      panels.nextCharacter ? `\n## 下一幕建议角色\n${panels.nextCharacter}` : ''
+    ].filter(Boolean).join('\n');
   }
 
   if (/榜|清单|账|证据|造化|梦|传闻|风向|秘籍|状态/.test(label)) {
     return [
+      panels.sceneStatus ? `## 当前场景\n${panels.sceneStatus}` : '',
       `【当前题材】${getOpeningGenreOption(genre).title}`,
       `【世界书】已启用 ${enabledWorldBookCount} 条`,
       `【动态事实】${facts.length} 条`,
@@ -2490,12 +4694,40 @@ function buildImmersiveSidebarText(label, tpl, genre) {
     ].join('\n');
   }
 
+  if (matchedTab?.content) return matchedTab.content;
+
   return [
     `【${label}】`,
     `题材：${getOpeningGenreOption(genre).title}`,
     `世界书：${enabledWorldBookCount} 条`,
     `动态事实：${facts.length} 条`
   ].join('\n');
+}
+
+function resolveLatestRoleplayPanels(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'assistant') continue;
+    if (message.roleplayPanels && Object.keys(message.roleplayPanels).length) return message.roleplayPanels;
+    const parsed = extractRoleplayPresentation(message.content);
+    if (Object.keys(parsed.panels).length) return parsed.panels;
+  }
+  return {};
+}
+
+function inferStatusProtagonistName(characterStatus) {
+  const matches = Array.from(String(characterStatus || '').matchAll(/^[『【\[]([^\n』】\]]+?)(?:状态|档案)[』】\]]/gm));
+  const ignored = /^(?:环境|场景|世界|关系|角色好感度系统|系统)$/;
+  return matches.map((match) => match[1].trim()).find((name) => name && !ignored.test(name)) || '';
+}
+
+function inferStatusField(statusText, fieldNames) {
+  const source = String(statusText || '');
+  for (const fieldName of fieldNames) {
+    const match = source.match(new RegExp(`^${fieldName}\\s*[:：]\\s*(.+)$`, 'm'));
+    if (match?.[1]) return match[1].trim();
+  }
+  return '';
 }
 
 function appendDossierContent(parent, content) {
@@ -2771,7 +5003,24 @@ function renderSetupPanel(tpl) {
     empty.textContent = '当前模板还没有配置主角字段。';
     grid.append(empty);
   }
-  protagonistPane.append(protagonistHeading, grid);
+  const protagonistPortrait = createCharacterPortraitImage(
+    state.config?.characterCard,
+    'epic-protagonist-portrait',
+    state.config?.characterCard?.name
+  );
+  if (protagonistPortrait) {
+    const protagonistLayout = document.createElement('div');
+    protagonistLayout.className = 'epic-protagonist-layout';
+    const portraitPanel = document.createElement('aside');
+    portraitPanel.className = 'epic-protagonist-portrait-panel';
+    const portraitCaption = document.createElement('span');
+    portraitCaption.textContent = state.config?.characterCard?.name || '当前角色';
+    portraitPanel.append(protagonistPortrait, portraitCaption);
+    protagonistLayout.append(portraitPanel, grid);
+    protagonistPane.append(protagonistHeading, protagonistLayout);
+  } else {
+    protagonistPane.append(protagonistHeading, grid);
+  }
 
   const destinyPane = paneByKey.get('destiny');
   const destinyHeading = document.createElement('div');
@@ -2931,7 +5180,7 @@ function renderSetupPanel(tpl) {
     const formData = collectFormData();
     const destiny = collectSelectedDestinyCards();
     closePanel();
-    await startJourney(formData, tpl, destiny);
+    await startJourney(formData, tpl, destiny, { autoSend: true });
   }
 
   function closePanel() {
@@ -2966,16 +5215,30 @@ function createMessageNode(message) {
 
   const roleText = document.createElement('span');
   roleText.className = 'message-role';
-  if (message.speaker) {
-    roleText.textContent = message.speaker;
+  const presentation = role === 'assistant' ? extractRoleplayPresentation(message.content) : null;
+  const displaySpeaker = message.speaker || presentation?.speaker;
+  if (displaySpeaker) {
+    roleText.textContent = displaySpeaker;
     roleText.classList.add('speaker-name');
   } else {
-    roleText.textContent = role === 'user' ? '用户' : (state.config?.characterCard?.name || 'Agent');
+    roleText.textContent = role === 'user' ? '你' : '旁白';
   }
 
   const time = document.createElement('time');
   time.textContent = formatTime(message.createdAt);
   if (message.createdAt) time.dateTime = message.createdAt;
+
+  const mainCharacter = state.config?.characterCard || {};
+  const canUseMainPortrait = role === 'assistant'
+    && Boolean(displaySpeaker)
+    && displaySpeaker === mainCharacter.name;
+  const avatar = canUseMainPortrait
+    ? createCharacterPortraitImage(mainCharacter, 'message-avatar', mainCharacter.name)
+    : null;
+  if (avatar) {
+    meta.classList.add('has-portrait');
+    meta.append(avatar);
+  }
 
   if (Array.isArray(message.swipes) && message.swipes.length > 1) {
     const swipeSwitcher = document.createElement('span');
@@ -3016,11 +5279,15 @@ function createMessageNode(message) {
 
   const content = document.createElement('div');
   content.className = 'message-content';
-  content.innerHTML = renderSafeMarkdown(message.content || '');
+  const visibleContent = presentation ? presentation.content : (message.content || '');
+  content.innerHTML = renderSafeMarkdown(visibleContent);
 
   article.append(meta, content);
   article.append(createMessageTools(message, role));
-  const actions = createRecommendedActionsNode(message.recommendedActions);
+  const recommendedActions = Array.isArray(message.recommendedActions) && message.recommendedActions.length
+    ? message.recommendedActions
+    : presentation?.recommendedActions;
+  const actions = createRecommendedActionsNode(recommendedActions);
   if (actions) article.append(actions);
 
   return article;
@@ -3083,36 +5350,90 @@ function createMessageTools(message, role) {
 function createRecommendedActionsNode(actions) {
   if (!Array.isArray(actions) || !actions.length) return null;
   const wrap = document.createElement('div');
-  wrap.className = 'recommended-actions';
+  wrap.className = 'recommended-actions narrative-choice-panel';
 
-  const label = document.createElement('span');
-  label.className = 'recommended-actions-label';
-  label.textContent = '推荐下一步';
-  wrap.append(label);
+  const header = document.createElement('header');
+  header.className = 'recommended-actions-header';
+  const heading = document.createElement('strong');
+  heading.className = 'recommended-actions-label';
+  heading.textContent = '下一步怎么走';
+  const hint = document.createElement('span');
+  hint.textContent = '选择会填入输入框，你仍可继续修改';
+  header.append(heading, hint);
+  wrap.append(header);
 
-  actions.forEach((action) => {
+  const list = document.createElement('div');
+  list.className = 'recommended-actions-list';
+
+  actions.forEach((action, index) => {
     const text = String(action || '').trim();
     if (!text) return;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'recommendation-button';
     button.dataset.recommendedAction = text;
-    button.textContent = text;
-    wrap.append(button);
+    const number = document.createElement('span');
+    number.className = 'recommendation-number';
+    number.textContent = String(index + 1).padStart(2, '0');
+    const copy = document.createElement('span');
+    copy.className = 'recommendation-copy';
+    copy.textContent = text;
+    button.append(number, copy);
+    list.append(button);
   });
+  wrap.append(list);
 
-  return wrap.childElementCount > 1 ? wrap : null;
+  return list.childElementCount ? wrap : null;
 }
 
-function useRecommendedAction(action) {
+async function useRecommendedAction(action, trigger) {
   const text = String(action || '').trim();
   if (!text) return;
-  if (els.chatInput.disabled) {
-    setStatus(els.sessionStatus, '正在生成中，请稍候', 'busy');
+  if (state.chatStreaming || state.recommendedActionPending) {
+    setStatus(els.sessionStatus, '上一项行动仍在处理中，请稍候', 'busy');
     return;
   }
-  els.chatInput.value = text;
-  sendMessage();
+
+  state.recommendedActionPending = true;
+  const actionButtons = Array.from(els.messages.querySelectorAll('.recommendation-button'));
+  actionButtons.forEach((button) => { button.disabled = true; });
+  trigger?.classList.add('is-expanding');
+  trigger?.setAttribute('aria-busy', 'true');
+  setStatus(els.sessionStatus, '正在结合主角与当前场景组织行动...', 'busy');
+
+  let expandedAction = buildRecommendedActionFallback(text);
+  try {
+    const payload = await apiRequest('/api/rewrite', {
+      method: 'POST',
+      body: {
+        sessionId: currentSessionId,
+        target: 'recommended-action',
+        text,
+        instruction: '把选定意图写成当前主角在本场景中的完整行动。使用符合角色卡的语气，可加入动作、观察和明确台词；不要新增结果，不要替 NPC 回答。'
+      }
+    });
+    expandedAction = String(payload.text || '').trim() || expandedAction;
+  } catch (error) {
+    setStatus(els.sessionStatus, `角色化改写不可用，已使用简洁行动：${humanizeApiError(error)}`, 'busy');
+  }
+
+  els.chatInput.value = expandedAction;
+  els.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+  try {
+    await sendMessage();
+  } finally {
+    state.recommendedActionPending = false;
+    actionButtons.forEach((button) => { button.disabled = false; });
+    trigger?.classList.remove('is-expanding');
+    trigger?.removeAttribute('aria-busy');
+  }
+}
+
+function buildRecommendedActionFallback(action) {
+  const text = String(action || '').trim().replace(/[。！？!?]+$/, '');
+  if (!text) return '';
+  if (/^(?:我|吾|在下|本官|朕|臣|贫道|贫僧)/.test(text)) return `${text}。`;
+  return `我${text}。`;
 }
 
 async function editMessage(messageId) {
@@ -3214,6 +5535,7 @@ function findMessage(messageId) {
 
 function renderInspector() {
   renderContentStack();
+  authoringController.render();
   renderMemoryOverview();
   els.memoryView.textContent = prettyJson(state.session?.memory || {});
   renderRuleStatus();
@@ -3366,12 +5688,17 @@ function renderCharacterOverview(characterCard = state.config?.characterCard || 
   const name = document.createElement('strong');
   name.textContent = card.name || '未命名角色';
   headingText.append(eyebrow, name);
+  const profile = document.createElement('div');
+  profile.className = 'character-overview-profile';
+  const portrait = createCharacterPortraitImage(card, 'character-overview-portrait', card.name);
+  if (portrait) profile.append(portrait);
+  profile.append(headingText);
   const packBadge = document.createElement('span');
   packBadge.className = `character-pack-badge${compatibility.mismatched ? ' is-mismatched' : ''}`;
   packBadge.textContent = compatibility.characterPackId
     ? getContentPackTitle(compatibility.characterPackId)
     : '未声明题材';
-  heading.append(headingText, packBadge);
+  heading.append(profile, packBadge);
   els.characterOverview.append(heading);
 
   if (compatibility.mismatched) {
@@ -3549,6 +5876,12 @@ function getAppliedContentPackId() {
   ];
   const knownPackIds = new Set((state.contentPacks || []).map((pack) => pack.id));
   return candidates.find((packId) => knownPackIds.has(packId) || openingGenreIds().includes(packId)) || '';
+}
+
+function getBoundStoryPackId() {
+  const projectId = state.session?.storyProjectId;
+  const project = (state.storyProjects || []).find((item) => item.id === projectId);
+  return state.session?.basePackId || project?.basePackId || '';
 }
 
 function getBackgroundContentPackId() {
@@ -4140,6 +6473,7 @@ async function loadResourceLibrary({ announce = false } = {}) {
     window.__assets = assets.assets || window.__assets;
     renderContentPackOptions();
     renderResourceWorkbench();
+    assetCenterController.render();
     if (announce) setStatus(els.resourceLibraryStatus, `已载入 ${state.resourceLibrary.length} 份素材`, 'ok');
   } catch (error) {
     if (announce) setStatus(els.resourceLibraryStatus, `刷新失败：${humanizeApiError(error)}`, 'error');
@@ -4236,6 +6570,13 @@ function createResourceLibraryItem(resource) {
   title.textContent = resource.title || '未命名素材';
   const summary = document.createElement('p');
   summary.textContent = resource.summary || '未提供摘要';
+  const identity = document.createElement('div');
+  identity.className = 'resource-item-identity';
+  const portrait = createCharacterPortraitImage(resource.payload, 'resource-item-portrait', resource.title);
+  const copy = document.createElement('div');
+  copy.append(title, summary);
+  if (portrait) identity.append(portrait);
+  identity.append(copy);
   const meta = document.createElement('div');
   meta.className = 'resource-item-meta';
   meta.textContent = [
@@ -4262,7 +6603,7 @@ function createResourceLibraryItem(resource) {
   remove.textContent = '移除';
   remove.title = '从本地素材库移除';
   footer.append(tags, remove);
-  item.append(heading, title, summary, meta, footer);
+  item.append(heading, identity, meta, footer);
   return item;
 }
 
@@ -5711,381 +8052,10 @@ async function insertGeneratedImageAsBackground() {
   }
 }
 
-let mcpServersCache = [];
-let mcpToolsCache = [];
-
 function escapeHtmlText(value) {
-  return String(value == null ? '' : value).replace(/[<>&"']/g, (c) => ({
+  return String(value == null ? '' : value).replace(/[<>&"']/g, (character) => ({
     '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
-
-async function renderMcpPanel() {
-  if (!els.mcpServersList && !els.mcpToolsList) return;
-  try {
-    const [{ servers }, { tools }] = await Promise.all([
-      apiRequest('/api/mcp/servers'),
-      apiRequest('/api/mcp/tools').catch(() => ({ tools: [] }))
-    ]);
-    mcpServersCache = Array.isArray(servers) ? servers : [];
-    mcpToolsCache = Array.isArray(tools) ? tools : [];
-  } catch (error) {
-    mcpServersCache = [];
-    mcpToolsCache = [];
-  }
-  renderMcpServersList();
-  renderMcpToolsList();
-}
-
-function renderMcpServersList() {
-  if (!els.mcpServersList) return;
-  if (!mcpServersCache.length) {
-    els.mcpServersList.innerHTML = '<div style="color: var(--subtle); font-size: 11px;">尚未配置 MCP server</div>';
-    return;
-  }
-  els.mcpServersList.innerHTML = mcpServersCache.map((s) => {
-    const id = escapeHtmlText(s.id);
-    const name = escapeHtmlText(s.name || s.id);
-    const connected = s.connected ? '<span style="color: #8f8;">已连接</span>' : '<span style="color: var(--subtle);">未连接</span>';
-    const toolCount = Number(s.toolCount || 0);
-    const enabled = s.enabled ? '' : '<span style="color: #f88;">(已禁用)</span>';
-    const lastErr = s.lastError ? `<div style="color: #f88; font-size: 10px;">${escapeHtmlText(s.lastError)}</div>` : '';
-    return `<div class="mcp-server-row" style="padding: 6px; margin-bottom: 4px; border-left: 2px solid var(--gold, #f5d58d); padding-left: 8px;">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <div>
-          <strong>${name}</strong> <span style="color: var(--subtle); font-size: 10px;">[${id}]</span>
-          ${enabled}
-        </div>
-        <div style="font-size: 11px;">
-          ${connected} · ${toolCount} 工具
-        </div>
-      </div>
-      ${lastErr}
-      <div style="margin-top: 4px; display: flex; gap: 4px;">
-        <button class="ghost-button compact" type="button" data-mcp-action="connect" data-mcp-id="${id}">连接</button>
-        <button class="ghost-button compact" type="button" data-mcp-action="disconnect" data-mcp-id="${id}">断开</button>
-        <button class="ghost-button compact" type="button" data-mcp-action="edit" data-mcp-id="${id}">编辑</button>
-        <button class="ghost-button compact" type="button" data-mcp-action="delete" data-mcp-id="${id}">删除</button>
-      </div>
-    </div>`;
-  }).join('');
-
-  els.mcpServersList.querySelectorAll('[data-mcp-action]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const action = btn.getAttribute('data-mcp-action');
-      const id = btn.getAttribute('data-mcp-id');
-      if (action === 'connect') connectMcpServer(id);
-      else if (action === 'disconnect') disconnectMcpServer(id);
-      else if (action === 'edit') editMcpServer(id);
-      else if (action === 'delete') deleteMcpServer(id);
-    });
-  });
-}
-
-function renderMcpToolsList() {
-  if (!els.mcpToolsList) return;
-  if (!mcpToolsCache.length) {
-    els.mcpToolsList.innerHTML = '<div style="color: var(--subtle);">暂无可用工具，请连接 server 后刷新</div>';
-    return;
-  }
-  els.mcpToolsList.innerHTML = mcpToolsCache.map((t) => {
-    const server = escapeHtmlText(t.serverId);
-    const name = escapeHtmlText(t.toolName);
-    const desc = escapeHtmlText(t.description || '').slice(0, 80);
-    return `<div style="padding: 4px 6px; margin-bottom: 2px; border-left: 2px solid rgba(255,255,255,0.2); padding-left: 6px;">
-      <div><strong>${name}</strong> <span style="color: var(--subtle); font-size: 10px;">@${server}</span></div>
-      ${desc ? `<div style="color: var(--subtle); font-size: 10px;">${desc}</div>` : ''}
-    </div>`;
-  }).join('');
-}
-
-function editMcpServer(id) {
-  const server = mcpServersCache.find((s) => s.id === id);
-  if (!server) return;
-  if (els.mcpEditId) {
-    els.mcpEditId.value = server.id;
-    els.mcpEditId.disabled = true;
-  }
-  if (els.mcpEditName) els.mcpEditName.value = server.name || '';
-  if (els.mcpEditCommand) els.mcpEditCommand.value = server.command || '';
-  if (els.mcpEditArgs) els.mcpEditArgs.value = Array.isArray(server.args) ? server.args.join(' ') : '';
-  if (els.mcpEditEnabled) els.mcpEditEnabled.checked = server.enabled !== false;
-  if (els.mcpCallServerId && !els.mcpCallServerId.value) els.mcpCallServerId.value = server.id;
-}
-
-async function saveMcpServer() {
-  const id = (els.mcpEditId?.value || '').trim();
-  const name = (els.mcpEditName?.value || '').trim();
-  const command = (els.mcpEditCommand?.value || '').trim();
-  const argsText = (els.mcpEditArgs?.value || '').trim();
-  const enabled = els.mcpEditEnabled?.checked !== false;
-  if (!id) {
-    setStatus(els.providerStatus, '请填写 MCP Server ID', 'error');
-    return;
-  }
-  if (!command) {
-    setStatus(els.providerStatus, '请填写启动命令', 'error');
-    return;
-  }
-  const args = argsText ? argsText.split(/\s+/).filter(Boolean) : [];
-  const serverConfig = {
-    id,
-    name: name || id,
-    transport: 'stdio',
-    command,
-    args,
-    enabled
-  };
-  try {
-    setStatus(els.providerStatus, '正在保存...', 'busy');
-    const remaining = mcpServersCache.filter((s) => s.id !== id);
-    remaining.push({ ...serverConfig, connected: false, toolCount: 0 });
-    const { servers } = await apiRequest('/api/mcp/servers', {
-      method: 'PUT',
-      body: { servers: remaining }
-    });
-    mcpServersCache = servers || [];
-    renderMcpServersList();
-    setStatus(els.providerStatus, 'MCP 配置已保存', 'ok');
-    clearMcpForm();
-  } catch (error) {
-    setStatus(els.providerStatus, `保存失败：${error.message}`, 'error');
-  }
-}
-
-function clearMcpForm() {
-  if (els.mcpEditId) {
-    els.mcpEditId.value = '';
-    els.mcpEditId.disabled = false;
-  }
-  if (els.mcpEditName) els.mcpEditName.value = '';
-  if (els.mcpEditCommand) els.mcpEditCommand.value = '';
-  if (els.mcpEditArgs) els.mcpEditArgs.value = '';
-  if (els.mcpEditEnabled) els.mcpEditEnabled.checked = true;
-}
-
-async function deleteMcpServer(id) {
-  const remaining = mcpServersCache.filter((s) => s.id !== id);
-  try {
-    setStatus(els.providerStatus, '正在删除...', 'busy');
-    const { servers } = await apiRequest('/api/mcp/servers', {
-      method: 'PUT',
-      body: { servers: remaining }
-    });
-    mcpServersCache = servers || [];
-    renderMcpServersList();
-    renderMcpToolsList();
-    setStatus(els.providerStatus, 'MCP Server 已删除', 'ok');
-  } catch (error) {
-    setStatus(els.providerStatus, `删除失败：${error.message}`, 'error');
-  }
-}
-
-async function connectMcpServer(id) {
-  try {
-    setStatus(els.providerStatus, `正在连接 ${id}...`, 'busy');
-    const { tools } = await apiRequest(`/api/mcp/servers/${encodeURIComponent(id)}/connect`, { method: 'POST' });
-    setStatus(els.providerStatus, `${id} 已连接，共 ${tools?.length || 0} 个工具`, 'ok');
-    await renderMcpPanel();
-  } catch (error) {
-    setStatus(els.providerStatus, `连接失败：${error.message}`, 'error');
-  }
-}
-
-async function disconnectMcpServer(id) {
-  try {
-    await apiRequest(`/api/mcp/servers/${encodeURIComponent(id)}/disconnect`, { method: 'POST' });
-    setStatus(els.providerStatus, `${id} 已断开`, 'ok');
-    await renderMcpPanel();
-  } catch (error) {
-    setStatus(els.providerStatus, `断开失败：${error.message}`, 'error');
-  }
-}
-
-async function callMcpTool() {
-  if (!els.mcpCallResult) return;
-  const serverId = (els.mcpCallServerId?.value || '').trim();
-  const toolName = (els.mcpCallToolName?.value || '').trim();
-  const argsText = (els.mcpCallArgs?.value || '').trim();
-  if (!serverId || !toolName) {
-    els.mcpCallResult.innerHTML = '<div style="color: #f88;">请填写 Server ID 和工具名</div>';
-    return;
-  }
-  let args = {};
-  if (argsText) {
-    try {
-      args = JSON.parse(argsText);
-    } catch {
-      els.mcpCallResult.innerHTML = '<div style="color: #f88;">参数不是有效的 JSON</div>';
-      return;
-    }
-  }
-  els.mcpCallResult.innerHTML = '<div style="color: var(--subtle);">调用中...</div>';
-  if (els.mcpCallExecute) els.mcpCallExecute.disabled = true;
-  try {
-    const { result } = await apiRequest('/api/mcp/tools/call', {
-      method: 'POST',
-      body: { serverId, toolName, arguments: args }
-    });
-    const json = JSON.stringify(result, null, 2);
-    els.mcpCallResult.innerHTML = `<details><summary style="cursor: pointer; color: var(--gold, #f5d58d);">调用成功</summary><pre style="white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; font-size: 11px;">${escapeHtmlText(json)}</pre></details>`;
-  } catch (error) {
-    els.mcpCallResult.innerHTML = `<div style="color: #f88;">调用失败：${escapeHtmlText(error.message)}</div>`;
-  } finally {
-    if (els.mcpCallExecute) els.mcpCallExecute.disabled = false;
-  }
-}
-
-// ===== 语音 TTS / STT =====
-
-let sttMediaRecorder = null;
-let sttRecordedChunks = [];
-let sttRecordedBlob = null;
-let lastTtsAudioUrl = '';
-let lastSttText = '';
-
-function renderVoicePanel() {
-  const providersConfig = state.config.providers || {};
-  const providers = Array.isArray(providersConfig.providers) ? providersConfig.providers : [];
-  const optionsHtml = '<option value="">（使用默认 Provider）</option>' + providers.map((p) => {
-    const id = escapeHtmlText(p.id);
-    const label = escapeHtmlText(p.id + (p.model ? ` (${p.model})` : ''));
-    return `<option value="${id}">${label}</option>`;
-  }).join('');
-  if (els.ttsProvider) els.ttsProvider.innerHTML = optionsHtml;
-  if (els.sttProvider) els.sttProvider.innerHTML = optionsHtml;
-}
-
-async function speakTts() {
-  if (!els.ttsText || !els.ttsResult) return;
-  const text = els.ttsText.value.trim();
-  if (!text) {
-    setStatus(els.providerStatus, '请输入要朗读的文本', 'error');
-    return;
-  }
-  if (lastTtsAudioUrl) {
-    URL.revokeObjectURL(lastTtsAudioUrl);
-    lastTtsAudioUrl = '';
-  }
-  els.ttsSpeak.disabled = true;
-  els.ttsResult.innerHTML = '<div style="color: var(--subtle);">生成中...</div>';
-  try {
-    const response = await fetch('/api/voice/tts', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        text,
-        voice: els.ttsVoice?.value || 'alloy',
-        format: els.ttsFormat?.value || 'mp3',
-        providerId: els.ttsProvider?.value || ''
-      })
-    });
-    if (!response.ok) {
-      let errMsg;
-      try { errMsg = (await response.json()).error || `HTTP ${response.status}`; }
-      catch { errMsg = `HTTP ${response.status}`; }
-      throw new Error(errMsg);
-    }
-    const blob = await response.blob();
-    lastTtsAudioUrl = URL.createObjectURL(blob);
-    const format = els.ttsFormat?.value || 'mp3';
-    els.ttsResult.innerHTML = `<div style="text-align: center;">
-      <audio controls autoplay src="${lastTtsAudioUrl}" style="width: 100%; max-width: 320px;"></audio>
-      <div style="margin-top: 4px; font-size: 11px; color: var(--subtle);">${format} · ${(blob.size / 1024).toFixed(1)} KB</div>
-      <a href="${lastTtsAudioUrl}" download="tts.${format}" style="font-size: 11px;">下载</a>
-    </div>`;
-    setStatus(els.providerStatus, '语音生成成功', 'ok');
-  } catch (error) {
-    els.ttsResult.innerHTML = `<div style="color: #f88;">生成失败：${escapeHtmlText(humanizeApiError(error))}</div>`;
-  } finally {
-    els.ttsSpeak.disabled = false;
-  }
-}
-
-async function startSttRecording() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    setStatus(els.providerStatus, '当前环境不支持录音', 'error');
-    return;
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    sttRecordedChunks = [];
-    sttMediaRecorder = new MediaRecorder(stream);
-    sttMediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) sttRecordedChunks.push(e.data);
-    };
-    sttMediaRecorder.onstop = () => {
-      sttRecordedBlob = new Blob(sttRecordedChunks, { type: sttMediaRecorder.mimeType || 'audio/webm' });
-      stream.getTracks().forEach((t) => t.stop());
-      if (els.sttTranscribe) els.sttTranscribe.disabled = false;
-      if (els.sttResult) {
-        els.sttResult.innerHTML = `<div style="color: var(--subtle);">已录制 ${(sttRecordedBlob.size / 1024).toFixed(1)} KB，点击"转写"</div>`;
-      }
-    };
-    sttMediaRecorder.start();
-    if (els.sttRecord) els.sttRecord.disabled = true;
-    if (els.sttStopRecord) els.sttStopRecord.disabled = false;
-    if (els.sttTranscribe) els.sttTranscribe.disabled = true;
-    if (els.sttResult) els.sttResult.innerHTML = '<div style="color: var(--subtle);">录音中...</div>';
-  } catch (error) {
-    setStatus(els.providerStatus, `录音失败：${error.message}`, 'error');
-  }
-}
-
-function stopSttRecording() {
-  if (sttMediaRecorder && sttMediaRecorder.state !== 'inactive') {
-    sttMediaRecorder.stop();
-  }
-  if (els.sttRecord) els.sttRecord.disabled = false;
-  if (els.sttStopRecord) els.sttStopRecord.disabled = true;
-}
-
-function onSttFileSelected() {
-  if (els.sttAudioInput?.files?.length) {
-    sttRecordedBlob = els.sttAudioInput.files[0];
-    if (els.sttTranscribe) els.sttTranscribe.disabled = false;
-    if (els.sttResult) {
-      els.sttResult.innerHTML = `<div style="color: var(--subtle);">已选择文件 ${escapeHtmlText(sttRecordedBlob.name)} (${(sttRecordedBlob.size / 1024).toFixed(1)} KB)</div>`;
-    }
-  }
-}
-
-async function transcribeStt() {
-  if (!els.sttResult) return;
-  if (!sttRecordedBlob) {
-    els.sttResult.innerHTML = '<div style="color: #f88;">请先录音或选择音频文件</div>';
-    return;
-  }
-  els.sttResult.innerHTML = '<div style="color: var(--subtle);">识别中...</div>';
-  if (els.sttTranscribe) els.sttTranscribe.disabled = true;
-  try {
-    const formData = new FormData();
-    formData.append('audio', sttRecordedBlob, sttRecordedBlob.name || 'audio.webm');
-    const providerId = els.sttProvider?.value || '';
-    if (providerId) formData.append('providerId', providerId);
-    const language = els.sttLanguage?.value || '';
-    if (language) formData.append('language', language);
-    const response = await fetch('/api/voice/stt', { method: 'POST', body: formData });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-    lastSttText = String(payload.text || '').trim();
-    els.sttResult.innerHTML = `<details open><summary style="cursor: pointer; color: var(--gold, #f5d58d);">识别结果</summary><div style="padding: 8px; background: rgba(255,255,255,0.03); border-radius: 4px; white-space: pre-wrap; word-break: break-word;">${escapeHtmlText(lastSttText)}</div></details>`;
-    if (els.sttInsertToInput) els.sttInsertToInput.disabled = !lastSttText;
-    setStatus(els.providerStatus, '语音识别完成', 'ok');
-  } catch (error) {
-    els.sttResult.innerHTML = `<div style="color: #f88;">识别失败：${escapeHtmlText(error.message)}</div>`;
-  } finally {
-    if (els.sttTranscribe) els.sttTranscribe.disabled = false;
-  }
-}
-
-function insertSttToChatInput() {
-  if (!lastSttText || !els.chatInput) return;
-  const current = els.chatInput.value;
-  els.chatInput.value = current ? `${current}\n${lastSttText}` : lastSttText;
-  setStatus(els.providerStatus, '已插入到输入框', 'ok');
+  }[character]));
 }
 
 function getExistingProvider() {
@@ -6602,346 +8572,19 @@ async function deletePromptPresetFavorite() {
 }
 
 function renderWorldbookEntries() {
-  if (!els.worldbookEntriesList) return;
-  const entries = Array.isArray(state.config?.worldBook) ? state.config.worldBook : [];
-  els.worldbookEntriesList.innerHTML = '';
-  syncWorldbookTypeFilter(entries);
-
-  const query = String(els.worldbookSearch?.value || '').trim().toLowerCase();
-  const typeFilter = String(els.worldbookTypeFilter?.value || '');
-  const visibleEntries = entries
-    .map((entry, index) => ({ entry, index }))
-    .filter(({ entry }) => {
-      const type = normalizeWorldbookType(entry?.type);
-      if (typeFilter && type !== typeFilter) return false;
-      if (!query) return true;
-      const haystack = [
-        entry?.title,
-        entry?.content,
-        WORLD_BOOK_TYPE_LABELS[type],
-        ...(Array.isArray(entry?.keywords) ? entry.keywords : []),
-        ...(Array.isArray(entry?.secondaryKeywords) ? entry.secondaryKeywords : [])
-      ].filter(Boolean).join(' ').toLowerCase();
-      return haystack.includes(query);
-    });
-
-  if (els.worldbookBrowserCount) {
-    const typeCount = new Set(entries.map((entry) => normalizeWorldbookType(entry?.type))).size;
-    els.worldbookBrowserCount.textContent = query || typeFilter
-      ? `${visibleEntries.length} / ${entries.length} 条`
-      : `${entries.length} 条 · ${typeCount} 类`;
-  }
-
-  if (!entries.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.style.padding = '12px';
-    empty.textContent = '暂无世界书条目，点击「新增条目」创建。';
-    els.worldbookEntriesList.append(empty);
-    return;
-  }
-
-  if (!visibleEntries.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.style.padding = '12px';
-    empty.textContent = '没有符合当前搜索或类型筛选的条目。';
-    els.worldbookEntriesList.append(empty);
-    return;
-  }
-
-  const groupedEntries = new Map();
-  visibleEntries.forEach((item) => {
-    const type = normalizeWorldbookType(item.entry?.type);
-    if (!groupedEntries.has(type)) groupedEntries.set(type, []);
-    groupedEntries.get(type).push(item);
-  });
-
-  const typeOrder = Object.keys(WORLD_BOOK_TYPE_LABELS);
-  const groups = [...groupedEntries.entries()].sort(([left], [right]) => {
-    const leftIndex = typeOrder.indexOf(left);
-    const rightIndex = typeOrder.indexOf(right);
-    return (leftIndex < 0 ? typeOrder.length : leftIndex) - (rightIndex < 0 ? typeOrder.length : rightIndex);
-  });
-
-  groups.forEach(([type, items], groupIndex) => {
-    const group = document.createElement('details');
-    group.className = 'worldbook-entry-group';
-    group.open = Boolean(query || typeFilter || groupIndex < 2);
-
-    const summary = document.createElement('summary');
-    summary.className = 'worldbook-entry-group-summary';
-    const label = document.createElement('span');
-    label.textContent = WORLD_BOOK_TYPE_LABELS[type] || type;
-    const count = document.createElement('span');
-    count.className = 'worldbook-entry-group-count';
-    count.textContent = `${items.length} 条`;
-    summary.append(label, count);
-    group.append(summary);
-
-    const groupBody = document.createElement('div');
-    groupBody.className = 'worldbook-entry-group-body';
-    items.forEach(({ entry, index }) => groupBody.append(createWorldbookEntryRow(entry, index)));
-    group.append(groupBody);
-    els.worldbookEntriesList.append(group);
-  });
-
-  els.worldbookEntriesList.querySelectorAll('[data-edit-entry]').forEach((btn) => {
-    btn.addEventListener('click', () => editWorldbookEntry(Number(btn.dataset.editEntry)));
-  });
-  els.worldbookEntriesList.querySelectorAll('[data-del-entry]').forEach((btn) => {
-    btn.addEventListener('click', () => deleteWorldbookEntry(Number(btn.dataset.delEntry)));
-  });
-}
-
-function createWorldbookEntryRow(entry, index) {
-    const row = document.createElement('div');
-    row.className = 'worldbook-entry-row';
-    if (entry.enabled === false) row.classList.add('disabled');
-
-    const head = document.createElement('div');
-    head.className = 'worldbook-entry-head';
-
-    const title = document.createElement('span');
-    title.className = 'worldbook-entry-title';
-    title.textContent = entry.title || '未命名条目';
-    head.append(title);
-
-    const mode = document.createElement('span');
-    mode.className = 'wb-tag';
-    mode.textContent = entry.constant ? '常驻' : (entry.matchMode || 'keyword');
-    head.append(mode);
-
-    if (entry.enabled === false) {
-      const d = document.createElement('span');
-      d.className = 'wb-tag disabled-tag';
-      d.textContent = '已禁用';
-      head.append(d);
-    }
-
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'ghost-button compact';
-    edit.textContent = '编辑';
-    edit.dataset.editEntry = String(index);
-    head.append(edit);
-
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'ghost-button compact';
-    del.textContent = '删除';
-    del.dataset.delEntry = String(index);
-    head.append(del);
-
-    row.append(head);
-
-    const meta = document.createElement('div');
-    meta.className = 'worldbook-entry-meta';
-    const parts = [];
-    if (Array.isArray(entry.keywords) && entry.keywords.length) parts.push(`关键词: ${entry.keywords.slice(0, 3).join('、')}${entry.keywords.length > 3 ? '…' : ''}`);
-    if (Array.isArray(entry.regex) && entry.regex.length) parts.push(`正则: ${entry.regex.slice(0, 2).join(' | ')}`);
-    if (Array.isArray(entry.secondaryKeywords) && entry.secondaryKeywords.length) parts.push(`次关键词: ${entry.secondaryKeywords.slice(0, 2).join('、')}`);
-    parts.push(`优先级: ${entry.priority ?? 50}`);
-    parts.push(`深度: ${entry.depth ?? 4}`);
-    if (entry.logic && entry.logic !== 'any') parts.push(`逻辑: ${entry.logic}`);
-    meta.textContent = parts.join(' · ');
-    row.append(meta);
-
-    const preview = document.createElement('p');
-    preview.className = 'worldbook-entry-preview';
-    preview.textContent = String(entry.content || '').trim().replace(/\s*\n+\s*/g, ' · ');
-    if (preview.textContent) row.append(preview);
-
-    return row;
-}
-
-function normalizeWorldbookType(type) {
-  const safeType = String(type || 'other').trim() || 'other';
-  return WORLD_BOOK_TYPE_LABELS[safeType] ? safeType : 'other';
-}
-
-function syncWorldbookTypeFilter(entries) {
-  if (!els.worldbookTypeFilter) return;
-  const selected = els.worldbookTypeFilter.value;
-  const types = [...new Set(entries.map((entry) => normalizeWorldbookType(entry?.type)))];
-  const typeOrder = Object.keys(WORLD_BOOK_TYPE_LABELS);
-  types.sort((left, right) => typeOrder.indexOf(left) - typeOrder.indexOf(right));
-  els.worldbookTypeFilter.innerHTML = '';
-  const all = document.createElement('option');
-  all.value = '';
-  all.textContent = '全部类型';
-  els.worldbookTypeFilter.append(all);
-  types.forEach((type) => {
-    const option = document.createElement('option');
-    option.value = type;
-    option.textContent = WORLD_BOOK_TYPE_LABELS[type] || type;
-    els.worldbookTypeFilter.append(option);
-  });
-  if (!selected || types.includes(selected)) els.worldbookTypeFilter.value = selected;
+  return worldbookController.renderWorldbookEntries();
 }
 
 function editWorldbookEntry(index) {
-  const entries = Array.isArray(state.config?.worldBook) ? [...state.config.worldBook] : [];
-  const entry = entries[index];
-  if (!entry) return;
-  openWorldbookEntryEditor(entry, (updated) => {
-    if (updated === null) return;
-    entries[index] = updated;
-    state.config.worldBook = entries;
-    els.worldbookEditor.value = prettyJson(entries);
-    renderWorldbookEntries();
-  });
+  return worldbookController.editWorldbookEntry(index);
 }
 
 function deleteWorldbookEntry(index) {
-  const entries = Array.isArray(state.config?.worldBook) ? [...state.config.worldBook] : [];
-  if (!entries[index]) return;
-  if (!confirm(`确认删除「${entries[index].title || '未命名条目'}」？`)) return;
-  entries.splice(index, 1);
-  state.config.worldBook = entries;
-  els.worldbookEditor.value = prettyJson(entries);
-  renderWorldbookEntries();
-  setStatus(els.worldbookStatus, '已删除条目（请点击「保存世界书」持久化）', 'ok');
+  return worldbookController.deleteWorldbookEntry(index);
 }
 
 function openWorldbookEntryEditor(entry, onDone) {
-  const overlay = document.createElement('div');
-  overlay.className = 'wb-editor-overlay';
-
-  const dialog = document.createElement('div');
-  dialog.className = 'wb-editor-dialog';
-
-  const title = document.createElement('h4');
-  title.textContent = '编辑世界书条目';
-  title.style.cssText = 'margin: 0 0 12px 0; color: var(--gold, #f5d58d);';
-  dialog.append(title);
-
-  const body = document.createElement('div');
-  body.className = 'wb-editor-body';
-  dialog.append(body);
-
-  const fields = [
-    { key: 'title', label: '标题', type: 'text' },
-    { key: 'type', label: '类型', type: 'text', placeholder: 'memory/faction/location/...' },
-    { key: 'content', label: '内容', type: 'textarea', rows: 5 },
-    { key: 'keywords', label: '主关键词（逗号分隔）', type: 'csv' },
-    { key: 'regex', label: '正则触发器（逗号分隔）', type: 'csv' },
-    { key: 'secondaryKeywords', label: '次关键词（逗号分隔）', type: 'csv' },
-    { key: 'matchMode', label: '匹配模式', type: 'select', options: ['keyword', 'regex', 'selective'] },
-    { key: 'logic', label: '逻辑', type: 'select', options: ['any', 'all', 'not', 'not all'] },
-    { key: 'priority', label: '优先级 (0-100)', type: 'number' },
-    { key: 'depth', label: '插入深度', type: 'number' },
-    { key: 'position', label: '位置', type: 'select', options: ['after_character', 'before_character', 'at_end', 'at_start'] }
-  ];
-
-  const inputs = {};
-  fields.forEach((f) => {
-    const label = document.createElement('label');
-    label.style.cssText = 'display: block; margin-bottom: 10px; font-size: 12px;';
-    const span = document.createElement('span');
-    span.textContent = f.label;
-    span.style.cssText = 'display: block; margin-bottom: 4px; color: var(--subtle);';
-    label.append(span);
-
-    let input;
-    if (f.type === 'textarea') {
-      input = document.createElement('textarea');
-      input.rows = f.rows || 3;
-      input.value = entry[f.key] || '';
-    } else if (f.type === 'select') {
-      input = document.createElement('select');
-      f.options.forEach((opt) => {
-        const o = document.createElement('option');
-        o.value = opt;
-        o.textContent = opt;
-        if (entry[f.key] === opt) o.selected = true;
-        input.append(o);
-      });
-      if (!entry[f.key] && f.key === 'matchMode') input.value = 'keyword';
-      if (!entry[f.key] && f.key === 'logic') input.value = 'any';
-      if (!entry[f.key] && f.key === 'position') input.value = 'after_character';
-    } else if (f.type === 'csv') {
-      input = document.createElement('input');
-      input.type = 'text';
-      input.value = Array.isArray(entry[f.key]) ? entry[f.key].join(', ') : '';
-    } else if (f.type === 'number') {
-      input = document.createElement('input');
-      input.type = 'number';
-      input.value = entry[f.key] ?? (f.key === 'priority' ? 50 : 4);
-    } else {
-      input = document.createElement('input');
-      input.type = 'text';
-      input.value = entry[f.key] || '';
-      if (f.placeholder) input.placeholder = f.placeholder;
-    }
-    input.className = 'form-input';
-    input.style.cssText = 'width: 100%;';
-    label.append(input);
-    body.append(label);
-    inputs[f.key] = input;
-  });
-
-  // 复选框
-  const checkboxRow = document.createElement('div');
-  checkboxRow.style.cssText = 'display: flex; gap: 16px; margin-bottom: 12px;';
-  [
-    { key: 'enabled', label: '启用', default: true },
-    { key: 'constant', label: '常驻', default: false },
-    { key: 'caseSensitive', label: '区分大小写', default: false }
-  ].forEach((opt) => {
-    const lbl = document.createElement('label');
-    lbl.style.cssText = 'display: flex; gap: 4px; align-items: center; font-size: 12px;';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = entry[opt.key] !== undefined ? entry[opt.key] : opt.default;
-    lbl.append(cb);
-    const txt = document.createElement('span');
-    txt.textContent = opt.label;
-    lbl.append(txt);
-    checkboxRow.append(lbl);
-    inputs[opt.key] = cb;
-  });
-  body.append(checkboxRow);
-
-  // 按钮
-  const btnRow = document.createElement('div');
-  btnRow.className = 'wb-editor-actions';
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.className = 'ghost-button compact';
-  cancelBtn.textContent = '取消';
-  cancelBtn.addEventListener('click', () => {
-    overlay.remove();
-    onDone(null);
-  });
-  const okBtn = document.createElement('button');
-  okBtn.type = 'button';
-  okBtn.className = 'primary-button compact';
-  okBtn.textContent = '确定';
-  okBtn.addEventListener('click', () => {
-    const updated = { ...entry };
-    fields.forEach((f) => {
-      const v = inputs[f.key].value;
-      if (f.type === 'csv') {
-        updated[f.key] = String(v).split(',').map((s) => s.trim()).filter(Boolean);
-      } else if (f.type === 'number') {
-        const n = Number(v);
-        updated[f.key] = Number.isFinite(n) ? n : (f.key === 'priority' ? 50 : 4);
-      } else {
-        updated[f.key] = String(v).trim();
-      }
-    });
-    updated.enabled = inputs.enabled.checked;
-    updated.constant = inputs.constant.checked;
-    updated.caseSensitive = inputs.caseSensitive.checked;
-    overlay.remove();
-    onDone(updated);
-  });
-  btnRow.append(cancelBtn, okBtn);
-  dialog.append(btnRow);
-
-  overlay.append(dialog);
-  document.body.append(overlay);
+  return worldbookController.openWorldbookEntryEditor(entry, onDone);
 }
 
 function renderGroupMembers() {
@@ -7140,10 +8783,18 @@ function resetCharacterCardTemplate() {
   setStatus(els.characterCardStatus, '已套用角色卡模板，编辑后保存', 'ok');
 }
 
-async function importCharacterCardFile(input = els.characterCardImport) {
+function getImportStatusTarget(intent = pendingImportIntent) {
+  return intent === 'create-story' ? (els.storyCustomStatus || els.storyLauncherStatus) : els.characterCardStatus;
+}
+
+async function importCharacterCardFile(input = els.characterCardImport, options = {}) {
   const file = input?.files?.[0];
   if (!file) return;
-  setStatus(els.characterCardStatus, '正在解析导入文件...', 'busy');
+  const intent = options.intent === 'create-story' ? 'create-story' : '';
+  const statusTarget = getImportStatusTarget(intent);
+  pendingImportIntent = intent;
+  pendingImportBasePackId = intent ? String(options.basePackId || '') : '';
+  setStatus(statusTarget, intent ? '正在评定剧本素材...' : '正在解析导入文件...', 'busy');
   setImportButtonsDisabled(true);
   try {
     const data = await readFileAsDataUrl(file);
@@ -7162,10 +8813,10 @@ async function importCharacterCardFile(input = els.characterCardImport) {
     pendingImportPayload = importPayload;
     pendingImportSource = { site: 'local-file', fileName: file.name };
     renderImportPreview(payload.preview);
-    setStatus(els.characterCardStatus, '导入预览已生成，请确认后写入', 'ok');
+    setStatus(statusTarget, intent ? '素材评定完成，确认后会回填到自定义剧本配置。' : '导入预览已生成，请确认后写入', 'ok');
   } catch (error) {
     clearPendingImport({ resetFile: false });
-    setStatus(els.characterCardStatus, `解析失败：${humanizeApiError(error)}`, 'error');
+    setStatus(statusTarget, `解析失败：${humanizeApiError(error)}`, 'error');
   } finally {
     if (input) input.value = '';
     setImportButtonsDisabled(false);
@@ -7174,51 +8825,173 @@ async function importCharacterCardFile(input = els.characterCardImport) {
 
 async function commitPendingImport() {
   if (!pendingImportPayload) {
-    setStatus(els.characterCardStatus, '没有待确认的导入内容', 'error');
+    setStatus(getImportStatusTarget(), '没有待确认的导入内容', 'error');
     return;
   }
 
-  setStatus(els.characterCardStatus, '正在写入导入内容...', 'busy');
+  const importIntent = pendingImportIntent;
+  const importBasePackId = pendingImportBasePackId;
+  const importSource = pendingImportSource || {};
+  const statusTarget = getImportStatusTarget(importIntent);
+  setStatus(statusTarget, importIntent === 'create-story' ? '正在入库并准备自定义剧本...' : '正在写入导入内容...', 'busy');
   setImportButtonsDisabled(true);
   try {
     const isPackageImport = pendingImportKind === 'plugin-manifest' || pendingImportKind === 'content-pack';
-    const applyToActiveConfig = !isPackageImport && els.importApplyCurrent?.checked === true;
+    const applyToActiveConfig = importIntent !== 'create-story' && !isPackageImport && els.importApplyCurrent?.checked === true;
     const payload = await apiRequest('/api/import/commit', {
       method: 'POST',
       body: {
         payload: pendingImportPayload,
-        source: pendingImportSource || {},
+        source: importSource,
+        sessionId: currentSessionId,
         applyToActiveConfig
       }
     });
-    await loadResourceLibrary();
+    if (importIntent === 'create-story') {
+      if (pendingImportKind === 'content-pack') {
+        const result = await createStoryFromCommittedImport(payload, {
+          basePackId: importBasePackId,
+          source: importSource
+        });
+        clearPendingImport({ resetFile: false });
+        setStatus(els.appStatus, `已建立《${result.project.title}》，请从封面进入主角塑成。`, 'ok');
+        return;
+      }
+      const staged = stageStoryResourcesFromCommittedImport(payload, {
+        basePackId: importBasePackId,
+        source: importSource
+      });
+      clearPendingImport({ resetFile: false });
+      await loadResourceLibrary();
+      renderStoryLauncher();
+      openStoryLauncher({ focusSearch: false });
+      openCustomStoryDialog({ resetStatus: false });
+      setStatus(
+        els.storyCustomStatus,
+        `已载入 ${staged.resourceCount} 份素材。请审阅缺失项，然后点击“创建剧本并进入”。`,
+        'ok'
+      );
+      return;
+    }
     const importKind = pendingImportKind;
+    const applied = payload.applyMode === 'active-config';
     clearPendingImport({ resetFile: false });
+    if (applied) await loadState();
+    else await loadResourceLibrary();
     const count = Number(payload.importedWorldBookCount || 0);
     const created = (payload.libraryResources || []).filter((item) => item.importStatus === 'created').length;
+    const updated = (payload.libraryResources || []).filter((item) => item.importStatus === 'updated').length;
     const duplicates = (payload.libraryResources || []).filter((item) => item.importStatus === 'duplicate').length;
-    const applied = payload.applyMode === 'active-config';
     const installAction = payload.installStatus === 'updated' ? '已更新' : payload.installStatus === 'duplicate' ? '已存在' : '已安装';
     const resultText = payload.applyMode === 'plugin-registry'
       ? `${installAction}扩展：${payload.plugin?.name || payload.plugin?.id || '未命名插件'} v${payload.plugin?.version || ''}`
       : payload.applyMode === 'content-pack-library'
         ? `${installAction}内容包：${payload.pack?.title || payload.pack?.id || '未命名内容包'} v${payload.pack?.version || ''}`
         : applied
-          ? `已入库并载入：新增 ${created}，重复 ${duplicates}，世界书 ${count} 条`
-          : `已存入素材库：新增 ${created}，重复 ${duplicates}`;
-    setStatus(els.characterCardStatus, resultText, 'ok');
+          ? `已入库并载入：新增 ${created}，更新 ${updated}，重复 ${duplicates}，世界书 ${count} 条`
+          : `已存入素材库：新增 ${created}，更新 ${updated}，重复 ${duplicates}`;
+    setStatus(statusTarget, resultText, 'ok');
     setStatus(els.resourceLibraryStatus, resultText, 'ok');
     activateTab('sources');
     activateResourceView(importKind === 'plugin-manifest' ? 'extensions' : importKind === 'content-pack' ? 'composer' : 'library');
   } catch (error) {
-    setStatus(els.characterCardStatus, `导入失败：${humanizeApiError(error)}`, 'error');
+    const prefix = importIntent === 'create-story' ? '创建失败' : '导入失败';
+    setStatus(statusTarget, `${prefix}：${humanizeApiError(error)}`, 'error');
   } finally {
     setImportButtonsDisabled(false);
   }
 }
 
+function stageStoryResourcesFromCommittedImport(payload, { basePackId, source = {} } = {}) {
+  if (payload.preview?.kind === 'plugin-manifest') {
+    throw new Error('插件清单不能直接创建剧本，请从扩展页安装');
+  }
+  const resources = Array.isArray(payload.libraryResources) ? payload.libraryResources : [];
+  const character = resources.find((resource) => resource.kind === 'character');
+  const worldBooks = resources.filter((resource) => resource.kind === 'worldbook');
+  if (!character && !worldBooks.length) throw new Error('导入内容中没有可用于剧本的角色卡或世界书');
+
+  const availableBase = basePackId === CUSTOM_STORY_BASE_PACK_ID
+    || (state.contentPacks || []).some((pack) => pack.id === basePackId && pack.custom !== true);
+  if (!availableBase) throw new Error('所选题材基线已不可用，请返回书架重新选择');
+  state.customStoryDraft.basePackId = basePackId;
+  if (character) state.customStoryDraft.characterResourceId = character.id;
+  state.customStoryDraft.worldBookResourceIds = Array.from(new Set([
+    ...state.customStoryDraft.worldBookResourceIds,
+    ...worldBooks.map((resource) => resource.id)
+  ]));
+  state.customStoryDraft.title = getImportedStoryTitle(payload.preview, source);
+  state.customStoryDraft.titleCustomized = false;
+  invalidateCustomStoryInspection();
+  persistCustomStoryDraft();
+  return { resourceCount: resources.length, character, worldBooks };
+}
+
+async function createStoryFromCommittedImport(payload, { basePackId, source = {} } = {}) {
+  if (payload.preview?.kind === 'plugin-manifest') {
+    throw new Error('插件清单不能直接创建剧本，请从扩展页安装');
+  }
+
+  let pack = payload.pack || null;
+  if (!pack) {
+    const resources = Array.isArray(payload.libraryResources) ? payload.libraryResources : [];
+    const character = resources.find((resource) => resource.kind === 'character');
+    const worldBooks = resources.filter((resource) => resource.kind === 'worldbook');
+    if (!character && !worldBooks.length) throw new Error('导入内容中没有可用于剧本的角色卡或世界书');
+
+    const isOriginal = basePackId === CUSTOM_STORY_BASE_PACK_ID;
+    const basePack = (state.contentPacks || []).find((item) => item.id === basePackId);
+    if (!isOriginal && !basePack) throw new Error('所选题材基线已不可用，请返回书架重新选择');
+    const title = getImportedStoryTitle(payload.preview, source);
+    const packPayload = await apiRequest('/api/resource-library/packs', {
+      method: 'POST',
+      body: {
+        title,
+        sessionTitle: title,
+        description: isOriginal
+          ? '由导入素材创建的原创剧本。'
+          : `由本地素材创建，继承《${basePack.title || basePack.id}》的规则基线。`,
+        basePackId: isOriginal ? '' : basePackId,
+        characterResourceId: character?.id || '',
+        worldBookResourceIds: worldBooks.map((resource) => resource.id),
+        promptResourceIds: [],
+        includeBaseContent: true,
+        worldBookMergeMode: state.customStoryDraft.worldBookMergeMode,
+        visualPackId: isOriginal ? state.customStoryDraft.customBaseline.visualPackId : '',
+        customBaseline: isOriginal ? state.customStoryDraft.customBaseline : null
+      }
+    });
+    pack = packPayload.pack;
+  }
+
+  const result = await createAndOpenStoryProject(pack);
+  return { pack, project: result.project, session: result.session };
+}
+
+function getImportedStoryTitle(preview = {}, source = {}) {
+  const summary = preview.summary || {};
+  const fileTitle = String(source.fileName || '')
+    .replace(/\.(?:json|png|ya?ml|txt)$/i, '')
+    .trim();
+  if (preview.kind === 'character-card') {
+    return `${summary.characterName || fileTitle || '新角色'}的故事`;
+  }
+  if (preview.kind === 'world-book') {
+    const previewTitle = String(preview.title || '').trim();
+    return previewTitle && previewTitle !== '导入的世界书'
+      ? previewTitle
+      : (fileTitle || summary.titles?.[0] || '自定义世界');
+  }
+  return preview.title || fileTitle || '自定义剧本';
+}
+
 function cancelPendingImport() {
+  const importIntent = pendingImportIntent;
   clearPendingImport();
+  if (importIntent === 'create-story') {
+    setStatus(els.storyLauncherStatus, '已取消创建，自定义素材未写入。', 'ok');
+    return;
+  }
   const activeResourceView = els.resourceViewButtons.find((button) => button.classList.contains('active'))?.dataset.resourceView;
   activateResourceView(activeResourceView || 'library');
   setStatus(els.characterCardStatus, '已取消导入', 'ok');
@@ -7230,12 +9003,27 @@ function renderImportPreview(preview = {}) {
   const inspection = preview.inspection || {};
   const resources = Array.isArray(inspection.resources) ? inspection.resources : [];
   const isPackageImport = preview.kind === 'content-pack' || preview.kind === 'plugin-manifest';
+  const isStoryImport = pendingImportIntent === 'create-story';
   pendingImportKind = preview.kind || '';
-  pendingImportCanCommit = inspection.canImport !== false;
+  pendingImportCanCommit = inspection.canImport !== false && !(isStoryImport && preview.kind === 'plugin-manifest');
   els.importPreview.innerHTML = '';
+
+  if (els.importReviewKicker) els.importReviewKicker.textContent = isStoryImport ? '自定义世界' : '资源准入';
+  if (els.importReviewTitle) els.importReviewTitle.textContent = isStoryImport ? '剧本素材评定' : '导入评定';
 
   const assessment = document.createElement('section');
   assessment.className = 'import-assessment';
+  const portraitSource = preview.kind === 'character-card' && summary.hasEmbeddedPortrait
+    ? getPendingImportPortraitDataUrl()
+    : '';
+  if (portraitSource) {
+    const portrait = document.createElement('img');
+    portrait.className = 'import-character-portrait';
+    portrait.src = portraitSource;
+    portrait.alt = `${summary.characterName || '导入角色'}卡面预览`;
+    assessment.classList.add('has-portrait');
+    assessment.append(portrait);
+  }
   const score = document.createElement('div');
   score.className = `import-score import-score-${inspection.verdict || 'review'}`;
   const scoreValue = document.createElement('strong');
@@ -7308,6 +9096,13 @@ function renderImportPreview(preview = {}) {
     appendImportPreviewItem(list, '开场白', summary.firstMessage ? truncateText(summary.firstMessage, 72) : '无');
     appendImportPreviewItem(list, '标签', Array.isArray(summary.tags) && summary.tags.length ? summary.tags.join('、') : '无');
     appendImportPreviewItem(list, '附带世界书', `${Number(summary.worldBookCount || 0)} 条`);
+    appendImportPreviewItem(
+      list,
+      '角色图片',
+      summary.hasEmbeddedPortrait
+        ? `随卡导入${summary.portraitWidth && summary.portraitHeight ? ` · ${summary.portraitWidth}×${summary.portraitHeight}` : ''}`
+        : '未附带，将使用默认头像'
+    );
   } else if (preview.kind === 'world-book') {
     appendImportPreviewItem(list, '世界书条目', `${Number(summary.worldBookCount || 0)} 条`);
     appendImportPreviewItem(list, '标题示例', Array.isArray(summary.titles) && summary.titles.length ? summary.titles.join('、') : '无');
@@ -7333,6 +9128,14 @@ function renderImportPreview(preview = {}) {
       Array.isArray(summary.keywordSamples) && summary.keywordSamples.length ? summary.keywordSamples.join('、') : '无'
     );
     appendImportPreviewItem(list, '写入方式', summary.worldBookMode === 'append-dedupe' ? '追加并自动去重' : '按导入类型写入');
+  }
+  if (isStoryImport) {
+    const basePack = (state.contentPacks || []).find((pack) => pack.id === pendingImportBasePackId);
+    appendImportPreviewItem(
+      list,
+      '剧本基线',
+      preview.kind === 'content-pack' ? '使用内容包自身规则' : (basePack?.title || pendingImportBasePackId || '未选择')
+    );
   }
   appendImportPreviewItem(list, '格式适配', inspection.adapter?.label || inspection.adapter?.id || '通用适配');
   appendImportPreviewItem(list, '预计体量', `${formatTokenCount(inspection.estimatedTokens || 0)} tokens`);
@@ -7392,19 +9195,35 @@ function renderImportPreview(preview = {}) {
   appendImportNoticeSection(els.importPreview, '必须处理', blocking, 'danger');
   appendImportNoticeSection(els.importPreview, '建议审阅', warnings, 'warning');
   appendImportNoticeSection(els.importPreview, '执行隔离', risks, 'neutral');
+  if (isStoryImport && preview.kind === 'plugin-manifest') {
+    appendImportNoticeSection(els.importPreview, '不能创建剧本', [{
+      code: 'story-import-plugin-manifest',
+      message: '这是适配插件清单，不是角色卡、世界书或内容包。请从资源库的扩展页安装。'
+    }], 'danger');
+  }
 
   if (els.importReviewDialog) {
     els.importReviewDialog.dataset.verdict = inspection.verdict || 'review';
   }
   if (els.importApplyCurrent) els.importApplyCurrent.checked = false;
-  if (els.importApplyCurrent) els.importApplyCurrent.disabled = isPackageImport;
-  if (els.importApplyOption) els.importApplyOption.hidden = isPackageImport;
+  if (els.importApplyCurrent) els.importApplyCurrent.disabled = isPackageImport || isStoryImport;
+  if (els.importApplyOption) els.importApplyOption.hidden = isPackageImport || isStoryImport;
   els.confirmImport.hidden = false;
   els.cancelImport.hidden = false;
   setResourceFlowStep('review');
   updateImportActionLabel();
   setImportButtonsDisabled(false);
   if (els.importReviewDialog && !els.importReviewDialog.open) els.importReviewDialog.showModal();
+}
+
+function getPendingImportPortraitDataUrl() {
+  const payload = pendingImportPayload || {};
+  const mimeType = String(payload.mimeType || '').toLowerCase();
+  const data = String(payload.data || '');
+  if (!mimeType.includes('png') || !data) return '';
+  if (data.startsWith('data:image/png')) return data;
+  if (payload.encoding === 'base64') return `data:image/png;base64,${data}`;
+  return '';
 }
 
 function createImportResourceReport(resource) {
@@ -7466,6 +9285,8 @@ function clearPendingImport({ resetFile = true } = {}) {
   pendingImportSource = null;
   pendingImportCanCommit = false;
   pendingImportKind = '';
+  pendingImportIntent = '';
+  pendingImportBasePackId = '';
   els.importPreview.innerHTML = '';
   if (els.importReviewDialog?.open) els.importReviewDialog.close();
   if (els.importReviewDialog) delete els.importReviewDialog.dataset.verdict;
@@ -7474,8 +9295,11 @@ function clearPendingImport({ resetFile = true } = {}) {
     els.importApplyCurrent.disabled = false;
   }
   if (els.importApplyOption) els.importApplyOption.hidden = false;
+  if (els.importReviewKicker) els.importReviewKicker.textContent = '资源准入';
+  if (els.importReviewTitle) els.importReviewTitle.textContent = '导入评定';
   if (resetFile) {
     els.characterCardImport.value = '';
+    if (els.storyImportFile) els.storyImportFile.value = '';
     if (els.pluginManifestImport) els.pluginManifestImport.value = '';
   }
 }
@@ -7489,7 +9313,13 @@ function updateImportActionLabel() {
   if (!els.confirmImport) return;
   const verdict = els.importReviewDialog?.dataset.verdict;
   if (!pendingImportCanCommit) {
-    els.confirmImport.textContent = verdict === 'duplicate' ? '已在素材库' : '修正后再导入';
+    els.confirmImport.textContent = pendingImportIntent === 'create-story' && pendingImportKind === 'plugin-manifest'
+      ? '此文件不能创建剧本'
+      : verdict === 'duplicate' ? '已在素材库' : '修正后再导入';
+    return;
+  }
+  if (pendingImportIntent === 'create-story') {
+    els.confirmImport.textContent = pendingImportKind === 'content-pack' ? '安装并创建剧本' : '存入并继续配置';
     return;
   }
   if (pendingImportKind === 'plugin-manifest') {
@@ -8596,7 +10426,13 @@ async function applyContentPack() {
       els.randomProtagonistGenre.value = visualPackId;
     }
     await loadContentPackCharacterPresets(packId, { silent: true });
-    const visualPreset = await linkContentPackVisuals(visualPackId, { persist: true });
+    const stageBackground = getStoryStageBackground(payload.appliedPack);
+    const visualPreset = await linkContentPackVisuals(visualPackId, {
+      persist: true,
+      backgroundImage: stageBackground?.url,
+      backgroundFit: stageBackground?.fit,
+      backgroundSource: stageBackground?.source
+    });
     renderAll();
     setStatus(els.contentPackStatus, `已应用到会话：${payload.appliedPack?.title || packId} · 视觉：${visualPreset.label}`, 'ok');
     return payload;
@@ -8711,22 +10547,32 @@ async function savePromptModules() {
   }
 }
 
-async function startJourney(formData, tpl, destinyCards = []) {
+async function startJourney(formData, tpl, destinyCards = [], options = {}) {
   const draft = buildJourneyDraft(formData, tpl, destinyCards);
   state.pendingJourneyDraft = draft;
   els.chatInput.value = draft.promptText;
+  if (options.autoSend) {
+    await sendMessage();
+    return;
+  }
   renderMessages();
   els.chatInput.focus();
 }
 
 async function sendMessage() {
+  if (state.chatStreaming) {
+    setStatus(els.sessionStatus, '旁白仍在生成，可先继续起草下一步', 'busy');
+    return;
+  }
   const content = els.chatInput.value.trim();
   if (!content) return;
 
-  setStreamingState(true, 'Agent 正在生成...');
+  setStreamingState(true, originalOpeningStatus(state.pendingJourneyDraft));
+  const originalDraft = state.pendingJourneyDraft;
   state.pendingJourneyDraft = null;
   els.chatInput.value = '';
   const preview = appendStreamingPreview(content);
+  if (originalDraft) preview.userNode.hidden = true;
 
   try {
     const payload = await streamChat({
@@ -8742,6 +10588,7 @@ async function sendMessage() {
     renderTargetSpeakerIndicator();
     setStatus(els.appStatus, '对话已更新', 'ok');
   } catch (error) {
+    state.pendingJourneyDraft = originalDraft;
     renderMessages();
     setStatus(els.sessionStatus, `发送失败：${humanizeApiError(error)}`, 'error');
   } finally {
@@ -8755,7 +10602,23 @@ async function sendMessage() {
  * - chatInput / continueMessage / rewriteChatInput / refreshState
  */
 function setStreamingState(streaming, statusMsg) {
-  if (els.chatInput) els.chatInput.disabled = streaming;
+  state.chatStreaming = streaming;
+  if (els.chatForm) {
+    els.chatForm.classList.toggle('is-streaming', streaming);
+    els.chatForm.setAttribute('aria-busy', String(streaming));
+  }
+  if (els.sendMessageButton) {
+    els.sendMessageButton.disabled = streaming;
+    els.sendMessageButton.title = streaming ? '旁白生成中，可先输入下一步' : '发送';
+  }
+  if (els.composerStatus) {
+    els.composerStatus.hidden = !streaming;
+    els.composerStatus.textContent = streaming ? '旁白生成中 · 可继续起草' : '';
+  }
+  if (els.chatInput) {
+    els.chatInput.disabled = false;
+    els.chatInput.placeholder = streaming ? '旁白生成中，可先写下一步...' : '输入角色行动或旁白指令...';
+  }
   if (els.continueMessage) els.continueMessage.disabled = streaming;
   if (els.rewriteChatInput) els.rewriteChatInput.disabled = streaming;
   if (els.refreshState) els.refreshState.disabled = streaming;
@@ -8768,7 +10631,7 @@ async function continueLastMessage() {
   const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
   const lastMessage = messages[messages.length - 1];
   if (!lastMessage || lastMessage.role !== 'assistant') {
-    setStatus(els.sessionStatus, '最后一条消息不是 Agent 回复', 'error');
+    setStatus(els.sessionStatus, '最后一条消息不是旁白回复', 'error');
     return;
   }
 
@@ -8887,7 +10750,7 @@ function createPreviewNode(role, content) {
   meta.className = 'message-meta';
   const roleText = document.createElement('span');
   roleText.className = 'message-role';
-  roleText.textContent = role === 'user' ? '用户' : 'Agent';
+  roleText.textContent = role === 'user' ? '你' : '旁白';
   meta.append(roleText);
   const body = document.createElement('div');
   body.className = 'message-content';
@@ -8899,8 +10762,14 @@ function createPreviewNode(role, content) {
 function updateStreamingPreview(preview, token) {
   if (!preview?.contentNode) return;
   preview.content += token;
-  preview.contentNode.innerHTML = renderSafeMarkdown(preview.content);
+  const presentation = extractRoleplayPresentation(preview.content);
+  const visible = presentation.content || (presentation.protocolDetected ? '正在铺陈场景…' : preview.content);
+  preview.contentNode.innerHTML = renderSafeMarkdown(visible);
   els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function originalOpeningStatus(pendingDraft) {
+  return pendingDraft ? '正在依据设定生成第一幕...' : '故事正在续写...';
 }
 
 async function streamChat(body) {
@@ -9067,6 +10936,18 @@ function setWorkspacePanelExpanded(panelName, expanded, options = {}) {
   }
 }
 
+function openProviderSettings(sectionId = '') {
+  activateWorkMode('creative', { activateDefaultTab: false });
+  setWorkspacePanelExpanded('provider', true, { syncActiveView: true });
+  const section = sectionId ? document.getElementById(sectionId) : null;
+  if (section instanceof HTMLDetailsElement) section.open = true;
+  requestAnimationFrame(() => {
+    (section || els.providerPanel)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const focusTarget = section?.querySelector('input, select, button') || els.providerPreset;
+    focusTarget?.focus({ preventScroll: true });
+  });
+}
+
 function loadWorkMode() {
   try {
     const saved = localStorage.getItem('local-roleplay-agent-work-mode');
@@ -9090,6 +10971,7 @@ function activateWorkMode(mode, options = {}) {
     button.classList.toggle('active', active);
     button.setAttribute('aria-pressed', String(active));
   });
+  if (els.inspectorPanelTitle) els.inspectorPanelTitle.textContent = config.panelTitle;
 
   if (safeMode === 'creative' || safeMode === 'immersive') {
     setWorkspacePanelExpanded('provider', false);
@@ -9134,30 +11016,7 @@ function syncInspectorTabSelect(activeTab) {
 }
 
 function activateTab(tab) {
-  const tabButtons = Array.from(els.inspectorPanel?.querySelectorAll('.tab-button[data-tab]') || []);
-  const tabPanes = Array.from(els.inspectorPanel?.querySelectorAll('.tab-pane[data-pane]') || []);
-  if (!tabButtons.some((button) => button.dataset.tab === tab)
-    || !tabPanes.some((pane) => pane.dataset.pane === tab)) return false;
-
-  tabButtons.forEach((button) => {
-    const active = button.dataset.tab === tab;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-selected', String(active));
-    button.tabIndex = active ? 0 : -1;
-  });
-
-  tabPanes.forEach((pane) => {
-    const active = pane.dataset.pane === tab;
-    pane.classList.toggle('active', active);
-    pane.hidden = !active;
-  });
-  els.inspectorPanel?.classList.toggle('resource-workbench-open', tab === 'sources');
-  if (tab === 'sources') {
-    const activeResourceView = els.resourceViewButtons.find((button) => button.classList.contains('active'))?.dataset.resourceView;
-    activateResourceView(activeResourceView || 'library');
-  }
-  syncInspectorTabSelect(tab);
-  return true;
+  return inspectorController.activateTab(tab);
 }
 
 async function apiRequest(path, options = {}) {
@@ -9310,13 +11169,15 @@ function humanizeApiError(error) {
   if (error.code === 'NO_ACTIVE_PROVIDER') return '未配置可用 Provider';
   if (error.code === 'EMPTY_REWRITE_TEXT') return '请先输入要润色的内容';
   if (error.code === 'PROVIDER_ERROR') return 'Provider 调用失败';
+  if (error.code === 'PROVIDER_REASONING_ONLY_RESPONSE') return '模型只返回了推理过程，没有生成剧情正文；请提高 Max Tokens，或在 Provider 中关闭思考模式';
+  if (error.code === 'PROVIDER_EMPTY_RESPONSE') return '模型没有返回可显示的剧情正文，请重试或切换模型';
   if (error.code === 'PROVIDER_TEST_FAILED') return error.message || 'Provider 连接测试失败';
   if (error.code === 'BACKUP_NOT_FOUND') return '备份不存在';
   if (error.code === 'BACKUP_CHECKSUM_MISMATCH') return '备份校验失败，文件可能已损坏';
   if (error.code === 'BACKUP_OPERATION_IN_PROGRESS') return '已有备份或恢复操作正在执行';
   if (error.code?.startsWith('BACKUP_')) return `备份操作失败：${error.code}`;
   if (error.code === 'UNSUPPORTED_MEDIA_TYPE') return '请求格式错误';
-  if (error.code === 'INVALID_IMPORT_PAYLOAD') return '无法识别导入文件，请确认是 Character Card V2 PNG/JSON、YAML 角色卡、世界书 JSON 或文本世界书';
+  if (error.code === 'INVALID_IMPORT_PAYLOAD') return '无法识别导入文件，请确认是 Character Card V2/V3 PNG/JSON、YAML 角色卡、世界书 JSON 或文本世界书';
   if (error.code === 'IMPORT_SOURCE_NOT_FOUND') return '未知素材源';
   if (error.code === 'IMPORT_SOURCE_SEARCH_FAILED') return '素材源搜索失败';
   if (error.code === 'IMPORT_SOURCE_DOWNLOAD_FAILED') return '素材下载失败';

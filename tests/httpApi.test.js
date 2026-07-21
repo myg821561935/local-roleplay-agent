@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../server/app.js';
 import { migrateData } from '../server/data/migrations.js';
+import { exportCharacterCardPng } from '../server/character/characterCardExport.js';
 
 test('GET /api/state returns config and session', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
@@ -17,6 +18,95 @@ test('GET /api/state returns config and session', async () => {
   assert.equal(payload.session.id, 'main');
   assert.equal(Array.isArray(payload.config.promptModules), true);
   assert.equal(payload.config.characterCard.name, '未命名主角');
+  assert.equal(payload.session.authoring.spec, 'lra.authoring-ledger/v1');
+  assert.equal(payload.session.settings.activeAgentProfileId, 'story-director');
+});
+
+test('authoring API lists profiles and persists a session ledger', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const profilesResponse = await request(app, { url: '/api/agent-profiles' });
+  const saveResponse = await request(app, {
+    method: 'PUT',
+    url: '/api/sessions/main/authoring',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      agentProfileId: 'continuity-guard',
+      ledger: {
+        scene: {
+          title: '旧档房',
+          objective: '找到被抽走的卷宗',
+          mustHide: ['内应身份'],
+          forbidden: ['不要转成寻宝']
+        },
+        promises: [{ title: '旧案回响', status: 'open', importance: 'core' }],
+        decisions: [{ title: '主角控制权', decision: '不代替用户行动', status: 'active' }]
+      }
+    }
+  });
+  const readResponse = await request(app, { url: '/api/sessions/main/authoring' });
+  const saved = saveResponse.json();
+  const read = readResponse.json();
+
+  assert.equal(profilesResponse.status, 200);
+  assert.ok(profilesResponse.json().profiles.some((profile) => profile.id === 'character-ensemble'));
+  assert.equal(saveResponse.status, 200);
+  assert.equal(saved.summary.openPromises, 1);
+  assert.equal(saved.agentProfileId, 'continuity-guard');
+  assert.equal(readResponse.status, 200);
+  assert.equal(read.ledger.scene.title, '旧档房');
+  assert.deepEqual(read.ledger.scene.mustHide, ['内应身份']);
+  assert.equal(read.agentProfileId, 'continuity-guard');
+});
+
+test('story project API creates a pack-bound project and opening session', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const projectResponse = await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: 'xianxia', title: '太虚问道' }
+  });
+  const project = projectResponse.json().project;
+  const sessionResponse = await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+  const sessionPayload = sessionResponse.json();
+  const state = (await request(app, {
+    url: `/api/state?sessionId=${encodeURIComponent(sessionPayload.session.id)}`
+  })).json();
+  const projects = (await request(app, { url: '/api/story-projects' })).json().projects;
+  const sessions = (await request(app, { url: '/api/sessions' })).json();
+
+  assert.equal(projectResponse.status, 200);
+  assert.equal(sessionResponse.status, 200);
+  assert.equal(project.basePackId, 'xianxia');
+  assert.equal(sessionPayload.session.storyProjectId, project.id);
+  assert.equal(sessionPayload.session.basePackId, 'xianxia');
+  assert.equal(sessionPayload.session.settings.visualContentPack, 'xianxia');
+  assert.equal(state.config.characterCard.extensions.contentPack, 'xianxia');
+  assert.equal(state.session.memory.ruleSystem.contentPackId, 'xianxia');
+  assert.equal(projects[0].activeSessionId, sessionPayload.session.id);
+  assert.equal(projects[0].sessionCount, 1);
+  assert.ok(sessions.sessions.includes(sessionPayload.session.id));
+  assert.equal(sessions.sessionSummaries[0].storyProjectId, project.id);
+});
+
+test('story project API rejects an unknown base content pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: 'missing-pack' }
+  });
+
+  assert.equal(response.status, 404);
+  assert.equal(response.json().error, 'CONTENT_PACK_NOT_FOUND');
 });
 
 test('PUT /api/character-card saves character card', async () => {
@@ -161,6 +251,83 @@ test('POST /api/import/commit can store a resource without changing active creat
   assert.equal(payload.libraryResources.length, 2);
   assert.equal(library.resources.length, 2);
   assert.equal(state.config.characterCard.name, '未命名主角');
+});
+
+test('PNG character import persists its portrait through the session, library and custom story pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const png = exportCharacterCardPng({
+    name: '谢停云',
+    role: '问剑人',
+    description: '负剑入山的年轻修士。',
+    personality: '克制，敏锐。',
+    scenario: '正在追查失踪的同门。',
+    firstMessage: '山门外的雪没有停。',
+    tags: ['仙侠']
+  });
+
+  const committed = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'xie-tingyun.png',
+        mimeType: 'image/png',
+        data: png.toString('base64'),
+        encoding: 'base64'
+      },
+      sessionId: 'main'
+    }
+  });
+  const committedPayload = committed.json();
+  const portrait = committedPayload.characterCard.portrait;
+  const state = (await request(app, { url: '/api/state?sessionId=main' })).json();
+  const portraitResponse = await request(app, { url: portrait.url });
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const characterResource = resources.find((item) => item.kind === 'character');
+  const packResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '雪夜问剑',
+      basePackId: 'xianxia',
+      characterResourceId: characterResource.id,
+      worldBookResourceIds: [],
+      useCharacterPortraitAsBackground: true
+    }
+  });
+  const pack = packResponse.json().pack;
+  const projectResponse = await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: pack.id, title: '雪夜问剑' }
+  });
+  const project = projectResponse.json().project;
+  const sessionResponse = await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+
+  assert.equal(committed.status, 200);
+  assert.match(portrait.assetId, /^[a-f0-9]{64}$/);
+  assert.equal(portrait.width, 256);
+  assert.equal(portrait.height, 256);
+  assert.equal(state.config.characterCard.portrait.url, portrait.url);
+  assert.equal(characterResource.payload.portrait.url, portrait.url);
+  assert.equal(portraitResponse.status, 200);
+  assert.equal(portraitResponse.headers['content-type'], 'image/png');
+  assert.deepEqual(portraitResponse.buffer, png);
+  assert.equal(packResponse.status, 200);
+  assert.equal(pack.characterCard.portrait.url, portrait.url);
+  assert.equal(pack.stageBackground.url, portrait.url);
+  assert.equal(pack.stageBackground.fit, 'portrait');
+  assert.equal(sessionResponse.status, 200);
+  assert.equal(sessionResponse.json().session.settings.backgroundImage, portrait.url);
+  assert.equal(sessionResponse.json().session.settings.backgroundFit, 'portrait');
 });
 
 test('GET /api/import-sources lists online material sources', async () => {
@@ -351,6 +518,150 @@ test('v0.2 resource library deduplicates imports and composes an applicable cust
   assert.equal(applied.session.memory.ruleSystem.contentPackId, createdPack.id);
   assert.ok(applied.worldBook.find((entry) => entry.title === '镇武司暗线'));
   assert.equal((await request(app, { url: '/api/state' })).json().config.characterCard.name, '沈观澜');
+});
+
+test('PATCH /api/resource-library/resources/:id updates asset center metadata', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'shen.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(createV2CardPayload())
+      },
+      source: { site: '类脑社区', author: '社区作者' },
+      applyToActiveConfig: false
+    }
+  });
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const character = resources.find((item) => item.kind === 'character');
+
+  const response = await request(app, {
+    method: 'PATCH',
+    url: `/api/resource-library/resources/${encodeURIComponent(character.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '听雨刀客',
+      tags: ['武侠', '旧案'],
+      collections: ['英雄群像'],
+      favorite: true
+    }
+  });
+  const updated = response.json().resource;
+  const search = (await request(app, { url: '/api/resource-library/resources?query=英雄群像' })).json().resources;
+
+  assert.equal(response.status, 200);
+  assert.equal(updated.title, '听雨刀客');
+  assert.equal(updated.favorite, true);
+  assert.deepEqual(updated.collections, ['英雄群像']);
+  assert.equal(search[0].id, character.id);
+});
+
+test('PATCH /api/resource-library/resources/:id rejects non-object metadata', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const response = await request(app, {
+    method: 'PATCH',
+    url: '/api/resource-library/resources/missing',
+    headers: { 'content-type': 'application/json' },
+    body: null
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.json().error, 'RESOURCE_METADATA_INVALID');
+});
+
+test('resource library batch endpoints organize, export and remove selected assets', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'shen.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(createV2CardPayload())
+      },
+      source: { site: '类脑社区', author: '社区作者' },
+      applyToActiveConfig: false
+    }
+  });
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const resourceIds = resources.map((item) => item.id);
+
+  const organizeResponse = await request(app, {
+    method: 'PATCH',
+    url: '/api/resource-library/resources',
+    headers: { 'content-type': 'application/json' },
+    body: { resourceIds, tags: ['候选'], collections: ['新剧本'], mode: 'merge' }
+  });
+  const exportResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/resources/export',
+    headers: { 'content-type': 'application/json' },
+    body: { resourceIds }
+  });
+  const deleteResponse = await request(app, {
+    method: 'DELETE',
+    url: '/api/resource-library/resources',
+    headers: { 'content-type': 'application/json' },
+    body: { resourceIds: [resourceIds[0]] }
+  });
+
+  assert.equal(organizeResponse.status, 200);
+  assert.equal(organizeResponse.json().updated.length, resourceIds.length);
+  assert.deepEqual(organizeResponse.json().updated[0].collections, ['新剧本']);
+  assert.equal(exportResponse.status, 200);
+  assert.equal(exportResponse.json().bundle.schema, 'local-roleplay-agent.asset-bundle/v1');
+  assert.equal(exportResponse.json().bundle.resources.length, resourceIds.length);
+  assert.equal(deleteResponse.status, 200);
+  assert.deepEqual(deleteResponse.json().removed, [resourceIds[0]]);
+});
+
+test('custom story composition endpoint previews conflicts and creates an original baseline pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const original = {
+    title: '九州残卷',
+    worldBookMergeMode: 'smart',
+    customBaseline: {
+      worldName: '九州残卷',
+      genre: '低魔武侠',
+      premise: '九州诸侯割据，盐路与驿道决定江湖门派的兴衰。',
+      proseStyle: '重对白潜台词和行动后果。',
+      hardRules: '伤势、路引和钱粮持续有效。',
+      visualPackId: 'yingxiongzhi'
+    }
+  };
+  const inspectionResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs/inspect',
+    headers: { 'content-type': 'application/json' },
+    body: original
+  });
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: original
+  });
+  const pack = createResponse.json().pack;
+  const projectResponse = await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: pack.id, title: '九州残卷 · 第一卷' }
+  });
+
+  assert.equal(inspectionResponse.status, 200);
+  assert.equal(inspectionResponse.json().composition.summary.finalEntries, 2);
+  assert.equal(createResponse.status, 200);
+  assert.equal(pack.resourceManifest.basePackId, '');
+  assert.equal(pack.visualPackId, 'yingxiongzhi');
+  assert.equal(projectResponse.status, 200);
+  assert.equal(projectResponse.json().project.basePackId, pack.id);
 });
 
 test('v0.2.2 plugin manifest preview installs declarative adapters and blocks executable plugins', async () => {
@@ -991,7 +1302,7 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.4.0',
+    version: '0.4.1-rc.1',
     releaseChannel: 'release-candidate-local',
     dataSchemaVersion: 3,
     targetDataSchemaVersion: 3
@@ -1026,7 +1337,8 @@ test('POST /api/providers/test verifies masked saved credentials without changin
   assert.equal(response.json().result.ok, true);
   assert.equal(response.json().result.responsePreview, 'OK');
   assert.equal(testedProvider.apiKey, 'secret');
-  assert.equal(testedProvider.maxTokens <= 16, true);
+  assert.equal(testedProvider.maxTokens >= 128, true);
+  assert.equal(testedProvider.maxTokens <= 256, true);
   assert.equal(saved.providers[0].apiKey, 'secret');
 });
 
@@ -1262,6 +1574,32 @@ test('POST /api/chat/stream returns SSE chunks and persists the turn', async () 
   assert.match(response.text, /event: done/);
   assert.equal(state.session.messages.length, 2);
   assert.equal(state.session.messages[1].content, '流式回应：我拔刀。');
+});
+
+test('POST /api/chat/stream reports reasoning-only output without saving an empty turn', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({
+    rootDir,
+    providerClient: {
+      stream: async () => {
+        throw new Error('PROVIDER_REASONING_ONLY_RESPONSE:length');
+      }
+    }
+  });
+  await saveHttpProvider(app);
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/chat/stream',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '请生成开场。' }
+  });
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.match(response.text, /event: error/);
+  assert.match(response.text, /PROVIDER_REASONING_ONLY_RESPONSE/);
+  assert.equal(state.session.messages.length, 0);
 });
 
 test('PATCH /api/messages/:messageId edits a user message and trims later history', async () => {
@@ -1683,10 +2021,12 @@ async function request(app, { method = 'GET', url = '/', body, headers = {} } = 
 
   await app(req, res);
   await ended;
-  const text = Buffer.concat(chunks).toString('utf8');
+  const buffer = Buffer.concat(chunks);
+  const text = buffer.toString('utf8');
   return {
     status: statusCode,
     headers: responseHeaders,
+    buffer,
     text,
     json: () => JSON.parse(text)
   };

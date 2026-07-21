@@ -6,6 +6,7 @@ import { worldBookIdentity } from '../agent/factCards.js';
 import { estimateTokens } from '../agent/token.js';
 import { VectorMemoryService } from '../agent/vectorMemory.js';
 import { resolveNarrativeContext } from '../agent/narrativeControl.js';
+import { parseRoleplayResponse } from '../agent/roleplayResponse.js';
 import { extractActionEnvelope } from '../simulation/actionProtocol.js';
 import { WorldSimulationService } from './worldSimulationService.js';
 
@@ -70,7 +71,9 @@ export class AgentService {
     const provider = getActiveProvider(globalConfig, session);
     const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
 
-    const userMessage = createMessage('user', content);
+    const userMessage = createMessage('user', content, {
+      kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat'
+    });
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: userMessage.content
@@ -120,7 +123,9 @@ export class AgentService {
     });
     const provider = getActiveProvider(globalConfig, session);
     const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
-    const userMessage = createMessage('user', content);
+    const userMessage = createMessage('user', content, {
+      kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat'
+    });
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: userMessage.content
@@ -130,6 +135,7 @@ export class AgentService {
       characterCard: activeConfig.characterCard,
       worldBook: activeConfig.worldBook,
       memory: session.memory,
+      authoring: session.authoring,
       messages: session.messages,
       userMessage: userMessage.content,
       persona: activeConfig.persona,
@@ -156,9 +162,10 @@ export class AgentService {
     const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
     const assistantMessage = createMessage('assistant', parsedReply.content, {
       recommendedActions: parsedReply.recommendedActions,
-      usage
+      usage,
+      roleplayPanels: parsedOutput.roleplayPanels,
+      speaker
     });
-    if (speaker) assistantMessage.speaker = speaker;
     appendUsageLedgerEntry(session, {
       taskKey: 'chat',
       messageId: assistantMessage.id,
@@ -378,6 +385,7 @@ export class AgentService {
       characterCard: config.characterCard,
       worldBook: config.worldBook,
       memory: session.memory,
+      authoring: session.authoring,
       messages: session.messages,
       userMessage: userMessage.content,
       persona: config.persona,
@@ -403,9 +411,10 @@ export class AgentService {
       recommendedActions: parsedReply.recommendedActions,
       usage,
       actionEnvelope: parsedOutput.actionEnvelope,
-      actionError: parsedOutput.actionError
+      actionError: parsedOutput.actionError,
+      roleplayPanels: parsedOutput.roleplayPanels,
+      speaker
     });
-    if (speaker) assistantMessage.speaker = speaker;
     appendUsageLedgerEntry(session, {
       taskKey: 'chat',
       messageId: assistantMessage.id,
@@ -429,12 +438,16 @@ export class AgentService {
       this.configService.getAll(),
       this.sessionService.getSession(sessionId)
     ]);
+    const activeConfig = await this.resolveSessionConfig(session);
     const provider = getProviderForTask(config, session, 'rewrite');
     const fallbackChain = getProviderChain(config, session, provider, 'rewrite').slice(1);
     const messages = buildRewriteMessages({
       target,
       text: sourceText,
-      instruction
+      instruction,
+      context: normalizeRewriteTarget(target) === 'recommended-action'
+        ? buildRecommendedActionContext({ session, characterCard: activeConfig.characterCard })
+        : ''
     });
     const result = await this.completeWithFallback({
       primaryProvider: provider,
@@ -821,29 +834,95 @@ function createMessage(role, content, extras = {}) {
       detail: String(extras.actionError.detail || extras.actionError.message || '')
     };
   }
+  if (extras.kind) message.kind = String(extras.kind);
+  if (extras.speaker) message.speaker = String(extras.speaker).slice(0, 30);
+  if (extras.roleplayPanels && typeof extras.roleplayPanels === 'object' && !Array.isArray(extras.roleplayPanels)) {
+    message.roleplayPanels = structuredClone(extras.roleplayPanels);
+  }
   message.swipeMetadata = [metadataFromMessage(message)];
   return message;
 }
 
-function buildRewriteMessages({ target, text, instruction }) {
+function buildRewriteMessages({ target, text, instruction, context = '' }) {
+  const normalizedTarget = normalizeRewriteTarget(target);
+  const recommendedActionRules = normalizedTarget === 'recommended-action'
+    ? [
+        '这是玩家已经选定的行动意图，请把它展开成当前主角真正会说、会做的一段行动。',
+        '使用第一人称或与最近玩家消息一致的视角，控制在一至三句。',
+        '体现角色的身份、性格、措辞和现场环境；需要询问时写出自然、明确的台词。',
+        '只能补充动作、语气、观察和表达方式，不得新增行动结果、隐藏知识、NPC回应或新的核心决定。'
+      ]
+    : [];
   const system = [
     '# Magic Rewrite 改写器',
     '你负责把用户提供的文本改写得更适合沉浸式角色扮演创作。',
     '只输出改写后的文本，不要解释，不要加标题，不要使用 Markdown 代码块。',
     '保持原意、视角和用户已经决定的行动，不新增关键剧情事实，不替用户做新的核心选择。',
-    '可以增强节奏、感官细节、语气、画面感和角色扮演可读性。'
+    '可以增强节奏、感官细节、语气、画面感和角色扮演可读性。',
+    ...recommendedActionRules
   ].join('\n');
   const user = [
-    `目标字段：${normalizeRewriteTarget(target)}`,
+    `目标字段：${normalizedTarget}`,
     `改写要求：${String(instruction || '').trim() || '更有画面感，适合作为下一轮角色行动或旁白输入。'}`,
+    context ? `\n当前扮演上下文：\n${context}` : '',
     '',
-    '原文：',
+    normalizedTarget === 'recommended-action' ? '选定行动意图：' : '原文：',
     text
-  ].join('\n');
+  ].filter((line) => line !== '').join('\n');
   return [
     { role: 'system', content: system },
     { role: 'user', content: user }
   ];
+}
+
+function buildRecommendedActionContext({ session, characterCard }) {
+  const card = characterCard && typeof characterCard === 'object' ? characterCard : {};
+  const memory = session?.memory && typeof session.memory === 'object' ? session.memory : {};
+  const worldState = memory.worldState && typeof memory.worldState === 'object' ? memory.worldState : {};
+  const protagonist = worldState.protagonist && typeof worldState.protagonist === 'object'
+    ? worldState.protagonist
+    : {};
+  const narrativeState = memory.narrativeState && typeof memory.narrativeState === 'object'
+    ? memory.narrativeState
+    : {};
+  const explicitRole = card.role && card.role !== card.creator ? card.role : '';
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const recentMessages = messages.slice(-4).map((message) => {
+    const speaker = message.role === 'user' ? '玩家' : (message.speaker || '旁白');
+    return `${speaker}：${compactRewriteContext(message.content, 900)}`;
+  });
+  const latestAssistant = [...messages].reverse().find((message) => message?.role === 'assistant');
+  const panels = latestAssistant?.roleplayPanels && typeof latestAssistant.roleplayPanels === 'object'
+    ? latestAssistant.roleplayPanels
+    : {};
+
+  return [
+    ['主角', protagonist.name || card.name],
+    ['身份', explicitRole || protagonist.realm],
+    ['性格与行动习惯', card.personality],
+    ['人物背景', card.description],
+    ['角色语言示例', card.exampleDialog],
+    ['当前地点', worldState.location?.current || worldState.location],
+    ['当前主线', narrativeState.activeArc || worldState.activeArc || worldState.quest],
+    ['本幕环境', panels.sceneStatus],
+    ['本幕人物状态', panels.characterStatus],
+    ['最近对话', recentMessages.join('\n')]
+  ]
+    .map(([label, value]) => [label, compactRewriteContext(value, label === '最近对话' ? 2400 : 700)])
+    .filter(([, value]) => value)
+    .map(([label, value]) => `${label}：${value}`)
+    .join('\n');
+}
+
+function compactRewriteContext(value, maxLength = 700) {
+  if (value === undefined || value === null || value === '') return '';
+  const text = Array.isArray(value)
+    ? value.map((item) => compactRewriteContext(item, maxLength)).filter(Boolean).join('；')
+    : typeof value === 'object'
+      ? JSON.stringify(value)
+      : String(value);
+  const compact = text.replace(/\s+/g, ' ').trim();
+  return compact.length > maxLength ? `${compact.slice(0, maxLength)}…` : compact;
 }
 
 function normalizeRewriteTarget(target) {
@@ -1032,9 +1111,13 @@ function normalizeSwipes(swipes, fallbackContent) {
 function parseAssistantOutput(rawContent) {
   const actionParsed = extractActionEnvelope(rawContent);
   const reply = extractRecommendedActions(actionParsed.content);
+  const presentation = parseRoleplayResponse(reply.content);
+  reply.content = presentation.content;
+  if (!String(reply.content || '').trim()) throw new Error('PROVIDER_EMPTY_RESPONSE');
   return {
     reply,
-    speaker: extractSpeaker(actionParsed.content),
+    speaker: presentation.speaker || extractSpeaker(actionParsed.content),
+    roleplayPanels: presentation.panels,
     actionEnvelope: actionParsed.envelope,
     actionError: actionParsed.error
   };
@@ -1058,35 +1141,25 @@ function mergeActionEnvelopes(left, right) {
 }
 
 function createHiddenBlockStreamFilter(onToken) {
-  const markers = ['```lra-actions', '<lra-actions>', '<recommended_actions>'];
-  const tailLength = Math.max(...markers.map((marker) => marker.length)) - 1;
   let buffer = '';
-  let hidden = false;
+  let emitted = '';
   const emit = async (value) => {
     if (value) await onToken?.(value);
   };
   return {
     push: async (chunk) => {
-      if (hidden) return;
       buffer += String(chunk || '');
-      const lower = buffer.toLowerCase();
-      const indexes = markers.map((marker) => lower.indexOf(marker)).filter((index) => index >= 0);
-      if (indexes.length) {
-        const first = Math.min(...indexes);
-        await emit(buffer.slice(0, first));
-        buffer = '';
-        hidden = true;
-        return;
-      }
-      const safeLength = Math.max(0, buffer.length - tailLength);
-      if (safeLength) {
-        await emit(buffer.slice(0, safeLength));
-        buffer = buffer.slice(safeLength);
+      const visible = parseRoleplayResponse(buffer).content;
+      if (visible.startsWith(emitted)) {
+        await emit(visible.slice(emitted.length));
+        emitted = visible;
       }
     },
     end: async () => {
-      if (!hidden) await emit(buffer);
+      const visible = parseRoleplayResponse(buffer).content;
+      if (visible.startsWith(emitted)) await emit(visible.slice(emitted.length));
       buffer = '';
+      emitted = '';
     }
   };
 }
@@ -1109,7 +1182,9 @@ function normalizeSwipeMetadataEntry(value) {
     actionEnvelope: value.actionEnvelope ? structuredClone(value.actionEnvelope) : null,
     actionError: value.actionError ? structuredClone(value.actionError) : null,
     adjudication: value.adjudication ? structuredClone(value.adjudication) : null,
-    recommendedActions: Array.isArray(value.recommendedActions) ? structuredClone(value.recommendedActions) : []
+    recommendedActions: Array.isArray(value.recommendedActions) ? structuredClone(value.recommendedActions) : [],
+    roleplayPanels: value.roleplayPanels ? structuredClone(value.roleplayPanels) : null,
+    speaker: value.speaker ? String(value.speaker).slice(0, 30) : ''
   };
 }
 
@@ -1118,12 +1193,21 @@ function metadataFromMessage(message) {
     actionEnvelope: message?.actionEnvelope,
     actionError: message?.actionError,
     adjudication: message?.adjudication,
-    recommendedActions: message?.recommendedActions
+    recommendedActions: message?.recommendedActions,
+    roleplayPanels: message?.roleplayPanels,
+    speaker: message?.speaker
   });
 }
 
 function emptySwipeMetadata() {
-  return { actionEnvelope: null, actionError: null, adjudication: null, recommendedActions: [] };
+  return {
+    actionEnvelope: null,
+    actionError: null,
+    adjudication: null,
+    recommendedActions: [],
+    roleplayPanels: null,
+    speaker: ''
+  };
 }
 
 function applySwipeMetadata(message, metadata) {
@@ -1134,12 +1218,20 @@ function applySwipeMetadata(message, metadata) {
   if (normalized.adjudication) message.adjudication = normalized.adjudication;
   if (normalized.recommendedActions.length) message.recommendedActions = normalized.recommendedActions;
   else delete message.recommendedActions;
+  if (normalized.roleplayPanels) message.roleplayPanels = normalized.roleplayPanels;
+  if (normalized.speaker) message.speaker = normalized.speaker;
 }
 
 function clearMessageWorldUpdate(message) {
   delete message.actionEnvelope;
   delete message.actionError;
   delete message.adjudication;
+  delete message.roleplayPanels;
+  delete message.speaker;
+}
+
+function isJourneySetupContent(content) {
+  return /^\s*\[\s*命途设定\s*[：:]?/u.test(String(content || ''));
 }
 
 function extractRecommendedActions(rawContent) {

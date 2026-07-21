@@ -285,8 +285,26 @@ export function normalizeCharacterCard(card = {}) {
     creator: String(card.creator || ''),
     characterVersion: String(card.characterVersion || ''),
     sourceSpec: String(card.sourceSpec || ''),
+    portrait: normalizeCharacterPortrait(card.portrait),
     extensions: isPlainObject(card.extensions) ? card.extensions : {},
     raw: isPlainObject(card.raw) ? card.raw : undefined,
     enabled: card.enabled !== false
+  };
+}
+
+function normalizeCharacterPortrait(value) {
+  if (!isPlainObject(value)) return undefined;
+  const assetId = String(value.assetId || '').trim().toLowerCase();
+  const url = String(value.url || '').trim();
+  if (!/^[a-f0-9]{64}$/.test(assetId) || !/^\/api\/character-images\/[a-f0-9]{64}\.png$/.test(url)) {
+    return undefined;
+  }
+  return {
+    assetId,
+    url,
+    mimeType: 'image/png',
+    width: Math.max(0, Math.trunc(normalizeFiniteNumber(value.width, 0))),
+    height: Math.max(0, Math.trunc(normalizeFiniteNumber(value.height, 0))),
+    source: String(value.source || 'embedded-character-card')
   };
 }

@@ -1,4 +1,4 @@
-import { importCharacterCardFromPayload } from './characterCardImport.js';
+import { extractCharacterCardImage, importCharacterCardFromPayload } from './characterCardImport.js';
 import { importWorldBookFromPayload } from './worldBookImport.js';
 import { CONTENT_PACK_SPEC, isContentPackBundle } from '../content/contentPackManifest.js';
 import { PLUGIN_SPEC } from '../plugins/pluginManifest.js';
@@ -10,7 +10,7 @@ export function previewImportPayload(payload = {}) {
 
   const characterImport = tryImportCharacterCard(payload);
   if (characterImport && hasCharacterCardSignal(characterImport)) {
-    return buildCharacterCardPreview(characterImport);
+    return buildCharacterCardPreview(characterImport, payload);
   }
 
   const worldBook = importWorldBookFromPayload(payload);
@@ -75,9 +75,10 @@ function hasCharacterCardSignal(imported) {
   );
 }
 
-function buildCharacterCardPreview(importData) {
+function buildCharacterCardPreview(importData, payload) {
   const card = importData.characterCard || {};
   const worldBook = Array.isArray(importData.worldBook) ? importData.worldBook : [];
+  const portrait = extractCharacterCardImage(payload);
   return {
     kind: 'character-card',
     summary: {
@@ -86,6 +87,9 @@ function buildCharacterCardPreview(importData) {
       tags: Array.isArray(card.tags) ? card.tags : [],
       worldBookCount: worldBook.length,
       keywordSamples: collectKeywordSamples(worldBook),
+      hasEmbeddedPortrait: Boolean(portrait),
+      portraitWidth: portrait?.width || 0,
+      portraitHeight: portrait?.height || 0,
       willReplaceCharacterCard: true,
       worldBookMode: 'append-dedupe'
     },

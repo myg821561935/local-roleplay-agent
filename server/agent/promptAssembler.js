@@ -5,12 +5,15 @@ import { expandMacros } from './macroEngine.js';
 import { buildNarrativeControlPrompt, resolveNarrativeContext } from './narrativeControl.js';
 import { buildActionProtocolPrompt } from '../simulation/actionProtocol.js';
 import { renderSimulationPrompt } from '../simulation/npcSimulation.js';
+import { buildAgentProfilePrompt, normalizeAgentProfileId } from '../authoring/agentProfiles.js';
+import { renderAuthoringLedgerPrompt } from '../authoring/authoringLedger.js';
 
 export function assemblePrompt({
   promptModules,
   characterCard,
   worldBook,
   memory,
+  authoring,
   messages,
   userMessage,
   persona,
@@ -35,6 +38,9 @@ export function assemblePrompt({
   const narrativeControlPrompt = buildNarrativeControlPrompt({ memory, mode: narrativeContext.mode });
   const simulationPrompt = renderSimulationPrompt(memory, { targetSpeaker });
   const actionProtocolPrompt = buildActionProtocolPrompt({ memory, targetSpeaker });
+  const agentProfileId = normalizeAgentProfileId(options.activeAgentProfileId);
+  const agentProfilePrompt = buildAgentProfilePrompt(agentProfileId);
+  const authoringLedgerPrompt = renderAuthoringLedgerPrompt(authoring);
 
   // 宏展开上下文
   const macroContext = {
@@ -77,9 +83,12 @@ export function assemblePrompt({
 
   const systemSections = [
     narrativeControlPrompt,
+    agentProfilePrompt,
+    authoringLedgerPrompt,
     renderCharacterCard(expandedCharacterCard),
     renderGroupMembers(expandedGroupMembers),
     renderPersona(expandedPersona),
+    renderCharacterPerformanceContract(expandedCharacterCard, expandedGroupMembers),
     renderPromptModules(expandedPromptModules),
     renderWorldState(memory?.worldState),
     simulationPrompt,
@@ -88,6 +97,7 @@ export function assemblePrompt({
     renderVectorMemory(vectorHits),
     renderSpeakerInstruction({ groupMembers, targetSpeaker, characterCard }),
     renderRecommendationInstruction(),
+    renderRoleplayPresentationContract(),
     actionProtocolPrompt
   ].filter(Boolean);
 
@@ -163,6 +173,8 @@ export function assemblePrompt({
       narrativeMode: narrativeContext.mode,
       narrativeGenre: narrativeContext.genre,
       narrativeArc: narrativeContext.activeArc,
+      agentProfileId,
+      hasAuthoringLedger: Boolean(authoringLedgerPrompt),
       simulationRevision: Number(memory?.simulation?.revision || 0),
       simulationActorCount: Array.isArray(memory?.simulation?.actors) ? memory.simulation.actors.length : 0,
       injectedCardIds: injectedCards.map((card) => card.id)
@@ -172,7 +184,20 @@ export function assemblePrompt({
 
 function expandCharacterCard(card, ctx) {
   if (!card) return card;
-  const fields = ['name', 'role', 'description', 'personality', 'scenario', 'firstMessage', 'systemPrompt', 'postHistoryInstructions'];
+  const fields = [
+    'name',
+    'role',
+    'description',
+    'personality',
+    'scenario',
+    'firstMessage',
+    'systemPrompt',
+    'postHistoryInstructions',
+    'speechStyle',
+    'knowledge',
+    'goals',
+    'relationships'
+  ];
   const expanded = { ...card };
   fields.forEach((f) => {
     if (typeof expanded[f] === 'string') expanded[f] = expandMacros(expanded[f], ctx);
@@ -182,6 +207,12 @@ function expandCharacterCard(card, ctx) {
   }
   if (Array.isArray(expanded.exampleDialog)) {
     expanded.exampleDialog = expanded.exampleDialog.map((d) => expandMacros(String(d || ''), ctx));
+  }
+  if (expanded.extensions && typeof expanded.extensions === 'object') {
+    expanded.extensions = Object.fromEntries(Object.entries(expanded.extensions).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? expandMacros(value, ctx) : value
+    ]));
   }
   return expanded;
 }
@@ -198,13 +229,16 @@ function expandPersona(persona, ctx) {
 
 function expandGroupMembers(groupMembers, ctx) {
   if (!Array.isArray(groupMembers)) return groupMembers;
-  const fields = ['name', 'role', 'description', 'personality', 'systemPrompt'];
+  const fields = ['name', 'role', 'description', 'personality', 'systemPrompt', 'speechStyle', 'knowledge', 'goals', 'relationships'];
   return groupMembers.map((m) => {
     if (!m) return m;
     const expanded = { ...m };
     fields.forEach((f) => {
       if (typeof expanded[f] === 'string') expanded[f] = expandMacros(expanded[f], ctx);
     });
+    if (Array.isArray(expanded.exampleDialog)) {
+      expanded.exampleDialog = expanded.exampleDialog.map((dialog) => expandMacros(String(dialog || ''), ctx));
+    }
     return expanded;
   });
 }
@@ -227,6 +261,14 @@ function renderCharacterCard(card) {
   if (Array.isArray(card.exampleDialog) && card.exampleDialog.length) {
     lines.push(`示例对话：\n${card.exampleDialog.join('\n')}`);
   }
+  const speechStyle = firstProfileValue(card.speechStyle, card.extensions?.speech, card.extensions?.speechStyle, card.extensions?.speech_style);
+  if (speechStyle) lines.push(`语言风格：${speechStyle}`);
+  const goals = firstProfileValue(card.goals, card.extensions?.goals);
+  if (goals) lines.push(`当前目标：${goals}`);
+  const knowledge = firstProfileValue(card.knowledge, card.extensions?.knowledge, card.extensions?.knownInformation);
+  if (knowledge) lines.push(`已知与盲区：${knowledge}`);
+  const relationships = firstProfileValue(card.relationships, card.extensions?.relationships);
+  if (relationships) lines.push(`关系边界：${relationships}`);
   if (Array.isArray(card.tags) && card.tags.length) lines.push(`标签：${card.tags.join('、')}`);
   return lines.filter((line) => !line.endsWith('：')).join('\n');
 }
@@ -250,11 +292,52 @@ function renderGroupMembers(groupMembers) {
     if (m.role) segments.push(`身份：${m.role}`);
     if (m.description) segments.push(`描述：${m.description}`);
     if (m.personality) segments.push(`性格：${m.personality}`);
+    const speechStyle = firstProfileValue(m.speechStyle, m.extensions?.speech, m.extensions?.speechStyle);
+    if (speechStyle) segments.push(`语言风格：${speechStyle}`);
+    if (Array.isArray(m.exampleDialog) && m.exampleDialog.length) segments.push(`示例对话：\n${m.exampleDialog.join('\n')}`);
+    const knowledge = firstProfileValue(m.knowledge, m.extensions?.knowledge);
+    if (knowledge) segments.push(`已知与盲区：${knowledge}`);
+    const goals = firstProfileValue(m.goals, m.extensions?.goals);
+    if (goals) segments.push(`当前目标：${goals}`);
+    const relationships = firstProfileValue(m.relationships, m.relationship, m.extensions?.relationships);
+    if (relationships) segments.push(`关系边界：${relationships}`);
     if (m.systemPrompt) segments.push(`专属指令：${m.systemPrompt}`);
     lines.push(segments.join('\n'));
   });
   lines.push('对话可由任一参与角色发起，回复正文开头请用「【角色名】」标注当前发言者。');
   return lines.join('\n\n');
+}
+
+function renderCharacterPerformanceContract(characterCard, groupMembers) {
+  const namedCharacters = [
+    characterCard?.enabled === false ? '' : characterCard?.name,
+    ...(Array.isArray(groupMembers) ? groupMembers.filter((member) => member?.enabled !== false).map((member) => member?.name) : [])
+  ].filter(Boolean);
+  if (!namedCharacters.length) return '';
+  return [
+    '# 角色演绎契约',
+    `本轮可用角色：${namedCharacters.join('、')}。`,
+    '角色发言必须同时受身份、性格、当前目标、关系阶段与已知信息约束；不能为了推进剧情而让所有人物使用同一种口吻。',
+    '优先从“语言风格”和“示例对话”提取句长、称谓、语气、回避方式与情绪表达。只模仿风格特征，不逐句复述示例。',
+    '角色只能依据其亲历、被告知或合理推断的信息行动；不知道的秘密应表现为误判、试探、追问或沉默，不得获得全知视角。',
+    '旁白负责环境、动作和可观察反应；角色对白使用其自身措辞。不要解释提示词、扮演规则或以“AI助手”的口吻总结人物。',
+    '关系变化必须由本轮具体事件触发，并与此前关系阶段连续，禁止无缘由地骤然亲密、忠诚或敌对。'
+  ].join('\n');
+}
+
+function firstProfileValue(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) return value.map((item) => String(item || '').trim()).filter(Boolean).join('、');
+    if (value && typeof value === 'object') {
+      const rendered = Object.entries(value)
+        .map(([key, item]) => `${key}：${Array.isArray(item) ? item.join('、') : String(item || '').trim()}`)
+        .filter((item) => !item.endsWith('：'))
+        .join('；');
+      if (rendered) return rendered;
+    }
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
 }
 
 function renderSpeakerInstruction({ groupMembers, targetSpeaker, characterCard }) {
@@ -316,5 +399,16 @@ function renderRecommendationInstruction() {
     '<recommended_actions>',
     '["行动选项一", "行动选项二", "行动选项三"]',
     '</recommended_actions>'
+  ].join('\n');
+}
+
+function renderRoleplayPresentationContract() {
+  return [
+    '# 沉浸式呈现契约',
+    '用户可见正文放在 <plot> 标签中，按自然段组织场景、动作、感官与对白；不要把状态表、导演分析或 XML 标签写进正文。',
+    '正文之后用 <normal_status> 记录时间、地点、在场人物和当前任务；用 <relationship_status> 只记录本轮实际发生变化的关系。',
+    '用 <special_status> 分角色记录主角及本幕关键人物的当前档案。每个角色以『角色名状态』开头，按需包含：身份、外貌/穿着、性格、身体状况、境界/能力、物品、姿势、神情和当前目标。字段必须是“名称：内容”的单行格式，未知项写“未知”，不要编造。',
+    '用 <NextCharacterPanel> 简短记录下一幕建议登场或退场的角色与原因。这些控制区不会显示在正文中，内容应简洁、可更新。',
+    '不要输出内部推理过程。正文结尾必须留下用户可行动的局面，再按推荐选项协议给出 2-4 个互有差异的行动。'
   ].join('\n');
 }

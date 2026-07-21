@@ -60,7 +60,7 @@ export class ResourceLibraryService {
       .filter((item) => !normalizedKind || item.kind === normalizedKind)
       .filter((item) => {
         if (!needle) return true;
-        return [item.title, item.summary, ...(item.tags || []), item.source?.site, item.source?.author]
+        return [item.title, item.summary, ...(item.tags || []), ...(item.collections || []), item.source?.site, item.source?.author]
           .some((value) => String(value || '').toLowerCase().includes(needle));
       })
       .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
@@ -70,6 +70,78 @@ export class ResourceLibraryService {
     const id = normalizeId(resourceId);
     if (!id) return null;
     return this.store.read(`${RESOURCE_DIR}/${id}.json`, null);
+  }
+
+  async updateResourceMetadata(resourceId, input = {}) {
+    const id = normalizeId(resourceId);
+    if (!id) return null;
+    const current = await this.getResource(id);
+    if (!current) return null;
+    const timestamp = this.now().toISOString();
+    const next = {
+      ...current,
+      title: normalizeLibraryText(input.title, current.title, 120),
+      summary: normalizeLibraryText(input.summary, current.summary, 800, { allowEmpty: true }),
+      tags: input.tags === undefined ? uniqueStrings(current.tags) : uniqueStrings(input.tags).slice(0, 40),
+      collections: input.collections === undefined
+        ? uniqueStrings(current.collections)
+        : uniqueStrings(input.collections).slice(0, 20),
+      favorite: input.favorite === undefined ? current.favorite === true : input.favorite === true,
+      updatedAt: timestamp
+    };
+    await this.store.write(`${RESOURCE_DIR}/${id}.json`, next);
+    return structuredClone(next);
+  }
+
+  async updateResourcesMetadata(resourceIds = [], input = {}) {
+    const ids = uniqueStrings(resourceIds).map(normalizeId).filter(Boolean).slice(0, 500);
+    const mode = input.mode === 'replace' ? 'replace' : 'merge';
+    const incomingTags = input.tags === undefined ? null : uniqueStrings(input.tags);
+    const incomingCollections = input.collections === undefined ? null : uniqueStrings(input.collections);
+    const updated = [];
+    const missing = [];
+    for (const id of ids) {
+      const current = await this.getResource(id);
+      if (!current) {
+        missing.push(id);
+        continue;
+      }
+      const tags = incomingTags === null
+        ? current.tags
+        : mode === 'replace'
+          ? incomingTags
+          : uniqueStrings([...(current.tags || []), ...incomingTags]);
+      const collections = incomingCollections === null
+        ? current.collections
+        : mode === 'replace'
+          ? incomingCollections
+          : uniqueStrings([...(current.collections || []), ...incomingCollections]);
+      updated.push(await this.updateResourceMetadata(id, {
+        tags,
+        collections,
+        favorite: input.favorite
+      }));
+    }
+    return { updated, missing };
+  }
+
+  async exportResourceBundle(resourceIds = []) {
+    const ids = uniqueStrings(resourceIds).map(normalizeId).filter(Boolean).slice(0, 500);
+    const resources = [];
+    const missing = [];
+    for (const id of ids) {
+      const resource = await this.getResource(id);
+      if (resource) resources.push(resource);
+      else missing.push(id);
+    }
+    return {
+      schema: 'local-roleplay-agent.asset-bundle/v1',
+      version: '1.0.0',
+      appVersion: this.appVersion,
+      exportedAt: this.now().toISOString(),
+      resources: structuredClone(resources),
+      missing
+    };
   }
 
   async inspectPreview(preview, source = {}) {
@@ -99,7 +171,7 @@ export class ResourceLibraryService {
         .filter((item) => item.kind === candidate.kind)
         .filter((item) => item.fingerprint === fingerprint || normalizeTitle(item.title) === normalizeTitle(candidate.title))
         .map((item) => ({
-          type: item.fingerprint === fingerprint ? 'exact-duplicate' : 'same-title',
+          type: resolveResourceConflictType({ candidate, existing: item, fingerprint }),
           resourceId: item.id,
           title: item.title
         }));
@@ -130,6 +202,8 @@ export class ResourceLibraryService {
     const candidates = buildPreviewCandidates(preview, source);
     const existing = await this.listResources();
     const importedAt = this.now().toISOString();
+    const importBatchId = String(source.importBatchId || crypto.randomUUID());
+    const batchSource = { ...source, importBatchId };
     const resources = [];
 
     for (let index = 0; index < candidates.length; index += 1) {
@@ -137,6 +211,19 @@ export class ResourceLibraryService {
       const inspected = inspection.resources[index];
       const duplicate = existing.find((item) => item.kind === candidate.kind && item.fingerprint === inspected.fingerprint);
       if (duplicate) {
+        const portraitChanged = candidate.kind === 'character'
+          && candidate.payload?.portrait?.url
+          && candidate.payload.portrait.url !== duplicate.payload?.portrait?.url;
+        if (portraitChanged) {
+          const updated = {
+            ...duplicate,
+            payload: structuredClone(candidate.payload),
+            updatedAt: importedAt
+          };
+          await this.store.write(`${RESOURCE_DIR}/${duplicate.id}.json`, updated);
+          resources.push({ ...updated, importStatus: 'updated' });
+          continue;
+        }
         resources.push({ ...duplicate, importStatus: 'duplicate' });
         continue;
       }
@@ -148,9 +235,11 @@ export class ResourceLibraryService {
         title: candidate.title,
         summary: candidate.summary,
         tags: uniqueStrings(candidate.tags),
+        collections: [],
+        favorite: false,
         format: inspection.adapter.id,
         fingerprint: inspected.fingerprint,
-        source: normalizeSource(source, candidate, importedAt),
+        source: normalizeSource(batchSource, candidate, importedAt),
         diagnostics: inspected.diagnostics,
         payload: structuredClone(candidate.payload),
         createdAt: importedAt,
@@ -190,6 +279,17 @@ export class ResourceLibraryService {
     }
   }
 
+  async removeResources(resourceIds = []) {
+    const ids = uniqueStrings(resourceIds).map(normalizeId).filter(Boolean).slice(0, 500);
+    const removed = [];
+    const missing = [];
+    for (const id of ids) {
+      if (await this.removeResource(id)) removed.push(id);
+      else missing.push(id);
+    }
+    return { removed, missing };
+  }
+
   async listPacks() {
     const packs = await this.loadStoredPacks();
     const plugins = await this.listPlugins();
@@ -221,34 +321,33 @@ export class ResourceLibraryService {
   }
 
   async createPack(input = {}, { basePack = null } = {}) {
-    const selectedIds = uniqueStrings([
-      input.characterResourceId,
-      ...(Array.isArray(input.worldBookResourceIds) ? input.worldBookResourceIds : []),
-      ...(Array.isArray(input.promptResourceIds) ? input.promptResourceIds : [])
-    ]);
-    const selected = [];
-    for (const resourceId of selectedIds) {
-      const resource = await this.getResource(resourceId);
-      if (!resource) throw new Error(`RESOURCE_NOT_FOUND:${resourceId}`);
-      selected.push(resource);
-    }
-
-    const character = selected.find((item) => item.id === input.characterResourceId && item.kind === 'character');
-    const worldBooks = selected.filter((item) => item.kind === 'worldbook');
-    const prompts = selected.filter((item) => item.kind === 'prompt');
+    const { character, worldBooks, prompts } = await this.resolvePackResources(input);
     const includeBaseContent = input.includeBaseContent !== false;
     const id = `custom-${crypto.randomUUID()}`;
     const timestamp = this.now().toISOString();
-    const base = basePack ? structuredClone(basePack) : createEmptyPackSeed(id);
-    const worldBook = dedupeByFingerprint([
-      ...(includeBaseContent ? base.worldBook || [] : []),
-      ...worldBooks.flatMap((item) => item.payload?.entries || [])
-    ]);
+    const base = basePack
+      ? structuredClone(basePack)
+      : createCustomBaselineSeed(id, input.customBaseline, this.now);
+    const worldBookMergeMode = includeBaseContent
+      ? normalizeWorldBookMergeMode(input.worldBookMergeMode)
+      : 'resources-only';
+    const composition = composeWorldBookEntries({
+      baseEntries: base.worldBook || [],
+      resourceGroups: worldBooks.map((item) => ({
+        resourceId: item.id,
+        title: item.title,
+        entries: item.payload?.entries || []
+      })),
+      mode: worldBookMergeMode
+    });
     const promptModules = dedupeByFingerprint([
       ...(includeBaseContent ? base.promptModules || [] : []),
       ...prompts.map((item) => item.payload)
     ]);
     const characterCard = character?.payload || base.characterCard;
+    const stageBackground = input.useCharacterPortraitAsBackground === true
+      ? createCharacterStageBackground(characterCard, character?.title)
+      : null;
 
     const pack = {
       ...base,
@@ -257,7 +356,8 @@ export class ResourceLibraryService {
       description: String(input.description || '由本地素材库组合生成。').trim().slice(0, 300),
       sessionTitle: String(input.sessionTitle || input.title || '新的故事').trim().slice(0, 80),
       characterCard: normalizeCharacterCard(characterCard || {}),
-      worldBook: worldBook.map(normalizeWorldBookEntry),
+      stageBackground,
+      worldBook: composition.entries.map(normalizeWorldBookEntry),
       promptModules: promptModules.map(normalizePromptModule),
       memory: {
         ...structuredClone(base.memory || {}),
@@ -273,9 +373,11 @@ export class ResourceLibraryService {
       resourceManifest: {
         basePackId: basePack?.id || '',
         includeBaseContent,
+        worldBookMergeMode,
         characterResourceId: character?.id || '',
         worldBookResourceIds: worldBooks.map((item) => item.id),
-        promptResourceIds: prompts.map((item) => item.id)
+        promptResourceIds: prompts.map((item) => item.id),
+        composition: structuredClone(composition.report.summary)
       },
       createdAt: timestamp,
       updatedAt: timestamp
@@ -291,6 +393,57 @@ export class ResourceLibraryService {
     });
     await this.store.write(`${PACK_DIR}/${id}.json`, pack);
     return structuredClone(pack);
+  }
+
+  async inspectPackComposition(input = {}, { basePack = null } = {}) {
+    const { character, worldBooks, prompts } = await this.resolvePackResources(input);
+    const includeBaseContent = input.includeBaseContent !== false;
+    const base = basePack
+      ? structuredClone(basePack)
+      : createCustomBaselineSeed('custom-preview', input.customBaseline, this.now);
+    const mode = includeBaseContent
+      ? normalizeWorldBookMergeMode(input.worldBookMergeMode)
+      : 'resources-only';
+    const composition = composeWorldBookEntries({
+      baseEntries: base.worldBook || [],
+      resourceGroups: worldBooks.map((item) => ({
+        resourceId: item.id,
+        title: item.title,
+        entries: item.payload?.entries || []
+      })),
+      mode
+    });
+    return {
+      ...composition.report,
+      selected: {
+        characterResourceId: character?.id || '',
+        worldBookResourceIds: worldBooks.map((item) => item.id),
+        promptResourceIds: prompts.map((item) => item.id)
+      },
+      promptModules: {
+        base: includeBaseContent ? Number(base.promptModules?.length || 0) : 0,
+        selected: prompts.length
+      }
+    };
+  }
+
+  async resolvePackResources(input = {}) {
+    const selectedIds = uniqueStrings([
+      input.characterResourceId,
+      ...(Array.isArray(input.worldBookResourceIds) ? input.worldBookResourceIds : []),
+      ...(Array.isArray(input.promptResourceIds) ? input.promptResourceIds : [])
+    ]);
+    const selected = [];
+    for (const resourceId of selectedIds) {
+      const resource = await this.getResource(resourceId);
+      if (!resource) throw new Error(`RESOURCE_NOT_FOUND:${resourceId}`);
+      selected.push(resource);
+    }
+
+    const character = selected.find((item) => item.id === input.characterResourceId && item.kind === 'character');
+    const worldBooks = selected.filter((item) => item.kind === 'worldbook');
+    const prompts = selected.filter((item) => item.kind === 'prompt');
+    return { character, worldBooks, prompts };
   }
 
   async inspectContentPackBundle(bundle, { checkInstallConflicts = true } = {}) {
@@ -415,6 +568,19 @@ export class ResourceLibraryService {
   }
 }
 
+function resolveResourceConflictType({ candidate, existing, fingerprint }) {
+  if (existing.fingerprint !== fingerprint) return 'same-title';
+  const portraitUrl = candidate.kind === 'character' ? candidate.payload?.portrait?.url : '';
+  if (
+    candidate.kind === 'character'
+    && (
+      (portraitUrl && portraitUrl !== existing.payload?.portrait?.url)
+      || (!portraitUrl && candidate.hasEmbeddedPortrait === true)
+    )
+  ) return 'portrait-update';
+  return 'exact-duplicate';
+}
+
 function buildPreviewCandidates(preview, source) {
   if (preview?.kind === 'character-card') {
     const card = normalizeCharacterCard(preview.importData?.characterCard || {});
@@ -424,6 +590,7 @@ function buildPreviewCandidates(preview, source) {
       summary: summarizeText(card.description || card.personality || card.scenario),
       tags: card.tags || [],
       payload: card,
+      hasEmbeddedPortrait: preview.summary?.hasEmbeddedPortrait === true,
       version: card.characterVersion
     }];
     const entries = Array.isArray(preview.importData?.worldBook) ? preview.importData.worldBook : [];
@@ -476,6 +643,7 @@ function normalizeSource(source, candidate, importedAt) {
     license: String(source.license || '未声明').trim(),
     version: String(source.version || candidate.version || '').trim(),
     fileName: String(source.fileName || '').trim(),
+    importBatchId: String(source.importBatchId || '').trim(),
     importedAt,
     originalHash: String(source.originalHash || '').trim()
   };
@@ -489,6 +657,8 @@ function summarizeCustomPack(pack, compatibility = null) {
     description: pack.description,
     sessionTitle: pack.sessionTitle,
     characterName: pack.characterCard?.name || '',
+    characterPortrait: structuredClone(pack.characterCard?.portrait || null),
+    stageBackground: structuredClone(pack.stageBackground || null),
     custom: true,
     visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || '',
     basePackId: pack.resourceManifest?.basePackId || '',
@@ -509,6 +679,21 @@ function summarizeCustomPack(pack, compatibility = null) {
       characterPresets: 1
     },
     resourceManifest: structuredClone(pack.resourceManifest || {})
+  };
+}
+
+function createCharacterStageBackground(characterCard, resourceTitle = '') {
+  const portrait = characterCard?.portrait;
+  const url = String(portrait?.url || '').trim();
+  const assetId = String(portrait?.assetId || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(assetId) || url !== `/api/character-images/${assetId}.png`) return null;
+  const characterName = String(characterCard?.name || resourceTitle || '角色').trim().slice(0, 60);
+  return {
+    url,
+    assetId,
+    source: 'character-portrait',
+    fit: 'portrait',
+    label: `${characterName}立绘`
   };
 }
 
@@ -572,6 +757,213 @@ function createEmptyPackSeed(id) {
   };
 }
 
+function createCustomBaselineSeed(id, input = {}, now = () => new Date()) {
+  const baseline = normalizeCustomBaseline(input);
+  const seed = createEmptyPackSeed(id);
+  const timestamp = now().toISOString();
+  const worldBook = [];
+  if (baseline.premise) {
+    worldBook.push({
+      id: `${id}-world-premise`,
+      type: 'rule',
+      title: `${baseline.worldName || '原创世界'} · 世界总纲`,
+      content: [baseline.genre ? `类型与时代：${baseline.genre}` : '', baseline.premise].filter(Boolean).join('\n\n'),
+      keywords: [],
+      constant: true,
+      priority: 95,
+      depth: 1,
+      enabled: true,
+      source: 'custom-baseline',
+      updatedAt: timestamp
+    });
+  }
+  if (baseline.hardRules) {
+    worldBook.push({
+      id: `${id}-hard-rules`,
+      type: 'rule',
+      title: `${baseline.worldName || '原创世界'} · 不可违背规则`,
+      content: baseline.hardRules,
+      keywords: [],
+      constant: true,
+      priority: 100,
+      depth: 0,
+      enabled: true,
+      source: 'custom-baseline',
+      updatedAt: timestamp
+    });
+  }
+  const promptContent = [
+    baseline.genre ? `题材边界：${baseline.genre}` : '',
+    baseline.proseStyle ? `叙事风格：${baseline.proseStyle}` : '',
+    baseline.hardRules ? `硬性规则：${baseline.hardRules}` : ''
+  ].filter(Boolean).join('\n\n');
+  return {
+    ...seed,
+    title: baseline.worldName || '原创世界',
+    visualPackId: baseline.visualPackId,
+    worldBook,
+    promptModules: promptContent ? [{
+      id: `${id}-narrative-baseline`,
+      title: '原创世界叙事基线',
+      enabled: true,
+      content: promptContent
+    }] : [],
+    memory: {
+      ...seed.memory,
+      worldState: {
+        ...seed.memory.worldState,
+        worldName: baseline.worldName,
+        genre: baseline.genre,
+        flags: {
+          ...(seed.memory.worldState?.flags || {}),
+          genre: baseline.genre || 'custom'
+        }
+      }
+    },
+    ruleSystem: {
+      ...seed.ruleSystem,
+      title: `${baseline.worldName || '原创世界'}规则`,
+      boundary: baseline.hardRules || baseline.premise || seed.ruleSystem.boundary,
+      panels: [
+        ...(baseline.premise ? [{ id: 'world-premise', title: '世界总纲', content: baseline.premise }] : []),
+        ...(baseline.hardRules ? [{ id: 'hard-rules', title: '硬性规则', content: baseline.hardRules }] : [])
+      ]
+    }
+  };
+}
+
+function normalizeCustomBaseline(input = {}) {
+  return {
+    worldName: String(input?.worldName || '').trim().slice(0, 80),
+    genre: String(input?.genre || '').trim().slice(0, 100),
+    premise: String(input?.premise || '').trim().slice(0, 5000),
+    proseStyle: String(input?.proseStyle || '').trim().slice(0, 2500),
+    hardRules: String(input?.hardRules || '').trim().slice(0, 2500),
+    visualPackId: String(input?.visualPackId || 'xuanhuan').trim() || 'xuanhuan'
+  };
+}
+
+function normalizeWorldBookMergeMode(value) {
+  return ['smart', 'base-first', 'resources-only'].includes(String(value || ''))
+    ? String(value)
+    : 'smart';
+}
+
+function composeWorldBookEntries({ baseEntries = [], resourceGroups = [], mode = 'smart' } = {}) {
+  const mergeMode = normalizeWorldBookMergeMode(mode);
+  const candidates = [];
+  if (mergeMode !== 'resources-only') {
+    (baseEntries || []).forEach((entry) => candidates.push({
+      entry: normalizeWorldBookEntry(entry),
+      origin: 'base',
+      resourceId: '',
+      resourceTitle: '题材基线'
+    }));
+  }
+  (resourceGroups || []).forEach((group) => {
+    (group.entries || []).forEach((entry) => candidates.push({
+      entry: normalizeWorldBookEntry(entry),
+      origin: 'resource',
+      resourceId: group.resourceId || '',
+      resourceTitle: group.title || '补充世界书'
+    }));
+  });
+
+  const accepted = [];
+  const conflicts = [];
+  let exactDuplicates = 0;
+  let sameTitleConflicts = 0;
+  let constantConflicts = 0;
+  let triggerOverlaps = 0;
+  let replacedBaseEntries = 0;
+  let skippedSelectedEntries = 0;
+
+  candidates.forEach((candidate) => {
+    const fingerprint = createFingerprint(candidate.entry);
+    const exact = accepted.find((item) => item.fingerprint === fingerprint);
+    if (exact) {
+      exactDuplicates += 1;
+      return;
+    }
+
+    const titleKey = normalizeTitle(candidate.entry.title);
+    const sameTitleIndex = titleKey
+      ? accepted.findIndex((item) => normalizeTitle(item.entry.title) === titleKey)
+      : -1;
+    if (sameTitleIndex >= 0) {
+      const previous = accepted[sameTitleIndex];
+      const constant = previous.entry.constant === true || candidate.entry.constant === true;
+      if (constant) constantConflicts += 1;
+      else sameTitleConflicts += 1;
+      conflicts.push({
+        type: constant ? 'constant-conflict' : 'same-title-conflict',
+        title: candidate.entry.title,
+        message: `${candidate.entry.title}：${previous.resourceTitle}与${candidate.resourceTitle}内容不同`,
+        baseOrigin: previous.origin,
+        resourceId: candidate.resourceId
+      });
+      const selectedCanReplace = mergeMode === 'smart' && candidate.origin === 'resource';
+      if (selectedCanReplace) {
+        if (previous.origin === 'base') replacedBaseEntries += 1;
+        accepted[sameTitleIndex] = { ...candidate, fingerprint };
+      } else {
+        skippedSelectedEntries += candidate.origin === 'resource' ? 1 : 0;
+      }
+      return;
+    }
+
+    const candidateTriggers = getWorldBookTriggers(candidate.entry);
+    if (candidateTriggers.size && candidate.origin === 'resource') {
+      const overlap = accepted.find((item) => item.origin !== candidate.origin
+        && setsIntersect(candidateTriggers, getWorldBookTriggers(item.entry)));
+      if (overlap) {
+        triggerOverlaps += 1;
+        conflicts.push({
+          type: 'trigger-overlap',
+          title: candidate.entry.title,
+          message: `${candidate.entry.title}与${overlap.entry.title}共享触发词，可能同时注入`,
+          resourceId: candidate.resourceId
+        });
+      }
+    }
+    accepted.push({ ...candidate, fingerprint });
+  });
+
+  return {
+    entries: accepted.map((item) => item.entry),
+    report: {
+      mode: mergeMode,
+      summary: {
+        baseEntries: mergeMode === 'resources-only' ? 0 : Number(baseEntries?.length || 0),
+        selectedEntries: (resourceGroups || []).reduce((sum, group) => sum + Number(group.entries?.length || 0), 0),
+        finalEntries: accepted.length,
+        exactDuplicates,
+        sameTitleConflicts,
+        constantConflicts,
+        triggerOverlaps,
+        replacedBaseEntries,
+        skippedSelectedEntries
+      },
+      conflicts
+    }
+  };
+}
+
+function getWorldBookTriggers(entry) {
+  return new Set([
+    ...(entry.keywords || []),
+    ...(entry.secondaryKeywords || []),
+    ...(entry.regex || [])
+  ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
+}
+
+function setsIntersect(left, right) {
+  for (const value of left) {
+    if (right.has(value)) return true;
+  }
+  return false;
+}
+
 async function loadJsonFiles(store, directory, files) {
   const items = await Promise.all((files || [])
     .filter((file) => file.endsWith('.json'))
@@ -594,7 +986,7 @@ function stripVolatileFields(value) {
   if (Array.isArray(value)) return value.map(stripVolatileFields);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !['id', 'assetId', 'updatedAt', 'createdAt', 'importedAt', 'raw'].includes(key))
+    .filter(([key]) => !['id', 'assetId', 'portrait', 'updatedAt', 'createdAt', 'importedAt', 'raw'].includes(key))
     .map(([key, item]) => [key, stripVolatileFields(item)]));
 }
 
@@ -616,8 +1008,16 @@ function dedupeByFingerprint(items) {
   });
 }
 
+function normalizeLibraryText(value, fallback, maxLength, { allowEmpty = false } = {}) {
+  if (value === undefined) return String(fallback || '');
+  const normalized = String(value || '').trim().slice(0, maxLength);
+  if (normalized || allowEmpty) return normalized;
+  return String(fallback || '');
+}
+
 function uniqueStrings(values) {
-  return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  const list = Array.isArray(values) ? values : values === undefined || values === null ? [] : [values];
+  return [...new Set(list.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
 function normalizeTitle(value) {

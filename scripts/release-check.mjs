@@ -33,6 +33,7 @@ const requiredFiles = [
   'docs/release-v0.2.1.md',
   'docs/release-v0.2.2.md',
   'docs/release-v0.4.md',
+  'docs/release-v0.4.1-rc.1.md',
   'docs/action-protocol-v1.md',
   'docs/content-pack-spec-v1.md',
   'docs/plugin-manifest-spec-v1.md'

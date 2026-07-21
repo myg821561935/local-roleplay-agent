@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import { createDefaultMemory } from '../agent/memoryUpdater.js';
 import { enrichNarrativeState } from '../config/narrativeProfiles.js';
+import { createAuthoringLedger, normalizeAuthoringLedger } from '../authoring/authoringLedger.js';
+import { DEFAULT_AGENT_PROFILE_ID, normalizeAgentProfileId } from '../authoring/agentProfiles.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
@@ -25,11 +27,21 @@ export class SessionService {
     return files.filter((file) => file.endsWith('.json')).map((file) => file.replace(/\.json$/, ''));
   }
 
-  async createSessionWithConfig({ id, title, config, memory }) {
+  async listSessionSummaries() {
+    const sessionIds = await this.listSessions();
+    const sessions = await Promise.all(sessionIds.map((sessionId) => this.getSession(sessionId)));
+    return sessions
+      .map(summarizeSession)
+      .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+  }
+
+  async createSessionWithConfig({ id, title, config, memory, storyProjectId = '', basePackId = '' }) {
     const sessionId = id ? validateSessionId(id) : crypto.randomUUID();
     const session = createSession(sessionId);
     session.title = title || session.title;
     session.config = config;
+    session.storyProjectId = cleanSessionReference(storyProjectId);
+    session.basePackId = cleanSessionReference(basePackId);
     if (memory && typeof memory === 'object' && !Array.isArray(memory)) {
       session.memory = structuredClone(memory);
     }
@@ -57,6 +69,7 @@ function createSession(id) {
     messages: [],
     usageLedger: [],
     memory: createDefaultMemory(),
+    authoring: createAuthoringLedger(),
     settings: {
       providerId: '',
       taskProviderOverrides: {},
@@ -65,6 +78,7 @@ function createSession(id) {
       maxPromptTokens: 8000,
       maxInjectedCards: 5,
       narrativeMode: 'stable',
+      activeAgentProfileId: DEFAULT_AGENT_PROFILE_ID,
       theme: '',
       backgroundImage: '',
       visualContentPack: ''
@@ -75,6 +89,9 @@ function createSession(id) {
 function enrichSessionNarrativeState(session) {
   const next = structuredClone(session);
   next.usageLedger = Array.isArray(next.usageLedger) ? next.usageLedger : [];
+  next.authoring = normalizeAuthoringLedger(next.authoring);
+  next.settings = next.settings && typeof next.settings === 'object' ? next.settings : {};
+  next.settings.activeAgentProfileId = normalizeAgentProfileId(next.settings.activeAgentProfileId);
   const memory = next.memory && typeof next.memory === 'object' ? next.memory : createDefaultMemory();
   const packId = String(
     memory.narrativeState?.lockedGenre
@@ -83,7 +100,35 @@ function enrichSessionNarrativeState(session) {
     || ''
   ).trim();
   const narrativeState = enrichNarrativeState(packId, memory.narrativeState);
-  if (!narrativeState) return next;
-  next.memory = { ...memory, narrativeState };
+  next.memory = narrativeState ? { ...memory, narrativeState } : memory;
   return next;
+}
+
+function summarizeSession(session) {
+  const messages = Array.isArray(session.messages) ? session.messages : [];
+  const lastMessage = messages.at(-1);
+  const memory = session.memory && typeof session.memory === 'object' ? session.memory : {};
+  const packId = String(
+    session.basePackId
+    || memory.resourcePackId
+    || memory.ruleSystem?.contentPackId
+    || memory.worldState?.flags?.genre
+    || ''
+  ).trim();
+  return {
+    id: session.id,
+    title: session.title || session.id,
+    storyProjectId: cleanSessionReference(session.storyProjectId),
+    basePackId: cleanSessionReference(session.basePackId) || packId,
+    packId,
+    messageCount: messages.length,
+    lastMessagePreview: String(lastMessage?.content || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    createdAt: session.createdAt || '',
+    updatedAt: session.updatedAt || session.createdAt || ''
+  };
+}
+
+function cleanSessionReference(value) {
+  const id = String(value || '').trim();
+  return SESSION_ID_PATTERN.test(id) ? id : '';
 }

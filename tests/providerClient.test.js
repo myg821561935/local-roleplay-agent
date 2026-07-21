@@ -142,6 +142,40 @@ test('streamOpenAICompatible parses SSE delta content', async () => {
   assert.equal(result.content, '江湖夜雨');
 });
 
+test('streamOpenAICompatible ignores reasoning deltas and streams final content', async () => {
+  const tokens = [];
+  const result = await streamOpenAICompatible({
+    provider: provider(),
+    messages: [{ role: 'user', content: '你好' }],
+    onToken: async (token) => tokens.push(token),
+    fetchImpl: async () => new Response([
+      'data: {"choices":[{"delta":{"reasoning_content":"先思考"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"正文"},"finish_reason":"stop"}]}\n\n',
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200 })
+  });
+
+  assert.deepEqual(tokens, ['正文']);
+  assert.equal(result.content, '正文');
+  assert.equal(result.raw.reasoningObserved, true);
+  assert.equal(result.raw.finishReason, 'stop');
+});
+
+test('streamOpenAICompatible rejects reasoning-only output', async () => {
+  await assert.rejects(
+    () => streamOpenAICompatible({
+      provider: provider(),
+      messages: [{ role: 'user', content: '你好' }],
+      fetchImpl: async () => new Response([
+        'data: {"choices":[{"delta":{"reasoning_content":"只有思考"}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200 })
+    }),
+    /PROVIDER_REASONING_ONLY_RESPONSE:length/
+  );
+});
+
 test('readOpenAICompatibleResponse extracts assistant content', async () => {
   const response = new Response(JSON.stringify({
     choices: [{ message: { content: '江湖夜雨。' } }]
@@ -179,5 +213,19 @@ test('readOpenAICompatibleResponse throws for missing assistant content', async 
   await assert.rejects(
     () => readOpenAICompatibleResponse(response),
     /Provider response missing assistant content:/
+  );
+});
+
+test('readOpenAICompatibleResponse identifies reasoning-only output without exposing it', async () => {
+  const response = new Response(JSON.stringify({
+    choices: [{
+      finish_reason: 'length',
+      message: { content: '', reasoning_content: 'private reasoning' }
+    }]
+  }), { status: 200 });
+
+  await assert.rejects(
+    () => readOpenAICompatibleResponse(response),
+    /PROVIDER_REASONING_ONLY_RESPONSE:length/
   );
 });

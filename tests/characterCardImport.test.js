@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { importCharacterCardFromPayload } from '../server/character/characterCardImport.js';
+import {
+  extractCharacterCardImage,
+  importCharacterCardFromPayload
+} from '../server/character/characterCardImport.js';
+import { exportCharacterCardPng } from '../server/character/characterCardExport.js';
 
 test('imports Character Card V2 JSON into local character card and world book entries', () => {
   const imported = importCharacterCardFromPayload({
@@ -10,6 +14,8 @@ test('imports Character Card V2 JSON into local character card and world book en
   });
 
   assert.equal(imported.characterCard.name, '沈观澜');
+  assert.equal(imported.characterCard.role, '');
+  assert.equal(imported.characterCard.creator, 'liufeng');
   assert.equal(imported.characterCard.firstMessage, '夜雨打在刀鞘上。');
   assert.deepEqual(imported.characterCard.alternateGreetings, ['雨还没停。']);
   assert.equal(imported.characterCard.systemPrompt, '保持武侠叙事。');
@@ -33,6 +39,62 @@ test('imports Character Card V2 from PNG Chara metadata', () => {
   assert.equal(imported.characterCard.name, '沈观澜');
   assert.equal(imported.characterCard.sourceSpec, 'chara_card_v2');
   assert.equal(imported.worldBook[0].source, 'character-card-v2');
+});
+
+test('extracts the original PNG portrait and keeps its pixels when exporting an updated card', () => {
+  const original = exportCharacterCardPng({
+    name: '旧名',
+    description: '原始角色。',
+    firstMessage: '旧开场。'
+  });
+  const extracted = extractCharacterCardImage({
+    fileName: 'portrait.png',
+    mimeType: 'image/png',
+    data: original.toString('base64'),
+    encoding: 'base64'
+  });
+  const updated = exportCharacterCardPng({
+    name: '新名',
+    description: '更新后的角色。',
+    firstMessage: '新开场。'
+  }, [], extracted.bytes);
+  const reimported = importCharacterCardFromPayload({
+    fileName: 'updated.png',
+    mimeType: 'image/png',
+    data: updated.toString('base64'),
+    encoding: 'base64'
+  });
+
+  assert.equal(extracted.mimeType, 'image/png');
+  assert.equal(extracted.width, 256);
+  assert.equal(extracted.height, 256);
+  assert.deepEqual(readChunkData(updated, 'IDAT'), readChunkData(original, 'IDAT'));
+  assert.equal(reimported.characterCard.name, '新名');
+  assert.equal(reimported.characterCard.firstMessage, '新开场。');
+});
+
+test('imports Character Card V3 PNG envelope and embedded lore settings', () => {
+  const png = createPngWithTextChunk('Chara', Buffer.from(JSON.stringify(v3CardFixture()), 'utf8').toString('base64'));
+  const imported = importCharacterCardFromPayload({
+    fileName: 'daqian.png',
+    mimeType: 'image/png',
+    data: png.toString('base64'),
+    encoding: 'base64'
+  });
+
+  assert.equal(imported.characterCard.name, '大乾风华录');
+  assert.equal(imported.characterCard.sourceSpec, 'chara_card_v3');
+  assert.deepEqual(imported.characterCard.alternateGreetings, ['朝堂开局。', '江湖开局。']);
+  assert.equal(imported.worldBook.length, 1);
+  assert.equal(imported.worldBook[0].source, 'character-card-v3');
+  assert.equal(imported.worldBook[0].matchMode, 'selective');
+  assert.deepEqual(imported.worldBook[0].keywords, []);
+  assert.deepEqual(imported.worldBook[0].regex, ['旧案.*密信']);
+  assert.deepEqual(imported.worldBook[0].secondaryKeywords, ['雨夜']);
+  assert.equal(imported.worldBook[0].secondaryMatchMode, 'regex');
+  assert.equal(imported.worldBook[0].depth, 7);
+  assert.equal(imported.worldBook[0].caseSensitive, true);
+  assert.equal(imported.worldBook[0].position, 'before_char');
 });
 
 function v2CardFixture() {
@@ -77,6 +139,41 @@ function v2CardFixture() {
   };
 }
 
+function v3CardFixture() {
+  return {
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: {
+      name: '大乾风华录',
+      first_mes: '风雨将至。',
+      alternate_greetings: ['朝堂开局。', '江湖开局。'],
+      tags: ['武侠', '群像'],
+      extensions: {},
+      character_book: {
+        name: '大乾世界书',
+        entries: [{
+          id: 12,
+          comment: '雨夜旧案',
+          keys: ['旧案.*密信'],
+          secondary_keys: ['雨夜'],
+          content: '密信牵出一桩旧案。',
+          constant: false,
+          selective: true,
+          insertion_order: 18,
+          enabled: true,
+          position: 'before_char',
+          use_regex: true,
+          extensions: {
+            depth: 7,
+            case_sensitive: true,
+            selectiveLogic: 0
+          }
+        }]
+      }
+    }
+  };
+}
+
 function createPngWithTextChunk(keyword, text) {
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -94,4 +191,15 @@ function createChunk(type, data) {
     data,
     Buffer.alloc(4)
   ]);
+}
+
+function readChunkData(png, expectedType) {
+  let offset = 8;
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.subarray(offset + 4, offset + 8).toString('ascii');
+    if (type === expectedType) return png.subarray(offset + 8, offset + 8 + length);
+    offset += 12 + length;
+  }
+  return null;
 }

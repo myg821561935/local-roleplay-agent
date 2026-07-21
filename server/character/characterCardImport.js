@@ -7,6 +7,19 @@ export function importCharacterCardFromPayload(payload = {}) {
   return normalizeImportedCard(rawCard);
 }
 
+export function extractCharacterCardImage(payload = {}) {
+  const bytes = decodePayloadBytes(payload);
+  if (!PNG_SIGNATURE.equals(bytes.subarray(0, PNG_SIGNATURE.length))) return null;
+
+  const dimensions = readPngDimensions(bytes);
+  return {
+    bytes: Buffer.from(bytes),
+    mimeType: 'image/png',
+    width: dimensions.width,
+    height: dimensions.height
+  };
+}
+
 function readCardJson(payload) {
   const data = String(payload.data || '');
   const bytes = decodePayloadBytes(payload);
@@ -40,6 +53,16 @@ function decodePayloadBytes(payload) {
 function looksLikeBase64(value) {
   const text = String(value || '').trim();
   return text.length > 32 && /^[A-Za-z0-9+/=\r\n]+$/.test(text);
+}
+
+function readPngDimensions(buffer) {
+  if (buffer.length < 24 || buffer.subarray(12, 16).toString('ascii') !== 'IHDR') {
+    return { width: 0, height: 0 };
+  }
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20)
+  };
 }
 
 function readPngCharacterText(buffer) {
@@ -104,12 +127,12 @@ function readInternationalTextChunk(data) {
 }
 
 function normalizeImportedCard(rawCard) {
-  const data = rawCard?.spec === 'chara_card_v2' || rawCard?.spec === 'yaml-character-card'
-    ? rawCard.data || {}
-    : rawCard || {};
+  const sourceSpec = stringValue(rawCard?.spec) || 'tavern_card_v1';
+  const usesDataEnvelope = sourceSpec === 'yaml-character-card' || /^chara_card_v\d+$/i.test(sourceSpec);
+  const data = usesDataEnvelope && isPlainObject(rawCard?.data) ? rawCard.data : rawCard || {};
   const characterCard = {
     name: stringValue(data.name),
-    role: stringValue(data.role || data.creator),
+    role: stringValue(data.role),
     description: stringValue(data.description),
     personality: stringValue(data.personality),
     scenario: stringValue(data.scenario),
@@ -123,14 +146,14 @@ function normalizeImportedCard(rawCard) {
     creator: stringValue(data.creator),
     characterVersion: stringValue(data.character_version),
     extensions: isPlainObject(data.extensions) ? data.extensions : {},
-    sourceSpec: rawCard?.spec || 'tavern_card_v1',
+    sourceSpec,
     raw: rawCard,
     enabled: true
   };
 
   return {
     characterCard,
-    worldBook: normalizeCharacterBook(data.character_book)
+    worldBook: normalizeCharacterBook(data.character_book, sourceSpec)
   };
 }
 
@@ -230,30 +253,49 @@ function parseYamlLikeCharacterCard(text) {
   };
 }
 
-function normalizeCharacterBook(book) {
+function normalizeCharacterBook(book, sourceSpec = 'chara_card_v2') {
   if (!book || !Array.isArray(book.entries)) return [];
-  const depth = normalizePositiveNumber(book.scan_depth, 4);
+  const bookExtensions = isPlainObject(book.extensions) ? book.extensions : {};
+  const fallbackDepth = normalizePositiveNumber(book.scan_depth ?? bookExtensions.scan_depth, 4);
   return book.entries
     .filter((entry) => entry && entry.enabled !== false && stringValue(entry.content))
-    .map((entry, index) => ({
-      id: `character-book-${entry.id ?? index}-${slugify(entry.name || entry.comment || entry.keys?.[0] || 'entry')}`,
-      type: 'character-book',
-      title: stringValue(entry.name || entry.comment || entry.keys?.[0] || `角色书条目 ${index + 1}`),
-      keywords: normalizeStringArray(entry.keys),
-      secondaryKeywords: normalizeStringArray(entry.secondary_keys),
-      content: stringValue(entry.content),
-      priority: normalizePositiveNumber(entry.priority, 80),
-      depth,
-      insertionOrder: normalizePositiveNumber(entry.insertion_order, index),
-      logic: entry.selective ? 'selective' : 'any',
-      constant: entry.constant === true,
-      caseSensitive: entry.case_sensitive === true,
-      position: stringValue(entry.position || 'after_character'),
-      enabled: true,
-      source: 'character-card-v2',
-      extensions: isPlainObject(entry.extensions) ? entry.extensions : {},
-      updatedAt: new Date().toISOString()
-    }));
+    .map((entry, index) => normalizeCharacterBookEntry(entry, index, fallbackDepth, sourceSpec));
+}
+
+function normalizeCharacterBookEntry(entry, index, fallbackDepth, sourceSpec) {
+  const extensions = isPlainObject(entry.extensions) ? entry.extensions : {};
+  const primaryTerms = normalizeStringArray(entry.keys ?? entry.key);
+  const secondaryKeywords = normalizeStringArray(entry.secondary_keys ?? entry.keysecondary);
+  const usesRegex = entry.use_regex === true || entry.useRegex === true;
+  const usesSecondary = entry.selective === true && secondaryKeywords.length > 0;
+
+  return {
+    id: `character-book-${entry.id ?? index}-${slugify(entry.name || entry.comment || primaryTerms[0] || 'entry')}`,
+    type: 'character-book',
+    title: stringValue(entry.name || entry.comment || primaryTerms[0] || `角色书条目 ${index + 1}`),
+    keywords: usesRegex ? [] : primaryTerms,
+    secondaryKeywords,
+    secondaryMatchMode: usesRegex ? 'regex' : 'keyword',
+    matchMode: usesSecondary ? 'selective' : usesRegex ? 'regex' : 'keyword',
+    regex: usesRegex ? primaryTerms : [],
+    content: stringValue(entry.content),
+    priority: normalizePositiveNumber(entry.priority ?? extensions.priority, 80),
+    depth: normalizePositiveNumber(entry.depth ?? extensions.depth, fallbackDepth),
+    insertionOrder: normalizePositiveNumber(entry.insertion_order ?? extensions.display_index, index),
+    logic: usesSecondary ? 'selective' : 'any',
+    constant: entry.constant === true,
+    caseSensitive: entry.case_sensitive === true || entry.caseSensitive === true || extensions.case_sensitive === true,
+    position: normalizeCharacterBookPosition(entry.position ?? extensions.position),
+    enabled: true,
+    source: sourceSpec === 'chara_card_v3' ? 'character-card-v3' : 'character-card-v2',
+    extensions,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeCharacterBookPosition(position) {
+  if (typeof position === 'number') return position === 1 ? 'after_char' : 'before_char';
+  return stringValue(position || 'after_character');
 }
 
 function normalizeExampleDialog(value) {
@@ -263,8 +305,9 @@ function normalizeExampleDialog(value) {
 }
 
 function normalizeStringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => stringValue(item)).filter(Boolean);
+  if (Array.isArray(value)) return value.map((item) => stringValue(item)).filter(Boolean);
+  const text = stringValue(value);
+  return text ? [text] : [];
 }
 
 function extractScalar(text, keys) {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地角色扮演 Agent</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/styles.css?v=20260716-2">
+    <link rel="stylesheet" href="/styles.css?v=20260720-2">
   </head>
   <body>
     <div class="app-shell">
@@ -20,6 +20,22 @@
           <button class="work-mode-button" type="button" data-work-mode="settings" aria-pressed="false">设定</button>
           <button class="work-mode-button" type="button" data-work-mode="debug" aria-pressed="false">调试</button>
         </div>
+        <button id="open-story-launcher" class="ghost-button story-shelf-button" type="button" aria-label="打开剧本书架，新建或切换故事" title="打开剧本书架，新建或切换故事">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"></path>
+          </svg>
+          <span>剧本书架</span>
+        </button>
+        <button id="open-asset-center" class="ghost-button asset-center-button" type="button" aria-label="打开叙事资产中心" title="管理角色卡、世界书、预设与内容包">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M3 7h18"></path>
+            <path d="M5 7v13h14V7"></path>
+            <path d="M8 3h8l2 4H6l2-4Z"></path>
+            <path d="M9 11h6"></path>
+          </svg>
+          <span>素材中心</span>
+        </button>
         <div class="mobile-nav mobile-only">
           <button class="ghost-button compact" type="button" data-mobile-view="provider">接口</button>
           <button class="ghost-button compact active" type="button" data-mobile-view="chat" data-mobile-mode="creative">创作</button>
@@ -38,6 +54,330 @@
         <span id="background-mode" class="mode-pill" aria-live="polite">舞台背景：未设置</span>
         <button id="refresh-state" class="ghost-button" type="button">刷新</button>
       </header>
+
+      <section id="story-launcher" class="story-launcher is-hidden" aria-labelledby="story-launcher-title" aria-hidden="true">
+        <header class="story-launcher-header">
+          <div class="story-launcher-brand">
+            <span>LOCAL STORY ENGINE</span>
+            <h2 id="story-launcher-title">剧本书架</h2>
+            <p>先选定世界与规则，再塑造主角、挑选天命并进入第一幕。</p>
+          </div>
+          <div class="story-launcher-header-actions">
+            <button id="close-story-launcher" class="icon-button" type="button" aria-label="返回当前工作台" title="返回当前工作台">×</button>
+          </div>
+        </header>
+
+        <div class="story-launcher-layout">
+          <aside class="story-library-rail" aria-label="最近故事">
+            <section id="story-continue-panel" class="story-continue-panel" hidden>
+              <span class="story-section-kicker">CONTINUE</span>
+              <h3>继续上次故事</h3>
+              <strong id="story-continue-title">最近会话</strong>
+              <p id="story-continue-meta">正在读取进度...</p>
+              <button id="continue-last-story" class="primary-button" type="button">回到故事</button>
+            </section>
+
+            <section class="story-projects-section">
+              <div class="story-section-heading">
+                <div>
+                  <span class="story-section-kicker">MY STORIES</span>
+                  <h3>我的故事</h3>
+                </div>
+                <span id="story-project-count">0</span>
+              </div>
+              <div id="story-project-list" class="story-project-list">
+                <p class="story-empty-copy">从右侧选择一个剧本，建立第一卷。</p>
+              </div>
+            </section>
+          </aside>
+
+          <main class="story-script-catalog">
+            <header class="story-catalog-header">
+              <div>
+                <span class="story-section-kicker">NEW STORY</span>
+                <h3>选择基础剧本</h3>
+                <p>内容包决定世界规则、角色边界与叙事主航道；舞台背景会随剧本联动。</p>
+              </div>
+              <div class="story-catalog-tools">
+                <label class="story-search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <path d="m21 21-4.3-4.3"></path>
+                  </svg>
+                  <input id="story-pack-search" type="search" autocomplete="off" placeholder="搜索剧本、题材或主角">
+                </label>
+                <div class="story-view-toggle" role="group" aria-label="剧本展示方式">
+                  <button id="story-view-grid" class="story-view-button active" type="button" data-story-view="grid" aria-label="图片卡片" title="图片卡片" aria-pressed="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <rect x="3" y="3" width="7" height="7"></rect>
+                      <rect x="14" y="3" width="7" height="7"></rect>
+                      <rect x="3" y="14" width="7" height="7"></rect>
+                      <rect x="14" y="14" width="7" height="7"></rect>
+                    </svg>
+                  </button>
+                  <button id="story-view-list" class="story-view-button" type="button" data-story-view="list" aria-label="紧凑列表" title="紧凑列表" aria-pressed="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path>
+                      <path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </header>
+            <nav id="story-category-filter" class="story-category-filter" aria-label="剧本题材分类"></nav>
+            <div id="story-pack-grid" class="story-pack-grid" aria-live="polite"></div>
+            <section class="story-custom-entry" aria-labelledby="story-custom-entry-title">
+              <div>
+                <span class="story-section-kicker">CUSTOM WORLD</span>
+                <h4 id="story-custom-entry-title">没有合适的剧本？</h4>
+                <p>从题材基线、角色卡和世界书组装一个独立的新剧本。</p>
+              </div>
+              <button id="open-story-custom-dialog" class="story-custom-entry-action" type="button">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M12 5v14"></path>
+                  <path d="M5 12h14"></path>
+                </svg>
+                <span>创建自定义剧本</span>
+              </button>
+            </section>
+          </main>
+        </div>
+
+        <footer class="story-launcher-footer">
+          <output id="story-launcher-status" class="status-text" aria-live="polite">选择剧本后会创建独立故事工程，不改动其他存档。</output>
+          <button id="open-advanced-session" class="ghost-button" type="button">高级拼装</button>
+        </footer>
+      </section>
+
+      <section id="asset-center" class="asset-center is-hidden" aria-labelledby="asset-center-title" aria-hidden="true">
+        <header class="asset-center-header">
+          <div class="asset-center-brand">
+            <span>STORY ASSET ARCHIVE</span>
+            <h2 id="asset-center-title">叙事资产中心</h2>
+            <p>统一管理角色卡、世界书、预设与内容包；原始素材与故事存档彼此独立。</p>
+          </div>
+          <div class="asset-center-header-actions">
+            <button id="asset-center-import" class="asset-secondary-button" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M12 3v12"></path><path d="m7 8 5-5 5 5"></path><path d="M5 21h14"></path>
+              </svg>
+              导入素材
+            </button>
+            <button id="asset-center-refresh" class="asset-secondary-button" type="button" aria-label="刷新素材索引" title="刷新素材索引">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"></path><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"></path>
+              </svg>
+            </button>
+            <button id="close-asset-center" class="icon-button" type="button" aria-label="关闭叙事资产中心" title="关闭">×</button>
+          </div>
+        </header>
+
+        <div class="asset-center-layout">
+          <aside class="asset-center-sidebar" aria-label="素材分类">
+            <section class="asset-center-summary">
+              <span class="asset-section-kicker">LIBRARY</span>
+              <strong><span id="asset-metric-all">0</span> 份馆藏</strong>
+              <p>导入、评定和整理在这里完成；故事只引用馆藏，不会修改原件。</p>
+            </section>
+            <nav id="asset-center-categories" class="asset-center-categories" aria-label="素材类型">
+              <button class="active" type="button" data-asset-kind="all" aria-pressed="true"><span>全部素材</span><b data-asset-kind-count>0</b></button>
+              <button type="button" data-asset-kind="character" aria-pressed="false"><span>角色卡</span><b data-asset-kind-count>0</b></button>
+              <button type="button" data-asset-kind="worldbook" aria-pressed="false"><span>世界书</span><b data-asset-kind-count>0</b></button>
+              <button type="button" data-asset-kind="prompt" aria-pressed="false"><span>预设 / Prompt</span><b data-asset-kind-count>0</b></button>
+              <button type="button" data-asset-kind="pack" aria-pressed="false"><span>内容包</span><b data-asset-kind-count>0</b></button>
+            </nav>
+            <div class="asset-center-source-filter">
+              <label for="asset-center-source">来源</label>
+              <select id="asset-center-source">
+                <option value="">全部来源</option>
+              </select>
+            </div>
+            <div class="asset-center-mini-metrics" aria-label="馆藏分类统计">
+              <div><strong id="asset-metric-characters">0</strong><span>角色</span></div>
+              <div><strong id="asset-metric-worldbooks">0</strong><span>世界书</span></div>
+              <div><strong id="asset-metric-prompts">0</strong><span>预设</span></div>
+            </div>
+            <button id="asset-center-compose" class="asset-sidebar-action" type="button">进入高级拼装</button>
+          </aside>
+
+          <main class="asset-center-catalog">
+            <header class="asset-center-toolbar">
+              <label class="asset-center-search">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path>
+                </svg>
+                <input id="asset-center-query" type="search" autocomplete="off" placeholder="搜索标题、标签、作者、集合或来源">
+              </label>
+              <select id="asset-center-sort" aria-label="素材排序">
+                <option value="updated">最近更新</option>
+                <option value="title">标题</option>
+                <option value="score">评定分数</option>
+                <option value="tokens">Token 规模</option>
+                <option value="versions">同名版本</option>
+              </select>
+              <button id="asset-center-organize" class="asset-secondary-button asset-organize-button" type="button" aria-pressed="false">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                </svg>
+                整理
+              </button>
+              <div class="asset-view-toggle" role="group" aria-label="素材展示方式">
+                <button class="active" type="button" data-asset-view="grid" aria-label="卡片视图" title="卡片视图" aria-pressed="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>
+                </button>
+                <button type="button" data-asset-view="list" aria-label="列表视图" title="列表视图" aria-pressed="false">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 6h13"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M3 6h.01"></path><path d="M3 12h.01"></path><path d="M3 18h.01"></path></svg>
+                </button>
+              </div>
+            </header>
+            <div class="asset-center-catalog-heading">
+              <div><span class="asset-section-kicker">CATALOG</span><strong>素材目录</strong></div>
+              <span id="asset-center-result-count">0 项</span>
+            </div>
+            <section id="asset-center-batch-bar" class="asset-batch-bar is-hidden" aria-label="批量整理工具">
+              <div class="asset-batch-summary"><strong id="asset-batch-count">0</strong><span>项已选</span></div>
+              <label><span>追加标签</span><input id="asset-batch-tags" type="text" placeholder="武侠、待整理"></label>
+              <label><span>加入集合</span><input id="asset-batch-collections" type="text" placeholder="主线角色、候选设定"></label>
+              <div class="asset-batch-actions">
+                <button id="asset-batch-apply" class="asset-primary-button" type="button">应用整理</button>
+                <button id="asset-batch-export" class="asset-secondary-button" type="button">导出</button>
+                <button id="asset-batch-delete" class="asset-danger-button" type="button">移除</button>
+                <button id="asset-batch-clear" class="asset-secondary-button" type="button">清空</button>
+              </div>
+            </section>
+            <div id="asset-center-grid" class="asset-center-grid" aria-live="polite"></div>
+          </main>
+
+          <aside id="asset-center-detail" class="asset-center-detail" aria-label="素材详情">
+            <div class="asset-detail-empty"><strong>选择一项素材</strong><span>这里会显示评定、来源、Token 与内容结构。</span></div>
+          </aside>
+        </div>
+
+        <footer class="asset-center-footer">
+          <output id="asset-center-status" aria-live="polite">素材中心已就绪。</output>
+          <span>评定 → 入库 → 整理 → 组装</span>
+        </footer>
+      </section>
+
+      <dialog id="story-custom-dialog" class="story-custom-dialog" aria-labelledby="story-custom-dialog-title">
+        <div class="story-custom-dialog-shell">
+          <header class="story-custom-dialog-header">
+            <div class="story-custom-copy">
+              <span class="story-section-kicker">CUSTOM WORLD</span>
+              <h2 id="story-custom-dialog-title">创建自定义剧本</h2>
+              <p>可以继承完整内容包，也可以从原创空白基线开始，再加入角色卡与世界书。</p>
+            </div>
+            <div class="story-custom-dialog-header-actions">
+              <button id="story-import-trigger" class="story-import-trigger" type="button">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M12 3v12"></path>
+                  <path d="m7 8 5-5 5 5"></path>
+                  <path d="M5 21h14a2 2 0 0 0 2-2v-4"></path>
+                  <path d="M3 15v4a2 2 0 0 0 2 2"></path>
+                </svg>
+                <span>导入新素材</span>
+              </button>
+              <input id="story-import-file" type="file" accept=".json,.png,.yaml,.yml,.txt,application/json,image/png,text/yaml,text/plain" hidden>
+              <button id="close-story-custom-dialog" class="icon-button" type="button" aria-label="关闭自定义剧本创建" title="关闭">×</button>
+            </div>
+          </header>
+          <div class="story-custom-dialog-body">
+            <div class="story-custom-builder">
+              <div class="story-custom-form">
+                <label class="story-custom-field">
+                  <span>基线来源 <small>可选完整内容包或原创</small></span>
+                  <select id="story-import-base" aria-label="自定义剧本题材基线"></select>
+                </label>
+                <label class="story-custom-field">
+                  <span>故事名称</span>
+                  <input id="story-custom-title" type="text" maxlength="80" autocomplete="off" placeholder="例如：大乾风华录 · 江湖卷">
+                </label>
+                <label class="story-custom-field">
+                  <span>主角 / 角色卡 <small>可沿用基线</small></span>
+                  <select id="story-custom-character" aria-label="自定义剧本角色卡"></select>
+                </label>
+                <label id="story-custom-character-background-option" class="story-character-background-option" hidden>
+                  <input id="story-custom-character-background" type="checkbox" checked>
+                  <img id="story-custom-character-background-preview" alt="所选角色立绘预览">
+                  <span>
+                    <strong>使用角色立绘作为舞台背景</strong>
+                    <small>竖版图片会采用人物聚焦构图；进入剧本后仍可切换系统背景。</small>
+                  </span>
+                </label>
+                <label class="story-custom-field">
+                  <span>世界书合并 <small>创建前会检查冲突</small></span>
+                  <select id="story-custom-worldbook-mode" aria-label="世界书合并策略">
+                    <option value="smart">智能合并（推荐）</option>
+                    <option value="base-first">基线优先</option>
+                    <option value="resources-only">仅使用所选素材</option>
+                  </select>
+                </label>
+                <section id="story-custom-baseline-fields" class="story-custom-baseline-fields" aria-labelledby="story-custom-baseline-title" hidden>
+                  <header>
+                    <div>
+                      <span class="story-section-kicker">ORIGINAL BASELINE</span>
+                      <h5 id="story-custom-baseline-title">原创世界基线</h5>
+                    </div>
+                    <label class="story-custom-field story-custom-template-field">
+                      <span>起草模板</span>
+                      <select id="story-custom-baseline-template" aria-label="原创世界起草模板"></select>
+                    </label>
+                  </header>
+                  <div class="story-custom-baseline-grid">
+                    <label class="story-custom-field">
+                      <span>世界名称</span>
+                      <input id="story-custom-world-name" type="text" maxlength="80" autocomplete="off" placeholder="例如：九州残卷">
+                    </label>
+                    <label class="story-custom-field">
+                      <span>类型与时代</span>
+                      <input id="story-custom-genre" type="text" maxlength="100" autocomplete="off" placeholder="例如：低魔武侠、架空王朝末年">
+                    </label>
+                    <label class="story-custom-field">
+                      <span>舞台氛围</span>
+                      <select id="story-custom-visual-pack" aria-label="原创剧本舞台氛围"></select>
+                    </label>
+                    <label class="story-custom-field story-custom-baseline-wide">
+                      <span>世界总纲 <small>世界如何运行、主要矛盾是什么</small></span>
+                      <textarea id="story-custom-premise" rows="4" maxlength="5000" placeholder="写下时代、地理、力量边界、社会结构与核心冲突。"></textarea>
+                    </label>
+                    <label class="story-custom-field">
+                      <span>叙事风格</span>
+                      <textarea id="story-custom-prose-style" rows="4" maxlength="2500" placeholder="视角、节奏、对白和描写偏好。"></textarea>
+                    </label>
+                    <label class="story-custom-field">
+                      <span>不可违背规则</span>
+                      <textarea id="story-custom-hard-rules" rows="4" maxlength="2500" placeholder="列出力量上限、禁用设定和必须保持的因果规则。"></textarea>
+                    </label>
+                  </div>
+                </section>
+                <fieldset class="story-custom-worldbooks">
+                  <legend>补充世界书 <small>角色卡附带设定会自动勾选，仍可取消</small></legend>
+                  <div id="story-custom-worldbook-list" class="story-custom-resource-list"></div>
+                </fieldset>
+              </div>
+              <aside class="story-custom-readiness" aria-labelledby="story-custom-readiness-title">
+                <div class="story-readiness-heading">
+                  <div>
+                    <span id="story-custom-readiness-badge" class="story-readiness-badge">正在检查</span>
+                    <h5 id="story-custom-readiness-title">创建条件</h5>
+                  </div>
+                  <span id="story-custom-token-estimate" class="story-custom-token-estimate"></span>
+                </div>
+                <ul id="story-custom-checklist" class="story-custom-checklist"></ul>
+                <div id="story-custom-conflicts" class="story-custom-conflicts" aria-live="polite"></div>
+                <p id="story-custom-guidance" class="story-custom-guidance">选择题材基线后即可创建；角色与设定可从基线继承。</p>
+              </aside>
+            </div>
+          </div>
+          <footer class="story-custom-dialog-footer">
+            <output id="story-custom-status" class="status-text" aria-live="polite">当前选择会生成新的剧本工程，不改动已有故事。</output>
+            <div class="story-custom-dialog-actions">
+              <button id="cancel-story-custom-dialog" class="ghost-button" type="button">取消</button>
+              <button id="story-custom-create" class="story-custom-create" type="button">创建剧本并进入</button>
+            </div>
+          </footer>
+        </div>
+      </dialog>
 
       <button id="exit-immersive-mode" class="exit-immersive-button" type="button" aria-label="退出沉浸模式">退出沉浸</button>
 
@@ -96,7 +436,7 @@
             <div class="split-row">
               <label>
                 <span>Temperature</span>
-                <input id="provider-temperature" name="provider-temperature" type="number" min="0" max="2" step="0.1" value="0.9">
+                <input id="provider-temperature" name="provider-temperature" type="number" min="0" max="2" step="0.01" value="0.9">
               </label>
               <label>
                 <span>Max Tokens</span>
@@ -375,29 +715,32 @@
             <button id="clear-background" class="ghost-button compact" type="button">清除背景</button>
           </div>
 
-          <div id="quick-replies-bar" class="quick-replies-bar"></div>
-
           <div class="composer">
-            <div class="stage-actions" role="group" aria-label="场景操作">
-              <button class="tool-button" type="button" data-tab-shortcut="character" data-help-key="character">角色设定</button>
-              <button id="continue-message" class="tool-button" type="button" data-help-key="continue" data-immersive-action>继续</button>
-              <button id="rewrite-chat-input" class="tool-button" type="button" data-help-key="rewrite">润色</button>
-              <button class="tool-button" type="button" data-help-key="format" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
-              <button id="target-speaker-btn" class="tool-button" type="button" data-help-key="targetSpeaker" data-immersive-action>指定发言</button>
-              <button id="toggle-author-note" class="tool-button" type="button" data-help-key="authorNote">注释</button>
-              <button id="toggle-background" class="tool-button" type="button" data-help-key="background">背景</button>
-              <button class="tool-button" type="button" data-help-key="scrollBottom" data-scroll-bottom data-immersive-action>底部</button>
+            <div class="composer-command-rail" role="toolbar" aria-label="创作与场景操作">
+              <div id="quick-replies-bar" class="quick-replies-bar" aria-label="快捷指令"></div>
+              <div class="stage-actions" role="group" aria-label="编辑工具">
+                <button class="tool-button" type="button" data-tab-shortcut="character" data-help-key="character">角色设定</button>
+                <button class="tool-button" type="button" data-tab-shortcut="authoring" title="编辑当前场景、伏笔和创作决策">创作账本</button>
+                <button id="continue-message" class="tool-button" type="button" data-help-key="continue" data-immersive-action>续写回复</button>
+                <button id="rewrite-chat-input" class="tool-button" type="button" data-help-key="rewrite">润色</button>
+                <button class="tool-button" type="button" data-help-key="format" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
+                <button id="target-speaker-btn" class="tool-button" type="button" data-help-key="targetSpeaker" data-immersive-action>指定发言</button>
+                <button id="toggle-author-note" class="tool-button" type="button" data-help-key="authorNote">注释</button>
+                <button id="toggle-background" class="tool-button" type="button" data-help-key="background">背景</button>
+                <button class="tool-button" type="button" data-help-key="scrollBottom" data-scroll-bottom data-immersive-action>底部</button>
+              </div>
+              <span id="composer-status" class="composer-status" aria-live="polite" hidden></span>
             </div>
             <form id="chat-form" class="chat-form">
               <textarea id="chat-input" rows="1" placeholder="输入角色行动或旁白指令..." spellcheck="false"></textarea>
-              <button class="send-button" type="submit" aria-label="发送">
+              <button id="send-message" class="send-button" type="submit" aria-label="发送">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
               </button>
             </form>
           </div>
         </section>
 
-        <aside id="inspector-panel" class="panel inspector-panel collapsed" aria-label="检查器">
+        <aside id="inspector-panel" class="panel inspector-panel collapsed" data-inspector-group="advanced" aria-label="检查器">
           <button id="open-inspector-panel" class="collapsed-rail-button" type="button" aria-label="展开检查器" aria-controls="inspector-panel" aria-expanded="false" title="展开检查器">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
             <span>检查</span>
@@ -406,7 +749,7 @@
             <button id="toggle-inspector-panel" class="ghost-button compact drawer-toggle" type="button" aria-label="收缩检查器" aria-controls="inspector-panel" aria-expanded="true" title="收缩检查器">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
             </button>
-            <h2>检查器</h2>
+            <h2 id="inspector-panel-title">检查器</h2>
           </div>
 
           <section id="content-stack-summary" class="content-stack-summary" aria-label="当前创作栈">
@@ -437,19 +780,137 @@
             <select id="inspector-tab-select" class="form-input" aria-label="选择检查器工具"></select>
           </label>
 
+          <nav class="inspector-group-nav" aria-label="检查器功能分级">
+            <div class="inspector-group-switch" role="group" aria-label="功能层级">
+              <button class="inspector-group-button" type="button" data-inspector-group="core" aria-pressed="false">
+                <strong>核心</strong><span>角色与世界</span>
+              </button>
+              <button class="inspector-group-button active" type="button" data-inspector-group="advanced" aria-pressed="true">
+                <strong>高级</strong><span>规则与扩展</span>
+              </button>
+              <button class="inspector-group-button" type="button" data-inspector-group="debug" aria-pressed="false">
+                <strong>调试</strong><span>记忆与观测</span>
+              </button>
+            </div>
+            <div class="inspector-advanced-shortcuts" aria-label="外部能力">
+              <button class="ghost-button compact" type="button" data-open-provider-section="vector-memory-panel">向量记忆</button>
+              <button class="ghost-button compact" type="button" data-open-provider-section="mcp-panel">MCP 工具</button>
+            </div>
+          </nav>
+
           <div class="tabs" role="tablist" aria-label="检查器标签">
-            <button class="tab-button" type="button" data-tab="memory" data-mode-groups="debug" data-help-key="memory" role="tab" aria-selected="false">记忆</button>
-            <button class="tab-button active" type="button" data-tab="status" data-mode-groups="creative settings debug" data-help-key="status" role="tab" aria-selected="true">状态</button>
-            <button class="tab-button" type="button" data-tab="facts" data-mode-groups="debug" data-help-key="facts" role="tab" aria-selected="false">事实</button>
-            <button class="tab-button" type="button" data-tab="usage" data-mode-groups="debug" data-help-key="usage" role="tab" aria-selected="false">用量</button>
-            <button class="tab-button" type="button" data-tab="worldbook" data-mode-groups="settings" data-help-key="worldbook" role="tab" aria-selected="false">世界书</button>
-            <button class="tab-button" type="button" data-tab="character" data-mode-groups="settings" data-help-key="character" role="tab" aria-selected="false">角色卡</button>
-            <button class="tab-button" type="button" data-tab="sources" data-mode-groups="settings" data-help-key="sources" role="tab" aria-selected="false">资源库</button>
-            <button class="tab-button" type="button" data-tab="prompt" data-mode-groups="settings" data-help-key="prompt" role="tab" aria-selected="false">Prompt</button>
-            <button class="tab-button" type="button" data-tab="persona" data-mode-groups="settings" data-help-key="persona" role="tab" aria-selected="false">人设</button>
-            <button class="tab-button" type="button" data-tab="quickreplies" data-mode-groups="settings" data-help-key="quickreplies" role="tab" aria-selected="false">快捷</button>
-            <button class="tab-button" type="button" data-tab="macro" data-mode-groups="settings" data-help-key="macro" role="tab" aria-selected="false">宏</button>
+            <button class="tab-button" type="button" data-tab="memory" data-tab-group="debug" data-mode-groups="debug" data-help-key="memory" role="tab" aria-selected="false" hidden>记忆</button>
+            <button class="tab-button active" type="button" data-tab="status" data-tab-group="advanced" data-mode-groups="creative settings debug" data-help-key="status" role="tab" aria-selected="true">世界模拟</button>
+            <button class="tab-button" type="button" data-tab="facts" data-tab-group="debug" data-mode-groups="debug" data-help-key="facts" role="tab" aria-selected="false" hidden>事实</button>
+            <button class="tab-button" type="button" data-tab="usage" data-tab-group="debug" data-mode-groups="debug" data-help-key="usage" role="tab" aria-selected="false" hidden>用量</button>
+            <button class="tab-button" type="button" data-tab="worldbook" data-tab-group="core" data-mode-groups="settings" data-help-key="worldbook" role="tab" aria-selected="false" hidden>世界书</button>
+            <button class="tab-button" type="button" data-tab="authoring" data-tab-group="core" data-mode-groups="settings" role="tab" aria-selected="false" hidden>创作账本</button>
+            <button class="tab-button" type="button" data-tab="character" data-tab-group="core" data-mode-groups="settings" data-help-key="character" role="tab" aria-selected="false" hidden>角色卡</button>
+            <button class="tab-button" type="button" data-tab="sources" data-tab-group="core" data-mode-groups="settings" data-help-key="sources" role="tab" aria-selected="false" hidden>资源库</button>
+            <button class="tab-button" type="button" data-tab="prompt" data-tab-group="core" data-mode-groups="settings" data-help-key="prompt" role="tab" aria-selected="false" hidden>Prompt</button>
+            <button class="tab-button" type="button" data-tab="persona" data-tab-group="core" data-mode-groups="settings" data-help-key="persona" role="tab" aria-selected="false" hidden>人设</button>
+            <button class="tab-button" type="button" data-tab="quickreplies" data-tab-group="core" data-mode-groups="settings" data-help-key="quickreplies" role="tab" aria-selected="false" hidden>快捷</button>
+            <button class="tab-button" type="button" data-tab="macro" data-tab-group="advanced" data-mode-groups="settings" data-help-key="macro" role="tab" aria-selected="false">宏</button>
           </div>
+
+          <section class="tab-pane authoring-pane" data-pane="authoring" role="tabpanel" hidden>
+            <header class="authoring-pane-heading">
+              <div>
+                <span class="section-kicker">AUTHORING LEDGER</span>
+                <h3>创作账本</h3>
+                <p id="authoring-summary">未命名场景 · 0 项待续承诺 · 0 项有效决策</p>
+              </div>
+              <label class="authoring-profile-field">
+                <span>Agent 职责</span>
+                <select id="authoring-agent-profile" class="form-input">
+                  <option value="story-director">叙事导演</option>
+                </select>
+              </label>
+            </header>
+
+            <section class="authoring-section" aria-labelledby="authoring-scene-heading">
+              <div class="authoring-section-heading">
+                <div>
+                  <h4 id="authoring-scene-heading">当前场景章纲</h4>
+                  <p>只约束眼前场景，不改写世界书和已经发生的事实。</p>
+                </div>
+              </div>
+              <div class="authoring-scene-grid">
+                <label class="authoring-field is-wide">
+                  <span>场景标题</span>
+                  <input id="authoring-scene-title" class="form-input" type="text" placeholder="例如：雨夜审问 · 断魂灯失窃">
+                </label>
+                <label class="authoring-field is-wide">
+                  <span>本场目标</span>
+                  <textarea id="authoring-scene-objective" class="form-input" rows="3" placeholder="本场结束前，局面应该产生什么变化？"></textarea>
+                </label>
+                <label class="authoring-field">
+                  <span>叙事视角</span>
+                  <input id="authoring-scene-pov" class="form-input" type="text" placeholder="第三人称限知 / 主角视角">
+                </label>
+                <label class="authoring-field">
+                  <span>地点</span>
+                  <input id="authoring-scene-location" class="form-input" type="text" placeholder="当前地点">
+                </label>
+                <label class="authoring-field">
+                  <span>时间</span>
+                  <input id="authoring-scene-time" class="form-input" type="text" placeholder="时辰、日期或相对时间">
+                </label>
+                <label class="authoring-field">
+                  <span>氛围与行文</span>
+                  <input id="authoring-scene-tone" class="form-input" type="text" placeholder="克制、紧张、少解释、多动作">
+                </label>
+                <label class="authoring-field is-wide">
+                  <span>收束钩子</span>
+                  <textarea id="authoring-ending-hook" class="form-input" rows="2" placeholder="本场结尾应留下的问题、选择或反转"></textarea>
+                </label>
+              </div>
+              <details class="authoring-boundaries">
+                <summary>信息边界与防偏航</summary>
+                <div class="authoring-scene-grid">
+                  <label class="authoring-field is-wide">
+                    <span>本场必须呈现（每行一项）</span>
+                    <textarea id="authoring-must-reveal" class="form-input" rows="3" placeholder="必须被读者看到的线索或变化"></textarea>
+                  </label>
+                  <label class="authoring-field is-wide">
+                    <span>本场必须隐藏（每行一项）</span>
+                    <textarea id="authoring-must-hide" class="form-input" rows="3" placeholder="角色不知道、读者暂时不能知道的信息"></textarea>
+                  </label>
+                  <label class="authoring-field is-wide">
+                    <span>禁止偏离（每行一项）</span>
+                    <textarea id="authoring-forbidden" class="form-input" rows="3" placeholder="例如：不要把主线转成寻宝解谜；不要新增跨境界能力"></textarea>
+                  </label>
+                </div>
+              </details>
+            </section>
+
+            <section class="authoring-section" aria-labelledby="authoring-promises-heading">
+              <div class="authoring-section-heading">
+                <div>
+                  <h4 id="authoring-promises-heading">叙事承诺</h4>
+                  <p>记录伏笔、人物约定和必须在后文回应的线索。</p>
+                </div>
+                <button id="add-authoring-promise" class="ghost-button compact" type="button">新增承诺</button>
+              </div>
+              <div id="authoring-promises" class="authoring-ledger-list"></div>
+            </section>
+
+            <section class="authoring-section" aria-labelledby="authoring-decisions-heading">
+              <div class="authoring-section-heading">
+                <div>
+                  <h4 id="authoring-decisions-heading">创作决策</h4>
+                  <p>保存已经确定、不能被模型静默推翻的作者决定。</p>
+                </div>
+                <button id="add-authoring-decision" class="ghost-button compact" type="button">新增决策</button>
+              </div>
+              <div id="authoring-decisions" class="authoring-ledger-list"></div>
+            </section>
+
+            <div class="editor-actions authoring-save-row">
+              <span id="authoring-status" class="status-text"></span>
+              <button id="save-authoring" class="primary-button compact" type="button">保存并约束后续生成</button>
+            </div>
+          </section>
 
           <section class="tab-pane memory-pane" data-pane="memory" role="tabpanel" hidden>
             <div id="memory-overview" class="memory-overview"></div>
@@ -990,7 +1451,7 @@
       <div class="import-review-shell">
         <header class="import-review-header">
           <div>
-            <span>资源准入</span>
+            <span id="import-review-kicker">资源准入</span>
             <h2 id="import-review-title">导入评定</h2>
           </div>
           <button id="close-import-review" class="icon-button" type="button" aria-label="关闭导入评定" title="关闭">×</button>
@@ -1011,6 +1472,6 @@
         </footer>
       </div>
     </dialog>
-    <script type="module" src="/app.js?v=20260716-2"></script>
+    <script type="module" src="/app.js?v=20260720-2"></script>
   </body>
 </html>

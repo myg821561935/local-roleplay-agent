@@ -3,6 +3,9 @@ node_modules/
 data/config/providers.local.json
 data/sessions/
 data/exports/
+data/assets/
+data/library/
+data/projects/
 .superpowers/
 work/
 backups/

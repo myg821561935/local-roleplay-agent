@@ -1,4 +1,6 @@
 const DEFAULT_TIMEOUT_MS = 15_000;
+const MIN_TEST_MAX_TOKENS = 128;
+const MAX_TEST_MAX_TOKENS = 256;
 
 export async function testProviderConnection({
   provider,
@@ -18,9 +20,9 @@ export async function testProviderConnection({
     provider: {
       ...provider,
       temperature: 0,
-      maxTokens: Math.min(16, Math.max(1, Number(provider.maxTokens || 8)))
+      maxTokens: resolveTestMaxTokens(provider.maxTokens)
     },
-    messages: [{ role: 'user', content: 'Reply with OK only.' }],
+    messages: [{ role: 'user', content: 'Return exactly OK. Do not add any explanation.' }],
     fetchImpl: timeoutFetch
   });
 
@@ -33,6 +35,12 @@ export async function testProviderConnection({
     responsePreview: String(result?.content || '').trim().slice(0, 80),
     testedAt: new Date().toISOString()
   };
+}
+
+function resolveTestMaxTokens(configuredMaxTokens) {
+  const value = Number(configuredMaxTokens);
+  if (!Number.isFinite(value) || value <= 0) return MIN_TEST_MAX_TOKENS;
+  return Math.min(MAX_TEST_MAX_TOKENS, Math.max(MIN_TEST_MAX_TOKENS, value));
 }
 
 function createTimeoutFetch(fetchImpl, timeoutMs) {

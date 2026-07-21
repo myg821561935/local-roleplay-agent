@@ -22,6 +22,10 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
       personality: '沉稳，重诺。',
       scenario: '正在调查镇武司旧案。',
       exampleDialog: ['用户：你是谁？', '沈观澜：过路人。'],
+      extensions: {
+        speech: '短句，少解释；遇到旧案时先试探对方知道多少。',
+        knowledge: '知道镇武司公开职掌，不知道密档去向。'
+      },
       enabled: true
     },
     worldBook: [{
@@ -52,6 +56,12 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
   assert.match(result.messages[0].content, /# 角色卡/);
   assert.match(result.messages[0].content, /沈观澜/);
   assert.match(result.messages[0].content, /正在调查镇武司旧案/);
+  assert.match(result.messages[0].content, /# 角色演绎契约/);
+  assert.match(result.messages[0].content, /短句，少解释/);
+  assert.match(result.messages[0].content, /不知道密档去向/);
+  assert.match(result.messages[0].content, /只模仿风格特征，不逐句复述示例/);
+  assert.match(result.messages[0].content, /# 沉浸式呈现契约/);
+  assert.match(result.messages[0].content, /<special_status>/);
   assert.match(result.messages[0].content, /<recommended_actions>/);
   assert.ok(result.messages.some(m => /镇武司负责约束江湖武人/.test(m.content)));
   assert.match(result.messages[0].content, /云州城/);

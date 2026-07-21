@@ -44,8 +44,12 @@ export function evaluateResourceCandidate(candidate, {
 
   const exactDuplicates = conflicts.filter((item) => item.type === 'exact-duplicate').length;
   const sameTitles = conflicts.filter((item) => item.type === 'same-title').length;
+  const portraitUpdates = conflicts.filter((item) => item.type === 'portrait-update').length;
   if (exactDuplicates) {
     warnings.push({ code: 'EXACT_DUPLICATE', message: '素材库中已有完全相同的内容，本次不会重复保存。' });
+  }
+  if (portraitUpdates) {
+    warnings.push({ code: 'PORTRAIT_UPDATE', message: '角色内容没有变化，本次将为已有素材补充或更新卡面图片。' });
   }
   if (sameTitles) {
     warnings.push({ code: 'SAME_TITLE_DIFFERENT_CONTENT', message: '素材库中存在同名不同内容，将作为独立版本保留。' });

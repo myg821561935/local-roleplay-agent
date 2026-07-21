@@ -6,19 +6,19 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
   {
     spec: PLUGIN_SPEC,
     id: 'core.character-card-v2',
-    version: '1.0.0',
-    name: 'Character Card V2 适配',
-    description: '兼容 SillyTavern 等客户端使用的 PNG 内嵌或 JSON 角色卡。',
+    version: '1.1.0',
+    name: 'Character Card V2/V3 适配',
+    description: '兼容 SillyTavern 等客户端使用的 V2/V3 PNG 内嵌或 JSON 角色卡。',
     engine: ENGINE_RANGE,
     adapters: [{
       id: 'character-card-v2',
-      version: '1.0.0',
-      label: 'Character Card V2',
+      version: '1.1.0',
+      label: 'Character Card V2/V3',
       kinds: ['character'],
       formats: ['png', 'json'],
       priority: 100,
       capabilities: ['inspect', 'normalize'],
-      match: { previewKinds: ['character-card'], sourceSpecIncludes: ['chara_card_v2'] }
+      match: { previewKinds: ['character-card'], sourceSpecIncludes: ['chara_card_v2', 'chara_card_v3'] }
     }]
   },
   {

@@ -136,6 +136,57 @@ test('AgentService rewrites text with the session provider without saving chat',
   assert.equal(readback.usageLedger[0].taskKey, 'rewrite');
 });
 
+test('AgentService expands a recommended action with the active protagonist and scene context', async () => {
+  let rewritePrompt = '';
+  const { service, configService, sessionService } = await createHarness({
+    providerClient: {
+      complete: async ({ provider, messages }) => {
+        rewritePrompt = messages.map((message) => message.content).join('\n');
+        return {
+          content: '我拢住袖口的雷痕，转向苏月白低声问道：「伤者腕上的魂灯残痕，是从何处来的？」',
+          raw: { providerId: provider.id }
+        };
+      }
+    }
+  });
+  await configService.saveCharacterCard({
+    name: '晏清虚',
+    role: '雷泽散修',
+    personality: '沉静克制，问话前先观察对方反应。',
+    description: '清虚宗旧案幸存者。',
+    exampleDialog: ['晏清虚说话简短，不轻易暴露底牌。']
+  });
+  const session = await sessionService.getSession('main');
+  session.memory.worldState = {
+    protagonist: { name: '晏清虚', realm: '元婴中期' },
+    location: { current: '望舒仙市雨檐' }
+  };
+  session.messages.push({
+    id: 'scene-1',
+    role: 'assistant',
+    content: '苏月白守在药棚伤者身边，晨雾压低了仙市的檐角。',
+    roleplayPanels: {
+      sceneStatus: '晨雾未散，药棚外仍有雨声。',
+      characterStatus: '苏月白：神色疲惫，正在掩饰魂灯残痕。'
+    }
+  });
+  await sessionService.saveSession(session);
+
+  const result = await service.rewriteText({
+    sessionId: 'main',
+    target: 'recommended-action',
+    text: '转向苏月白，直接问她伤者手腕上的魂灯残痕'
+  });
+
+  assert.match(rewritePrompt, /主角：晏清虚/);
+  assert.match(rewritePrompt, /身份：雷泽散修/);
+  assert.match(rewritePrompt, /当前地点：望舒仙市雨檐/);
+  assert.match(rewritePrompt, /晨雾未散/);
+  assert.match(rewritePrompt, /选定行动意图/);
+  assert.match(rewritePrompt, /不得新增行动结果/);
+  assert.match(result.text, /我拢住袖口的雷痕/);
+});
+
 test('AgentService extracts recommended actions from assistant reply', async () => {
   const { service, sessionService } = await createHarness({
     providerClient: {
@@ -159,6 +210,36 @@ test('AgentService extracts recommended actions from assistant reply', async () 
   assert.equal(reply.content, '你看见镇武司门前灯火森严。');
   assert.deepEqual(reply.recommendedActions, ['上前询问守卫', '绕到侧门观察', '先去茶摊打听消息']);
   assert.deepEqual(readback.messages[1].recommendedActions, reply.recommendedActions);
+});
+
+test('AgentService separates roleplay protocol panels from visible story text', async () => {
+  const { service, sessionService } = await createHarness({
+    providerClient: {
+      complete: async () => ({
+        content: [
+          '<descriptive_analysis>内部导演分析</descriptive_analysis>',
+          '<normal_status>地点：江陵府</normal_status>',
+          '<plot>暮鼓落下时，你踏进江陵府。</plot>',
+          '<relationship_status>叶惊弦：陌路，戒备上升。</relationship_status>',
+          '<special_status>『沈砚状态』\\n身份：游学士子</special_status>'
+        ].join('\\n'),
+        raw: { fake: true }
+      })
+    }
+  });
+
+  const result = await service.sendMessage({
+    sessionId: 'main',
+    content: '[ 命途设定：江湖旧案 ]\\n姓名：沈砚'
+  });
+  const readback = await sessionService.getSession('main');
+
+  assert.equal(result.reply.content, '暮鼓落下时，你踏进江陵府。');
+  assert.equal(result.reply.roleplayPanels.sceneStatus, '地点：江陵府');
+  assert.match(result.reply.roleplayPanels.relationshipStatus, /叶惊弦/);
+  assert.doesNotMatch(result.reply.content, /descriptive_analysis|内部导演分析|沈砚状态/);
+  assert.equal(readback.messages[0].kind, 'journey-setup');
+  assert.deepEqual(readback.messages[1].swipeMetadata[0].roleplayPanels, result.reply.roleplayPanels);
 });
 
 test('AgentService hides action protocol blocks and commits adjudicated world effects', async () => {

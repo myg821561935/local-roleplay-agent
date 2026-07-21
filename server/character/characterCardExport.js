@@ -67,16 +67,57 @@ function createPlaceholderPng(width, height, [r, g, b]) {
   return Buffer.concat([PNG_SIGNATURE, ihdr, idat, iend]);
 }
 
-export function exportCharacterCardPng(characterCard, worldBook = []) {
+export function exportCharacterCardPng(characterCard, worldBook = [], basePng = null) {
   const v2Card = toV2CharacterCard(characterCard, worldBook);
   const json = JSON.stringify(v2Card);
   const base64 = Buffer.from(json, 'utf8').toString('base64');
 
-  const png = createPlaceholderPng(256, 256, [45, 42, 58]);
+  const png = normalizeBasePng(basePng) || createPlaceholderPng(256, 256, [45, 42, 58]);
   const textChunk = createTextChunk('chara', base64);
+  return replaceCharacterMetadata(png, textChunk);
+}
 
-  const ihdrEnd = PNG_SIGNATURE.length + 25;
-  return Buffer.concat([png.subarray(0, ihdrEnd), textChunk, png.subarray(ihdrEnd)]);
+function normalizeBasePng(value) {
+  if (!value) return null;
+  const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  if (!PNG_SIGNATURE.equals(buffer.subarray(0, PNG_SIGNATURE.length))) return null;
+  return buffer;
+}
+
+function replaceCharacterMetadata(png, textChunk) {
+  const chunks = [];
+  let offset = PNG_SIGNATURE.length;
+  let inserted = false;
+  let hasHeader = false;
+
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset);
+    const end = offset + 12 + length;
+    if (end > png.length) return replaceCharacterMetadata(createPlaceholderPng(256, 256, [45, 42, 58]), textChunk);
+    const type = png.subarray(offset + 4, offset + 8).toString('ascii');
+    const data = png.subarray(offset + 8, offset + 8 + length);
+    const chunk = png.subarray(offset, end);
+    if (type === 'IHDR') hasHeader = true;
+    if (!isCharacterTextChunk(type, data)) chunks.push(chunk);
+    if (type === 'IHDR' && !inserted) {
+      chunks.push(textChunk);
+      inserted = true;
+    }
+    offset = end;
+    if (type === 'IEND') break;
+  }
+
+  if (!hasHeader || !inserted) {
+    return replaceCharacterMetadata(createPlaceholderPng(256, 256, [45, 42, 58]), textChunk);
+  }
+  return Buffer.concat([PNG_SIGNATURE, ...chunks]);
+}
+
+function isCharacterTextChunk(type, data) {
+  if (!['tEXt', 'zTXt', 'iTXt'].includes(type)) return false;
+  const separator = data.indexOf(0);
+  if (separator < 0) return false;
+  return data.subarray(0, separator).toString(type === 'iTXt' ? 'utf8' : 'latin1').toLowerCase() === 'chara';
 }
 
 function toV2CharacterCard(characterCard, worldBook = []) {

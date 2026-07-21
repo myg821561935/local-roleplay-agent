@@ -14,6 +14,7 @@ test('frontend exposes provider presets and import review controls', async () =>
   assert.match(html, /id="provider-model-custom"/);
   assert.match(html, /id="test-provider"/);
   assert.match(html, /id="provider-test-result"/);
+  assert.match(html, /id="provider-temperature"[^>]+step="0\.01"/);
   assert.match(html, /id="release-data-panel"/);
   assert.match(html, /id="create-backup"/);
   assert.match(html, /id="backup-select"/);
@@ -130,6 +131,132 @@ test('frontend exposes provider presets and import review controls', async () =>
   assert.match(css, /\.epic-journey-draft/);
 });
 
+test('imported Character Card portraits appear across preview, stories, opening and chat', async () => {
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(app, /function getCharacterPortraitUrl/);
+  assert.match(app, /function createCharacterPortraitImage/);
+  assert.match(app, /function getPendingImportPortraitDataUrl/);
+  assert.match(app, /createCharacterPortraitImage\(pack\.characterPortrait, 'story-card-portrait'/);
+  assert.match(app, /createCharacterPortraitImage\(mainCharacter, 'message-avatar'/);
+  assert.match(app, /createCharacterPortraitImage\(card, 'character-overview-portrait'/);
+  assert.match(app, /className = 'import-character-portrait'/);
+  assert.match(app, /sessionId: currentSessionId/);
+
+  assert.match(css, /\.story-card-portrait\s*\{/);
+  assert.match(css, /\.epic-protagonist-portrait\s*\{/);
+  assert.match(css, /\.message-avatar\s*\{/);
+  assert.match(css, /\.character-overview-portrait\s*\{/);
+  assert.match(css, /\.import-character-portrait\s*\{/);
+  assert.match(css, /\.resource-item-portrait\s*\{/);
+});
+
+test('story bookshelf starts new projects before entering the guided opening', async () => {
+  const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(html, /id="open-story-launcher"/);
+  assert.match(html, /id="story-launcher"/);
+  assert.match(html, /id="continue-last-story"/);
+  assert.match(html, /id="story-project-list"/);
+  assert.match(html, /id="story-pack-grid"/);
+  assert.match(html, /id="story-category-filter"/);
+  assert.match(html, /id="story-view-grid"/);
+  assert.match(html, /id="story-view-list"/);
+  assert.match(html, /id="open-story-custom-dialog"/);
+  assert.match(html, /id="story-custom-dialog"/);
+  assert.match(html, /id="close-story-custom-dialog"/);
+  assert.match(html, /id="cancel-story-custom-dialog"/);
+  assert.match(html, /id="story-custom-status"/);
+  assert.match(html, /id="story-import-base"/);
+  assert.match(html, /id="story-import-trigger"/);
+  assert.match(html, /id="story-import-file"/);
+  assert.match(html, /id="story-custom-title"/);
+  assert.match(html, /id="story-custom-character"/);
+  assert.match(html, /id="story-custom-character-background"/);
+  assert.match(html, /id="story-custom-character-background-preview"/);
+  assert.match(html, /id="story-custom-worldbook-mode"/);
+  assert.match(html, /id="story-custom-baseline-fields"/);
+  assert.match(html, /id="story-custom-baseline-template"/);
+  assert.match(html, /id="story-custom-premise"/);
+  assert.match(html, /id="story-custom-worldbook-list"/);
+  assert.match(html, /id="story-custom-checklist"/);
+  assert.match(html, /id="story-custom-conflicts"/);
+  assert.match(html, /id="story-custom-create"/);
+  assert.match(html, /创建自定义剧本/);
+  assert.match(html, /id="open-advanced-session"/);
+  assert.match(html, /先选定世界与规则，再塑造主角、挑选天命并进入第一幕/);
+  assert.ok(
+    html.indexOf('id="story-pack-grid"') < html.indexOf('id="open-story-custom-dialog"'),
+    'the installed script catalog should appear before the custom story entry'
+  );
+  assert.ok(
+    html.indexOf('id="open-story-custom-dialog"') < html.indexOf('id="story-custom-dialog"'),
+    'the custom builder should live in a separate dialog after its launcher entry'
+  );
+
+  assert.match(app, /fetch\('\/api\/story-projects'\)/);
+  assert.match(app, /function renderStoryPackGrid/);
+  assert.match(app, /function renderStoryCatalogFilters/);
+  assert.match(app, /function setStoryCatalogView/);
+  assert.match(app, /function renderStoryProjects/);
+  assert.match(app, /function renderStoryImportBaseOptions/);
+  assert.match(app, /function renderCustomStoryBuilder/);
+  assert.match(app, /function renderCustomBaselineEditor/);
+  assert.match(app, /function getCompanionWorldBooks/);
+  assert.match(app, /function scheduleCustomStoryInspection/);
+  assert.match(app, new RegExp('/api/resource-library/packs/inspect'));
+  assert.match(app, /function openCustomStoryDialog/);
+  assert.match(app, /function closeCustomStoryDialog/);
+  assert.match(app, /function getCustomStoryReadiness/);
+  assert.match(app, /async function createCustomStoryFromDraft/);
+  assert.match(app, /intent: 'create-story'/);
+  assert.match(app, /function stageStoryResourcesFromCommittedImport/);
+  assert.match(app, /async function createStoryFromCommittedImport/);
+  assert.match(app, /worldBookResourceIds: worldBooks\.map/);
+  assert.match(app, /includeBaseContent: true/);
+  assert.match(app, /async function startStoryFromPack/);
+  assert.match(app, /\/api\/story-projects\/\$\{encodeURIComponent\(projectPayload\.project\.id\)\}\/sessions/);
+  assert.match(app, /async function continueStoryProject/);
+  assert.match(app, /initializeStoryLauncherVisibility/);
+  assert.match(app, /backgroundImage: stageBackground\?\.url/);
+
+  assert.match(css, /\.story-launcher\s*\{/);
+  assert.match(css, /\.story-launcher-layout\s*\{[\s\S]*grid-template-columns:/);
+  assert.match(css, /\.story-pack-grid\s*\{[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.story-custom-builder\s*\{[\s\S]*grid-template-columns:/);
+  assert.match(css, /\.story-custom-entry\s*\{/);
+  assert.match(css, /\.story-custom-dialog\s*\{/);
+  assert.match(css, /\.story-custom-dialog::backdrop\s*\{/);
+  assert.match(css, /\.story-custom-dialog-body\s*\{[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.story-custom-readiness\s*\{/);
+  assert.match(css, /\.story-custom-baseline-fields\s*\{/);
+  assert.match(css, /\.story-character-background-option\s*\{/);
+  assert.match(css, /\.story-custom-conflicts\s*\{/);
+  assert.match(css, /\.story-category-filter\s*\{/);
+  assert.match(css, /\.story-pack-grid\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(css, /\.story-pack-grid\.is-list-view\s*\{[\s\S]*grid-template-columns:\s*1fr/);
+  assert.match(css, /\.story-script-card\s*\{[\s\S]*background-image:\s*var\(--story-card-image\)/);
+  assert.match(css, /@media \(max-width: 820px\)[\s\S]*\.story-launcher\s*\{[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /@media \(max-width: 820px\)[\s\S]*\.story-pack-grid\s*\{[\s\S]*overflow:\s*visible/);
+  assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.story-pack-grid\s*\{[\s\S]*grid-template-columns:\s*1fr/);
+});
+
+test('empty story sessions enter a focused opening stage before the first message', async () => {
+  const app = await readFile('public/modules/chat.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(app, /const openingFocus = messages\.length === 0 && !state\.pendingJourneyDraft/);
+  assert.match(app, /document\.body\.classList\.toggle\('story-opening-focus', openingFocus\)/);
+  assert.match(css, /body\.story-opening-focus \.provider-panel/);
+  assert.match(css, /body\.story-opening-focus \.immersive-right-sidebar/);
+  assert.match(css, /body\.story-opening-focus \.chat-header-overlay/);
+  assert.match(css, /body\.story-opening-focus \.composer/);
+  assert.match(css, /body\.story-opening-focus \.messages\.has-cover-page/);
+});
+
 test('prologue templates are genre-aware and include destiny cards', async () => {
   const template = JSON.parse(await readFile('public/prologue-template.json', 'utf8'));
   const app = await readFile('public/app.js', 'utf8');
@@ -185,7 +312,7 @@ test('chat background customization is explicit and not owned by themes', async 
   assert.match(app, /function handleContentPackSelectionChange/);
   assert.match(app, /正在同步规则、世界书、角色卡和视觉/);
   assert.match(app, /const payload = await applyContentPack\(\)/);
-  assert.match(app, /setOpeningGenre\(option\.id, \{ linkVisuals: false \}\)/);
+  assert.match(app, /contentPackControls\.hidden = Boolean\(state\.session\?\.storyProjectId\)/);
   assert.match(app, /visualContentPack/);
   assert.match(app, /function normalizeBackgroundUrlForMatch/);
   assert.match(app, /function backgroundUrlsMatch/);
@@ -195,7 +322,8 @@ test('chat background customization is explicit and not owned by themes', async 
   assert.match(app, /function syncSessionVisualState/);
   assert.match(app, /const visualContentPack = state\.session\?\.settings\?\.visualContentPack/);
   assert.match(app, /const candidates = \[selectedPack, visualContentPack, sessionGenre/);
-  assert.match(app, /const visualPreset = await linkContentPackVisuals\(visualPackId, \{ persist: true \}\)/);
+  assert.match(app, /const stageBackground = getStoryStageBackground\(payload\.appliedPack\)/);
+  assert.match(app, /const visualPreset = await linkContentPackVisuals\(visualPackId, \{[\s\S]*backgroundImage: stageBackground\?\.url[\s\S]*backgroundFit: stageBackground\?\.fit[\s\S]*backgroundSource: stageBackground\?\.source/);
   assert.match(app, /已应用到会话：\$\{payload\.appliedPack\?\.title \|\| packId\} · 视觉：\$\{visualPreset\.label\}/);
   assert.match(app, /preset\.url\s*\|\|/);
   assert.match(app, /updateBackgroundModeUi/);
@@ -203,6 +331,11 @@ test('chat background customization is explicit and not owned by themes', async 
   assert.match(app, /自定义舞台背景/);
   assert.match(app, /舞台背景：\$\{label \|\| '自定义'\}/);
   assert.match(css, /var\(--chat-bg-image,\s*linear-gradient/);
+  assert.match(app, /classList\.toggle\('has-stage-background',\s*Boolean\(bg\)\)/);
+  assert.match(css, /\.chat-panel\.has-stage-background\s*\{[\s\S]*var\(--chat-bg-image\);/);
+  assert.match(css, /\.chat-panel\.has-stage-background::after\s*\{[\s\S]*mix-blend-mode:\s*normal;/);
+  assert.match(css, /\.chat-panel\.has-stage-background \.message\.assistant,[\s\S]*backdrop-filter:\s*none;/);
+  assert.match(css, /\.chat-panel\.background-fit-portrait\s*\{/);
   assert.doesNotMatch(css, /var\(--chat-bg-image,\s*url\('\/assets\/wuxia-stage\.png'\)\)/);
   assert.doesNotMatch(css, /var\(--chat-bg-image,\s*url\('\/assets\/xianxia-stage\.png'\)\)/);
   assert.doesNotMatch(css, /:root\[data-theme="wuxia-scroll"\]\s+\.chat-panel\s*\{[\s\S]*background:/);
@@ -320,7 +453,7 @@ test('provider configuration uses an internal scroll body for expandable tools',
 test('world book inspector editor keeps long entry lists scrollable', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const css = await readFile('public/styles.css', 'utf8');
-  const app = await readFile('public/app.js', 'utf8');
+  const app = await readFile('public/modules/inspector.js', 'utf8');
 
   assert.match(html, /<section class="tab-pane worldbook-pane" data-pane="worldbook"/);
   assert.match(html, /id="worldbook-entries-panel" class="worldbook-entries-panel" open/);
@@ -332,12 +465,13 @@ test('world book inspector editor keeps long entry lists scrollable', async () =
   assert.match(css, /\.wb-editor-body\s*\{[\s\S]*overflow-y:\s*auto;/);
   assert.match(css, /\.wb-editor-actions\s*\{[\s\S]*position:\s*sticky;/);
   assert.match(app, /body\.className = 'wb-editor-body';/);
-  assert.match(app, /btnRow\.className = 'wb-editor-actions';/);
+  assert.match(app, /actions\.className = 'wb-editor-actions';/);
 });
 
 test('world book browser groups large lore libraries with search and readable previews', async () => {
   const html = await readFile('public/index.html', 'utf8');
-  const app = await readFile('public/app.js', 'utf8');
+  const entry = await readFile('public/app.js', 'utf8');
+  const app = `${entry}\n${await readFile('public/modules/inspector.js', 'utf8')}`;
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(html, /id="worldbook-search"/);
@@ -345,8 +479,8 @@ test('world book browser groups large lore libraries with search and readable pr
   assert.match(html, /id="worldbook-browser-count"/);
   assert.match(html, /世界圣经浏览与编辑/);
   assert.match(app, /const WORLD_BOOK_TYPE_LABELS =/);
-  assert.match(app, /function createWorldbookEntryRow/);
-  assert.match(app, /function syncWorldbookTypeFilter/);
+  assert.match(app, /function createEntryRow/);
+  assert.match(app, /function syncTypeFilter/);
   assert.match(app, /worldbookSearch\?\.addEventListener\('input', renderWorldbookEntries\)/);
   assert.match(app, /worldbookTypeFilter\?\.addEventListener\('change', renderWorldbookEntries\)/);
   assert.match(css, /\.worldbook-browser-toolbar\s*\{/);
@@ -357,7 +491,8 @@ test('world book browser groups large lore libraries with search and readable pr
 
 test('inspector controls stay usable in narrow drawers', async () => {
   const html = await readFile('public/index.html', 'utf8');
-  const app = await readFile('public/app.js', 'utf8');
+  const entry = await readFile('public/app.js', 'utf8');
+  const app = `${entry}\n${await readFile('public/modules/inspector.js', 'utf8')}`;
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(html, /<details class="group-section inspector-subsection">/);
@@ -374,30 +509,37 @@ test('inspector controls stay usable in narrow drawers', async () => {
   assert.match(app, /els\.toggleInspectorPanel\?\.addEventListener\('click', \(\) => setWorkspacePanelExpanded\('inspector', false\)\)/);
   assert.match(app, /button\.addEventListener\('click', \(\) => activateTab\(button\.dataset\.tab\)\)/);
   assert.match(app, /function syncInspectorTabSelect/);
-  assert.match(app, /inspectorTabSelect\?\.addEventListener\('change'/);
-  assert.match(app, /els\.inspectorPanel\?\.querySelectorAll\('\.tab-button\[data-tab\]'\)/);
-  assert.match(app, /els\.inspectorPanel\?\.querySelectorAll\('\.tab-pane\[data-pane\]'\)/);
+  assert.match(app, /tabSelect\?\.addEventListener\('change'/);
+  assert.match(app, /panel\?\.querySelectorAll\('\.tab-button\[data-tab\]'\)/);
+  assert.match(app, /panel\?\.querySelectorAll\('\.tab-pane\[data-pane\]'\)/);
   assert.match(app, /pane\.hidden = !active/);
   assert.match(app, /button\.tabIndex = active \? 0 : -1/);
 });
 
 test('modern workbench composer keeps tools in compact editor flow', async () => {
   const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(html, /<div class="composer">/);
+  assert.match(html, /class="composer-command-rail"[\s\S]*id="quick-replies-bar"[\s\S]*class="stage-actions"/);
   assert.match(html, /class="stage-actions"/);
-  assert.match(html, /class="send-button"/);
+  assert.match(html, /id="send-message" class="send-button"/);
   assert.doesNotMatch(css, /--quick-replies-block:/);
   assert.match(css, /\.composer\s*\{[\s\S]*position:\s*relative;[\s\S]*z-index:\s*3;/);
+  assert.match(css, /\.composer-command-rail\s*\{[\s\S]*overflow-x:\s*auto;/);
   assert.match(css, /\.stage-actions\s*\{[\s\S]*flex-wrap:\s*nowrap;[\s\S]*overflow-x:\s*auto;/);
   assert.match(css, /\.quick-replies-bar\s*\{[\s\S]*flex-wrap:\s*nowrap;[\s\S]*overflow-x:\s*auto;/);
   assert.match(css, /\.chat-form\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*flex-end;/);
   assert.match(css, /\.send-button\s*\{[\s\S]*position:\s*absolute;[\s\S]*border-radius:\s*50%;/);
+  assert.match(app, /state\.chatStreaming = streaming/);
+  assert.match(app, /els\.sendMessageButton\.disabled = streaming/);
+  assert.match(app, /els\.chatInput\.disabled = false/);
 });
 
 test('empty session cover guides opening flow through content packs', async () => {
-  const app = await readFile('public/app.js', 'utf8');
+  const entry = await readFile('public/app.js', 'utf8');
+  const app = `${entry}\n${await readFile('public/modules/chat.js', 'utf8')}`;
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(app, /OPENING_GENRE_OPTIONS/);
@@ -407,7 +549,8 @@ test('empty session cover guides opening flow through content packs', async () =
   assert.match(app, /className = 'epic-start-flow'/);
   assert.match(app, /classList\.add\('has-cover-page'\)/);
   assert.match(app, /className = 'epic-cover-actions'/);
-  assert.match(app, /dataset\.openingGenre/);
+  assert.match(app, /className = 'epic-current-script'/);
+  assert.match(app, /function getBoundStoryPackId/);
   assert.match(app, /await applyContentPack\(\)/);
   assert.match(app, /renderSetupPanel\(resolvePrologueTemplate\(\)\.tpl\)/);
   assert.match(css, /\.messages\.has-cover-page\s*\{[\s\S]*padding-bottom:\s*clamp\(74px,\s*10vh,\s*112px\);/);
@@ -421,8 +564,9 @@ test('empty session cover guides opening flow through content packs', async () =
   assert.match(css, /\.epic-start-flow\s*\{/);
   assert.match(css, /\.epic-flow-steps\s*\{/);
   assert.match(css, /\.epic-flow-status\s*\{[\s\S]*display:\s*none;/);
-  assert.match(css, /\.epic-genre-grid\s*\{/);
-  assert.match(css, /\.epic-genre-choice\.active\s*\{/);
+  assert.match(css, /\.epic-current-script\s*\{/);
+  assert.match(css, /\.epic-current-script-stats\s*\{/);
+  assert.doesNotMatch(css, /\.epic-genre-grid\s*\{/);
 });
 
 test('guided opening fuses a script dossier with protagonist and destiny creation', async () => {
@@ -455,9 +599,9 @@ test('desktop launch defaults to an immersive stage instead of a configuration w
 
   assert.match(html, /<aside id="provider-panel" class="panel provider-panel collapsed"/);
   assert.match(html, /<aside id="inspector-panel" class="panel inspector-panel collapsed"/);
-  assert.match(html, /data-tab="status"[\s\S]*aria-selected="true">状态/);
+  assert.match(html, /data-tab="status"[\s\S]*aria-selected="true">世界模拟/);
   assert.match(html, /<section class="tab-pane[^\"]*active" data-pane="status"/);
-  assert.match(html, /data-tab="memory"[\s\S]*aria-selected="false">记忆/);
+  assert.match(html, /data-tab="memory"[\s\S]*aria-selected="false"[^>]*>记忆/);
   assert.match(css, /\.immersive-right-sidebar\s*\{[\s\S]*top:\s*108px;[\s\S]*bottom:\s*126px;/);
   assert.match(css, /\.immersive-sidebar-tab\s*\{[\s\S]*min-height:\s*86px;[\s\S]*opacity:\s*0\.74;/);
   assert.match(css, /\.stage-actions\s*\{[\s\S]*width:\s*max-content;[\s\S]*margin:\s*0 auto 5px;[\s\S]*opacity:\s*0\.78;/);
@@ -487,6 +631,9 @@ test('immersive sidebar shell is wired and hidden by default', async () => {
   assert.match(html, /id="immersive-sidebar-body"/);
   assert.match(app, /immersiveRightSidebar/);
   assert.match(app, /function renderImmersiveSidebar/);
+  assert.match(app, /function renderImmersiveCharacterCards/);
+  assert.match(app, /function resolveImmersiveCharacterPortrait/);
+  assert.match(app, /createCharacterPortraitImage\(portraitSource, 'immersive-character-portrait'/);
   assert.match(app, /function selectImmersiveSidebarTab/);
   assert.match(app, /sidebar\.tabs/);
   assert.match(css, /\.hidden\s*\{[\s\S]*display:\s*none\s*!important;/);
@@ -495,6 +642,8 @@ test('immersive sidebar shell is wired and hidden by default', async () => {
   assert.match(css, /\.immersive-sidebar-tabs\s*\{/);
   assert.match(css, /\.immersive-sidebar-tab\s*\{/);
   assert.match(css, /\.immersive-sidebar-tab\.active\s*\{/);
+  assert.match(css, /\.immersive-character-card\s*\{[\s\S]*grid-template-columns:\s*76px minmax\(0,\s*1fr\);/);
+  assert.match(css, /\.immersive-character-portrait,[\s\S]*\.immersive-character-monogram\s*\{/);
 });
 
 test('layout polish keeps the narrative stage dominant and composer compact', async () => {
@@ -576,6 +725,17 @@ test('streaming preview removes both empty state and cover page shells', async (
   assert.match(app, /classList\.remove\('has-cover-page'\)/);
 });
 
+test('roleplay control output stays out of chat and legacy actions render as choices', async () => {
+  const app = await readFile('public/app.js', 'utf8');
+  const parser = await readFile('public/modules/roleplayResponse.js', 'utf8');
+
+  assert.match(app, /const visibleContent = presentation \? presentation\.content : \(message\.content \|\| ''\);/);
+  assert.doesNotMatch(app, /presentation\?\.content \|\| message\.content/);
+  assert.match(app, /presentation\?\.recommendedActions/);
+  assert.match(parser, /<recommended_actions\\b/);
+  assert.match(parser, /recommendedActions:\s*extractRecommendedActions\(source\)/);
+});
+
 test('character preset library covers more genre-matched roles', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
@@ -636,12 +796,14 @@ test('work modes separate creation, immersion, settings and debug while exposing
   assert.match(html, /舞台背景/);
   assert.match(html, /id="content-stack-status"/);
   assert.match(html, /id="content-stack-items"/);
+  assert.match(html, /id="inspector-panel-title"/);
   assert.match(html, /应用到会话/);
   assert.match(app, /const WORK_MODES =/);
   assert.match(app, /workModeButtons: Array\.from\(document\.querySelectorAll\('#work-mode-switch \.work-mode-button\[data-work-mode\]'\)\)/);
   assert.doesNotMatch(app, /workModeButtons: Array\.from\(document\.querySelectorAll\('\[data-work-mode\]'\)\)/);
   assert.match(app, /function activateWorkMode/);
   assert.match(app, /document\.documentElement\.dataset\.workMode = safeMode/);
+  assert.match(app, /inspectorPanelTitle\.textContent = config\.panelTitle/);
   assert.match(app, /safeMode === 'creative' \|\| safeMode === 'immersive'/);
   assert.match(app, /function renderContentStack/);
   assert.match(app, /function setContentPackPreviewStatus/);
@@ -660,6 +822,10 @@ test('work modes separate creation, immersion, settings and debug while exposing
   assert.match(css, /\[data-work-mode="creative"\]/);
   assert.match(css, /\[data-mode-groups~="settings"\]/);
   assert.match(css, /\[data-mode-groups~="debug"\]/);
+  assert.match(css, /:root\[data-work-mode="settings"\] \.chat-panel/);
+  assert.match(css, /:root\[data-work-mode="debug"\] \.chat-panel/);
+  assert.match(css, /:root\[data-work-mode="settings"\] \.inspector-panel,[\s\S]*width:\s*min\(1180px, 100%\)/);
+  assert.match(css, /:root\[data-work-mode="debug"\] \.inspector-panel \.drawer-toggle[\s\S]*display:\s*none !important/);
 });
 
 test('chat header exposes persistent narrative route controls', async () => {
@@ -709,7 +875,7 @@ test('Hero script is wired through selectors, visuals, guided opening and dynami
   assert.match(app, /loadContentPackCharacterPresets\(getAppliedContentPackId\(\) \|\| 'xuanhuan'/);
   assert.match(app, /generateYingxiongzhiProtagonistCard/);
   assert.match(app, /extensions\?\.visibility/);
-  assert.match(css, /\.epic-genre-grid\s*\{[\s\S]*grid-template-columns:\s*repeat\(5,/);
+  assert.match(css, /\.epic-current-script\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto/);
   assert.match(css, /\.messages\.has-cover-page \.epic-cover-page\s*\{[\s\S]*overflow-y:\s*auto/);
   assert.equal(template.genres.yingxiongzhi.title, '英 雄 志');
   assert.equal(template.genres.yingxiongzhi.destinyCards.cards.length, 8);
@@ -743,4 +909,78 @@ test('v0.4 status inspector exposes world clock, NPC projections and event ledge
   assert.match(css, /\.simulation-view-switch\s*\{/);
   assert.match(css, /\.simulation-actors-editor-panel \.json-editor/);
   assert.match(css, /\.status-pane\s*\{[\s\S]*overflow-y:\s*auto;/);
+});
+
+test('frontend exposes the full-screen narrative asset center', async () => {
+  const html = await readFile('public/index.html', 'utf8');
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+  const assetCenter = await readFile('public/modules/assetCenter.js', 'utf8');
+
+  assert.match(html, /id="open-asset-center"/);
+  assert.match(html, /id="asset-center"/);
+  assert.match(html, /id="asset-center-categories"/);
+  assert.match(html, /id="asset-center-grid"/);
+  assert.match(html, /id="asset-center-detail"/);
+  assert.match(html, /id="asset-center-organize"/);
+  assert.match(html, /id="asset-center-batch-bar"/);
+  assert.match(html, /角色卡/);
+  assert.match(html, /世界书/);
+  assert.match(html, /预设 \/ Prompt/);
+
+  assert.match(app, /createAssetCenterController/);
+  assert.match(app, /function openAssetCenter/);
+  assert.match(app, /function saveAssetMetadata/);
+  assert.match(app, /method: 'PATCH'/);
+  assert.match(assetCenter, /export function buildAssetCatalog/);
+  assert.match(assetCenter, /export function filterAssetCatalog/);
+  assert.match(assetCenter, /data-asset-action = 'favorite'|action === 'favorite'/);
+  assert.match(assetCenter, /function applyBatchMetadata/);
+  assert.match(assetCenter, /function createCharacterProfilePanel/);
+  assert.match(assetCenter, /function createVersionPanel/);
+
+  assert.match(css, /\.asset-center\s*\{/);
+  assert.match(css, /\.asset-center-layout\s*\{/);
+  assert.match(css, /\.asset-center-grid\s*\{[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.asset-center-detail\s*\{[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.asset-batch-bar\s*\{/);
+  assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.asset-center-layout/);
+});
+
+test('guided opening keeps world book payload in system context instead of visible chat', async () => {
+  const app = await readFile('public/app.js', 'utf8');
+  const promptBuilder = app.match(/function buildJourneyPrompt\([\s\S]*?\n}\n\nfunction buildJourneyDraft/)?.[0] || '';
+
+  assert.match(app, /具体内容已由系统上下文提供，此处不再重复/);
+  assert.doesNotMatch(promptBuilder, /worldbookSnapshot\.entries\.forEach/);
+  assert.match(app, /PROVIDER_REASONING_ONLY_RESPONSE/);
+});
+
+test('narrative workspace separates reading, choices and structured character dossiers', async () => {
+  const app = await readFile('public/app.js', 'utf8');
+  const css = await readFile('public/styles.css', 'utf8');
+
+  assert.match(app, /function renderImmersiveProtagonistCard/);
+  assert.match(app, /function renderImmersiveIntelligenceLedger/);
+  assert.match(app, /function renderImmersiveProgressLedger/);
+  assert.match(app, /function renderImmersiveMemoryLedger/);
+  assert.match(app, /梦入神机\|梦如神机/);
+  assert.match(app, /神府造化\|神机造化/);
+  assert.match(app, /function parseImmersiveStatusFields/);
+  assert.match(app, /immersive-protagonist-facts/);
+  assert.match(app, /narrative-choice-panel/);
+  assert.match(app, /recommended-actions-list/);
+  assert.match(app, /recommendation-number/);
+  assert.match(app, /target: 'recommended-action'/);
+  assert.match(app, /function buildRecommendedActionFallback/);
+  assert.match(app, /正在结合主角与当前场景组织行动/);
+  assert.match(css, /\.immersive-protagonist-card\s*\{/);
+  assert.match(css, /\.immersive-protagonist-facts\s*,/);
+  assert.match(css, /\.immersive-dossier-header\s*\{/);
+  assert.match(css, /\.immersive-ledger-section,/);
+  assert.match(css, /\.immersive-progress-facts\s*\{/);
+  assert.match(css, /\.immersive-memory-row\s*\{/);
+  assert.match(css, /\.recommended-actions-list\s*\{[\s\S]*grid-template-columns:\s*repeat\(2/);
+  assert.match(css, /\.recommendation-button\.is-expanding\s*\{/);
+  assert.match(css, /\.message\s*\{[\s\S]*width:\s*min\(100%,\s*960px\)/);
 });
