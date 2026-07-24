@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 export class JsonStore {
@@ -41,6 +41,16 @@ export class JsonStore {
       return await readdir(dirPath);
     } catch (error) {
       if (error.code === 'ENOENT') return [];
+      throw error;
+    }
+  }
+
+  async remove(relativePath) {
+    try {
+      await rm(this.resolve(relativePath));
+      return true;
+    } catch (error) {
+      if (error.code === 'ENOENT') return false;
       throw error;
     }
   }

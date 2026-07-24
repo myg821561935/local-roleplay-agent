@@ -235,12 +235,21 @@ function normalizePositiveFiniteNumber(value, fallback) {
 }
 
 export function normalizePromptModule(module) {
-  return {
+  const normalized = {
     id: String(module.id || crypto.randomUUID()),
     title: String(module.title || '未命名模块'),
     enabled: Boolean(module.enabled),
     content: String(module.content || '')
   };
+  const role = String(module.role || '').trim().toLowerCase();
+  const position = String(module.position || '').trim().toLowerCase();
+  if (['system', 'user', 'assistant'].includes(role)) normalized.role = role;
+  if (['relative', 'in_chat'].includes(position)) normalized.position = position;
+  if (module.depth !== undefined) normalized.depth = normalizeFiniteNumber(module.depth, 0);
+  if (module.order !== undefined) normalized.order = normalizeFiniteNumber(module.order, 0);
+  if (module.source) normalized.source = String(module.source);
+  if (isPlainObject(module.extensions)) normalized.extensions = structuredClone(module.extensions);
+  return normalized;
 }
 
 export function normalizeWorldBookEntry(entry) {

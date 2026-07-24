@@ -7,6 +7,7 @@ import { buildActionProtocolPrompt } from '../simulation/actionProtocol.js';
 import { renderSimulationPrompt } from '../simulation/npcSimulation.js';
 import { buildAgentProfilePrompt, normalizeAgentProfileId } from '../authoring/agentProfiles.js';
 import { renderAuthoringLedgerPrompt } from '../authoring/authoringLedger.js';
+import { buildMvuPatchPrompt } from '../compat/mvuProtocol.js';
 
 export function assemblePrompt({
   promptModules,
@@ -38,6 +39,7 @@ export function assemblePrompt({
   const narrativeControlPrompt = buildNarrativeControlPrompt({ memory, mode: narrativeContext.mode });
   const simulationPrompt = renderSimulationPrompt(memory, { targetSpeaker });
   const actionProtocolPrompt = buildActionProtocolPrompt({ memory, targetSpeaker });
+  const mvuPatchPrompt = buildMvuPatchPrompt({ memory });
   const agentProfileId = normalizeAgentProfileId(options.activeAgentProfileId);
   const agentProfilePrompt = buildAgentProfilePrompt(agentProfileId);
   const authoringLedgerPrompt = renderAuthoringLedgerPrompt(authoring);
@@ -52,7 +54,8 @@ export function assemblePrompt({
     userMessage,
     worldBook: safeWorldBook,
     templates,
-    customArrays
+    customArrays,
+    lightFrontendState: memory?.lightFrontendState || {}
   };
 
   const cardsByDepth = new Map();
@@ -80,6 +83,7 @@ export function assemblePrompt({
   const expandedPersona = expandPersona(persona, macroContext);
   const expandedGroupMembers = expandGroupMembers(groupMembers, macroContext);
   const expandedPromptModules = renderedPromptModules.map((m) => ({ ...m, content: expandMacros(m.content, macroContext) }));
+  const promptPlacement = organizePromptModules(expandedPromptModules);
 
   const systemSections = [
     narrativeControlPrompt,
@@ -89,7 +93,7 @@ export function assemblePrompt({
     renderGroupMembers(expandedGroupMembers),
     renderPersona(expandedPersona),
     renderCharacterPerformanceContract(expandedCharacterCard, expandedGroupMembers),
-    renderPromptModules(expandedPromptModules),
+    renderPromptModules(promptPlacement.systemModules),
     renderWorldState(memory?.worldState),
     simulationPrompt,
     renderRollingSummary(memory?.rollingSummary),
@@ -98,7 +102,8 @@ export function assemblePrompt({
     renderSpeakerInstruction({ groupMembers, targetSpeaker, characterCard }),
     renderRecommendationInstruction(),
     renderRoleplayPresentationContract(),
-    actionProtocolPrompt
+    actionProtocolPrompt,
+    mvuPatchPrompt
   ].filter(Boolean);
 
   const recentMessages = safeMessages
@@ -115,14 +120,41 @@ export function assemblePrompt({
   const totalHistory = historyWithUser.length;
 
   const injections = [];
+  let injectionSequence = 0;
   for (const [depth, cards] of cardsByDepth.entries()) {
     const text = [`# 触发的世界书与记忆 (Depth ${depth})`, ...cards.map(c => `## ${c.title}\n${c.content}`)].join('\n\n');
     let insertIndex = totalHistory - depth;
     if (insertIndex < 0) insertIndex = 0;
-    injections.push({ index: insertIndex, message: { role: 'system', content: text } });
+    insertIndex = Math.min(insertIndex, Math.max(0, totalHistory - 1));
+    injections.push({
+      index: insertIndex,
+      order: 0,
+      sequence: injectionSequence++,
+      message: { role: 'system', content: text }
+    });
   }
 
-  injections.sort((a, b) => a.index - b.index);
+  promptPlacement.inChatModules.forEach((module) => {
+    const depth = normalizeDepth(module.depth);
+    let insertIndex = totalHistory - depth;
+    if (insertIndex < 0) insertIndex = 0;
+    insertIndex = Math.min(insertIndex, Math.max(0, totalHistory - 1));
+    injections.push({
+      index: insertIndex,
+      order: normalizePromptOrder(module.order),
+      sequence: injectionSequence++,
+      message: {
+        role: normalizePromptRole(module.role),
+        content: String(module.content || '').trim()
+      }
+    });
+  });
+
+  injections.sort((a, b) => (
+    a.index - b.index
+    || a.order - b.order
+    || a.sequence - b.sequence
+  ));
 
   const interleavedHistory = [];
   let currentHistoryIndex = 0;
@@ -144,11 +176,20 @@ export function assemblePrompt({
 
   const assembledMessages = [
     { role: 'system', content: systemSections.join('\n\n') },
+    ...promptPlacement.relativeMessages.map((module) => ({
+      role: normalizePromptRole(module.role),
+      content: String(module.content || '').trim()
+    })),
     ...interleavedHistory
   ];
 
   if (expandedCharacterCard && expandedCharacterCard.enabled !== false && expandedCharacterCard.postHistoryInstructions) {
     assembledMessages.push({ role: 'system', content: expandMacros(expandedCharacterCard.postHistoryInstructions, macroContext) });
+  }
+
+  const characterSourcePriority = renderCharacterSourcePriorityAnchor(expandedCharacterCard);
+  if (characterSourcePriority) {
+    assembledMessages.push({ role: 'system', content: characterSourcePriority });
   }
 
   const authorNote = expandMacros(String(options.authorNote || '').trim(), macroContext);
@@ -167,7 +208,13 @@ export function assemblePrompt({
     injectedCards,
     sections: {
       promptModules: renderedPromptModules.map((module) => module.id),
+      promptPlacement: {
+        system: promptPlacement.systemModules.map((module) => module.id),
+        relative: promptPlacement.relativeMessages.map((module) => module.id),
+        inChat: promptPlacement.inChatModules.map((module) => module.id)
+      },
       hasCharacterCard: Boolean(characterCard?.enabled !== false && String(characterCard?.name || '').trim()),
+      hasCharacterSourcePriority: Boolean(characterSourcePriority),
       hasWorldState: Boolean(memory?.worldState),
       hasRollingSummary: Boolean(memory?.rollingSummary),
       narrativeMode: narrativeContext.mode,
@@ -325,6 +372,32 @@ function renderCharacterPerformanceContract(characterCard, groupMembers) {
   ].join('\n');
 }
 
+function renderCharacterSourcePriorityAnchor(characterCard) {
+  if (!isImportedCharacterCard(characterCard)) return '';
+  return [
+    '# 本轮导入角色卡优先级',
+    `当前导入角色卡为「${characterCard.name || '未命名角色'}」。角色卡及其同批导入的 Character Book / 世界书，是人物身份、NPC 性格、关系、地点、故事前提、对白方式和行文风格的首要依据。`,
+    '内容包只提供通用题材规则、力量体系与格式兜底，不得用内容包自带的专属人物、地点、开局事件或固定主线替换导入卡设定。',
+    '若两者冲突，人物、关系、地点、开场与叙事风格以导入角色卡和同批世界书为准；不要继续与当前导入卡无关的基线剧情。',
+    '保持已经在本会话中明确发生的事实连续，但不要仅因旧内容包存在而新增其专属名词或剧情。'
+  ].join('\n');
+}
+
+function isImportedCharacterCard(characterCard) {
+  if (!characterCard || characterCard.enabled === false) return false;
+  const extensions = characterCard.extensions && typeof characterCard.extensions === 'object'
+    ? characterCard.extensions
+    : {};
+  return Boolean(
+    characterCard.sourceSpec
+    || characterCard.raw
+    || extensions.tavern_helper
+    || extensions.regex_scripts
+    || extensions.world
+    || extensions.chub
+  );
+}
+
 function firstProfileValue(...values) {
   for (const value of values) {
     if (Array.isArray(value) && value.length) return value.map((item) => String(item || '').trim()).filter(Boolean).join('、');
@@ -360,6 +433,54 @@ function renderPromptModules(promptModules = []) {
 
 function getRenderablePromptModules(promptModules = []) {
   return promptModules.filter((module) => module.enabled !== false && String(module.content || '').trim());
+}
+
+function organizePromptModules(promptModules = []) {
+  const ordered = [...promptModules].sort(comparePromptModuleSequence);
+  const systemModules = [];
+  const relativeMessages = [];
+  const inChatModules = [];
+
+  ordered.forEach((module) => {
+    if (module.position === 'in_chat') {
+      inChatModules.push(module);
+      return;
+    }
+    if (normalizePromptRole(module.role) !== 'system') {
+      relativeMessages.push(module);
+      return;
+    }
+    systemModules.push(module);
+  });
+
+  return { systemModules, relativeMessages, inChatModules };
+}
+
+function comparePromptModuleSequence(left, right) {
+  const leftPreset = left?.extensions?.sillyTavernPreset;
+  const rightPreset = right?.extensions?.sillyTavernPreset;
+  const samePreset = leftPreset
+    && rightPreset
+    && leftPreset.presetTitle === rightPreset.presetTitle
+    && leftPreset.sourceFormat === rightPreset.sourceFormat;
+  if (!samePreset) return 0;
+  return normalizePromptSequence(leftPreset.sequence ?? leftPreset.originalIndex)
+    - normalizePromptSequence(rightPreset.sequence ?? rightPreset.originalIndex);
+}
+
+function normalizePromptRole(role) {
+  const normalized = String(role || 'system').trim().toLowerCase();
+  return ['system', 'user', 'assistant'].includes(normalized) ? normalized : 'system';
+}
+
+function normalizePromptOrder(order) {
+  const number = Number(order);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function normalizePromptSequence(sequence) {
+  const number = Number(sequence);
+  return Number.isFinite(number) ? number : Number.MAX_SAFE_INTEGER;
 }
 
 function renderWorldState(worldState) {

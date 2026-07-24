@@ -17,6 +17,22 @@ test('AgentService runs one chat turn and records memory metadata', async () => 
   assert.equal(result.debug.injectedCards.length, 1);
 });
 
+test('AgentService can keep a director quick command in context without rendering it as player speech', async () => {
+  const { service, sessionService } = await createHarness();
+
+  await service.sendMessageStream({
+    sessionId: 'main',
+    content: '（请继续推进剧情）',
+    hideUserMessage: true,
+    onToken: () => {}
+  });
+  const readback = await sessionService.getSession('main');
+
+  assert.equal(readback.messages[0].content, '（请继续推进剧情）');
+  assert.equal(readback.messages[0].hiddenFromChat, true);
+  assert.equal(readback.messages[1].role, 'assistant');
+});
+
 test('AgentService records estimated usage on assistant messages', async () => {
   const { service, sessionService } = await createHarness();
 
@@ -308,6 +324,58 @@ test('AgentService replays world effects for regenerate and swipe selection', as
   });
   assert.deepEqual(switched.session.memory.worldState.protagonist.inventory, ['旧钥匙']);
   assert.equal(switched.session.messages[1].content, '你找到旧钥匙。');
+});
+
+test('AgentService applies hidden MVU patches and replays the selected swipe state', async () => {
+  let replyIndex = 0;
+  const { service, sessionService } = await createHarness({
+    providerClient: {
+      complete: async ({ messages }) => {
+        if (isSummaryRequest(messages) || isFactExtractionRequest(messages)) {
+          return { content: '{}', raw: { maintenance: true } };
+        }
+        replyIndex += 1;
+        const clues = replyIndex === 1 ? 1 : 3;
+        return {
+          content: [
+            `<plot>你确认了第${clues}条线索。</plot>`,
+            '```lra-mvu-patch',
+            JSON.stringify({
+              expectedRevision: 0,
+              summary: '线索数量更新',
+              operations: [{ op: 'set', path: 'clues', value: clues }]
+            }),
+            '```'
+          ].join('\n'),
+          raw: { fake: true }
+        };
+      }
+    }
+  });
+  const session = await sessionService.getSession('main');
+  session.memory.lightFrontendBaseline = { enabled: true, revision: 0, values: { clues: 0 } };
+  session.memory.lightFrontendState = structuredClone(session.memory.lightFrontendBaseline);
+  await sessionService.saveSession(session);
+
+  const first = await service.sendMessage({ sessionId: 'main', content: '检查案发现场。' });
+  assert.equal(first.reply.content, '你确认了第1条线索。');
+  assert.doesNotMatch(first.reply.content, /lra-mvu-patch/);
+  assert.equal(first.session.memory.lightFrontendState.values.clues, 1);
+  assert.equal(first.reply.mvuPatches.length, 1);
+
+  const regenerated = await service.regenerateAssistantMessage({
+    sessionId: 'main',
+    messageId: first.reply.id
+  });
+  assert.equal(regenerated.session.memory.lightFrontendState.values.clues, 3);
+
+  const switched = await service.switchMessageSwipe({
+    sessionId: 'main',
+    messageId: first.reply.id,
+    swipeIndex: 0
+  });
+  assert.equal(switched.session.memory.lightFrontendState.values.clues, 1);
+  assert.equal(switched.session.messages[1].content, '你确认了第1条线索。');
 });
 
 test('AgentService edits a user message and regenerates from that point', async () => {

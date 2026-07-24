@@ -21,11 +21,22 @@ import {
   evaluateResourceCandidate,
   estimateResourceTokens
 } from '../resources/resourceEvaluator.js';
+import {
+  aggregateCommunityCompatibility,
+  scanCommunityDependencies
+} from '../resources/communityDependencyScanner.js';
+import {
+  extractLightFrontendRuntime,
+  mergeLightFrontendRuntimes
+} from '../compat/lightFrontendRuntime.js';
+import { enrichCharacterCard } from '../character/characterEnrichment.js';
 import { APP_VERSION } from '../releaseInfo.js';
 
 const RESOURCE_DIR = 'library/resources';
 const PACK_DIR = 'library/packs';
 const RESOURCE_KINDS = new Set(['character', 'worldbook', 'prompt']);
+const BASE_INHERITANCE_MODES = new Set(['full', 'genre', 'none']);
+const STORY_SPECIFIC_PROMPT_PATTERN = /(?:world[-_ ]?premise|core[-_ ]?route|main[-_ ]?line|opening|prologue|固定主线|开局|世界观基调|旧案主线)/i;
 
 export class ResourceLibraryService {
   constructor(store, {
@@ -93,6 +104,47 @@ export class ResourceLibraryService {
     return structuredClone(next);
   }
 
+  async updateResourcePayload(resourceId, input = {}) {
+    const id = normalizeId(resourceId);
+    if (!id) return null;
+    const current = await this.getResource(id);
+    if (!current) return null;
+    if (!['worldbook', 'prompt'].includes(current.kind)) {
+      throw new Error('RESOURCE_CONTENT_KIND_UNSUPPORTED');
+    }
+
+    const sourcePayload = input.payload && typeof input.payload === 'object' && !Array.isArray(input.payload)
+      ? input.payload
+      : {};
+    let payload;
+    if (current.kind === 'worldbook') {
+      const entries = Array.isArray(sourcePayload.entries) ? sourcePayload.entries : null;
+      if (!entries) throw new Error('RESOURCE_WORLD_BOOK_ENTRIES_INVALID');
+      if (entries.length > 2000) throw new Error('RESOURCE_WORLD_BOOK_TOO_LARGE');
+      payload = {
+        ...(current.payload || {}),
+        entries: entries.map((entry) => normalizeWorldBookEntry(entry || {}))
+      };
+    } else {
+      payload = normalizePromptModule({
+        ...(current.payload || {}),
+        ...sourcePayload,
+        id: sourcePayload.id || current.payload?.id
+      });
+    }
+
+    const timestamp = this.now().toISOString();
+    const next = {
+      ...current,
+      title: normalizeLibraryText(input.title, current.title, 120),
+      payload,
+      updatedAt: timestamp
+    };
+    await this.store.write(`${RESOURCE_DIR}/${id}.json`, next);
+    const reevaluated = await this.reevaluateResource(id);
+    return reevaluated?.resource || structuredClone(next);
+  }
+
   async updateResourcesMetadata(resourceIds = [], input = {}) {
     const ids = uniqueStrings(resourceIds).map(normalizeId).filter(Boolean).slice(0, 500);
     const mode = input.mode === 'replace' ? 'replace' : 'merge';
@@ -123,6 +175,66 @@ export class ResourceLibraryService {
       }));
     }
     return { updated, missing };
+  }
+
+  async reevaluateResource(resourceId) {
+    const id = normalizeId(resourceId);
+    if (!id) return null;
+    const current = await this.getResource(id);
+    if (!current) return null;
+
+    const existing = await this.listResources();
+    const importBatchId = String(current.source?.importBatchId || '');
+    const companionWorldBooks = current.kind === 'character' && importBatchId
+      ? existing
+        .filter((item) => item.kind === 'worldbook' && item.source?.importBatchId === importBatchId)
+        .flatMap((item) => item.payload?.entries || [])
+      : [];
+    const enrichment = current.kind === 'character'
+      ? enrichCharacterCard(normalizeCharacterCard(current.payload || {}), {
+        worldBookEntries: companionWorldBooks
+      })
+      : { card: structuredClone(current.payload || {}), report: null };
+    const payload = enrichment.card;
+    const candidate = {
+      kind: current.kind,
+      title: current.title,
+      summary: current.summary,
+      tags: current.tags,
+      payload,
+      version: current.source?.version || ''
+    };
+    const fingerprint = createFingerprint(payload);
+    const conflicts = existing
+      .filter((item) => item.id !== id && item.kind === current.kind)
+      .filter((item) => item.fingerprint === fingerprint || normalizeTitle(item.title) === normalizeTitle(current.title))
+      .map((item) => ({
+        type: resolveResourceConflictType({ candidate, existing: item, fingerprint }),
+        resourceId: item.id,
+        title: item.title
+      }));
+    const adapters = await this.listAdapters();
+    const adapter = adapters.find((item) => item.id === current.format) || {
+      id: current.format || current.source?.adapterId || 'resource-library'
+    };
+    const diagnostics = evaluateResourceCandidate(candidate, {
+      conflicts,
+      source: current.source || {},
+      adapter
+    });
+    const timestamp = this.now().toISOString();
+    const next = {
+      ...current,
+      fingerprint,
+      diagnostics,
+      payload,
+      updatedAt: timestamp
+    };
+    await this.store.write(`${RESOURCE_DIR}/${id}.json`, next);
+    return {
+      resource: structuredClone(next),
+      enrichment: enrichment.report
+    };
   }
 
   async exportResourceBundle(resourceIds = []) {
@@ -157,11 +269,14 @@ export class ResourceLibraryService {
     }
     if (preview?.kind === 'content-pack') {
       const inspection = await this.inspectContentPackBundle(preview.importData?.contentPackBundle || {});
-      return packageInspection(adapter, inspection, {
-        kind: 'content-pack',
-        title: inspection.manifest.title,
-        payload: preview.importData?.contentPackBundle || {}
-      });
+      return {
+        ...packageInspection(adapter, inspection, {
+          kind: 'content-pack',
+          title: inspection.manifest.title,
+          payload: preview.importData?.contentPackBundle || {}
+        }),
+        communityCompatibility: scanCommunityDependencies(preview.importData?.contentPackBundle?.content || {})
+      };
     }
     const candidates = buildPreviewCandidates(preview, source);
     const existing = await this.listResources();
@@ -314,25 +429,57 @@ export class ResourceLibraryService {
     if (!id) return null;
     const pack = await this.store.read(`${PACK_DIR}/${id}.json`, null);
     if (!pack) return null;
+    const openingTemplate = createCustomOpeningTemplate(pack);
     return {
       ...pack,
+      openingTemplate,
       manifest: createContentPackManifest(pack)
     };
   }
 
+  async updatePackMetadata(packId, input = {}) {
+    const id = normalizeId(packId);
+    if (!id) return null;
+    const current = await this.getPack(id);
+    if (!current) return null;
+    const title = normalizeLibraryText(input.title, current.title, 80);
+    const description = normalizeLibraryText(input.description, current.description, 300, { allowEmpty: true });
+    const sessionTitle = normalizeLibraryText(input.sessionTitle, current.sessionTitle || title, 80);
+    const next = {
+      ...current,
+      title,
+      description,
+      sessionTitle,
+      manifest: {
+        ...current.manifest,
+        title,
+        description
+      },
+      updatedAt: this.now().toISOString()
+    };
+    next.openingTemplate = createCustomOpeningTemplate(next);
+    await this.store.write(`${PACK_DIR}/${id}.json`, next);
+    return structuredClone(next);
+  }
+
   async createPack(input = {}, { basePack = null } = {}) {
-    const { character, worldBooks, prompts } = await this.resolvePackResources(input);
+    const { character, worldBooks, prompts, selected } = await this.resolvePackResources(input);
     const includeBaseContent = input.includeBaseContent !== false;
+    const baseInheritanceMode = basePack
+      ? normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
+      : includeBaseContent ? 'full' : 'none';
     const id = `custom-${crypto.randomUUID()}`;
     const timestamp = this.now().toISOString();
     const base = basePack
       ? structuredClone(basePack)
       : createCustomBaselineSeed(id, input.customBaseline, this.now);
-    const worldBookMergeMode = includeBaseContent
+    const inheritedWorldBook = selectInheritedWorldBook(base.worldBook, baseInheritanceMode);
+    const inheritedPromptModules = selectInheritedPromptModules(base.promptModules, baseInheritanceMode);
+    const worldBookMergeMode = baseInheritanceMode !== 'none'
       ? normalizeWorldBookMergeMode(input.worldBookMergeMode)
       : 'resources-only';
     const composition = composeWorldBookEntries({
-      baseEntries: base.worldBook || [],
+      baseEntries: inheritedWorldBook,
       resourceGroups: worldBooks.map((item) => ({
         resourceId: item.id,
         title: item.title,
@@ -340,11 +487,20 @@ export class ResourceLibraryService {
       })),
       mode: worldBookMergeMode
     });
-    const promptModules = dedupeByFingerprint([
-      ...(includeBaseContent ? base.promptModules || [] : []),
-      ...prompts.map((item) => item.payload)
+    const promptComposition = composePromptModules({
+      baseModules: inheritedPromptModules,
+      resources: prompts
+    });
+    const promptModules = promptComposition.modules;
+    const communityCompatibility = aggregateCommunityCompatibility(
+      selected.map((item) => item.diagnostics?.communityCompatibility)
+    );
+    const characterCard = character?.payload
+      || (baseInheritanceMode === 'none' ? {} : base.characterCard);
+    const lightFrontend = mergeLightFrontendRuntimes([
+      baseInheritanceMode === 'full' ? base.lightFrontend || {} : {},
+      ...selected.map((item) => extractLightFrontendRuntime(item.payload || {}))
     ]);
-    const characterCard = character?.payload || base.characterCard;
     const stageBackground = input.useCharacterPortraitAsBackground === true
       ? createCharacterStageBackground(characterCard, character?.title)
       : null;
@@ -359,35 +515,39 @@ export class ResourceLibraryService {
       stageBackground,
       worldBook: composition.entries.map(normalizeWorldBookEntry),
       promptModules: promptModules.map(normalizePromptModule),
-      memory: {
-        ...structuredClone(base.memory || {}),
-        resourcePackId: id
-      },
-      ruleSystem: {
-        ...structuredClone(base.ruleSystem || createEmptyPackSeed(id).ruleSystem),
-        contentPackId: id,
-        sourceContentPackId: basePack?.id || ''
-      },
+      lightFrontend,
+      memory: createComposedMemory(base, id, baseInheritanceMode),
+      ruleSystem: createComposedRuleSystem(base, id, baseInheritanceMode, basePack?.id || ''),
       visualPackId: String(input.visualPackId || base.visualPackId || base.id || 'xuanhuan'),
       custom: true,
       resourceManifest: {
-        basePackId: basePack?.id || '',
-        includeBaseContent,
+        creationMode: input.creationMode === 'independent-copy' ? 'independent-copy' : 'composed',
+        basePackId: baseInheritanceMode === 'none' ? '' : basePack?.id || '',
+        includeBaseContent: baseInheritanceMode !== 'none',
+        baseInheritanceMode,
         worldBookMergeMode,
         characterResourceId: character?.id || '',
         worldBookResourceIds: worldBooks.map((item) => item.id),
         promptResourceIds: prompts.map((item) => item.id),
-        composition: structuredClone(composition.report.summary)
+        sourceResources: selected.map(summarizePackSourceResource),
+        composition: {
+          ...structuredClone(composition.report.summary),
+          promptModules: structuredClone(promptComposition.report.summary),
+          communityCompatibility
+        }
       },
       createdAt: timestamp,
       updatedAt: timestamp
     };
+    pack.openingTemplate = createCustomOpeningTemplate(pack);
     pack.manifest = createContentPackManifest(pack, {
       version: input.version || '1.0.0',
       engine: input.engine || '>=0.2.2 <1.0.0',
       manifestId: id,
       dependencies: [
-        ...(basePack?.id ? [{ kind: 'content-pack', id: basePack.id, range: '^1.0.0', optional: false, scope: 'build' }] : []),
+        ...(pack.resourceManifest.basePackId
+          ? [{ kind: 'content-pack', id: pack.resourceManifest.basePackId, range: '^1.0.0', optional: false, scope: 'build' }]
+          : []),
         ...(Array.isArray(input.pluginDependencies) ? input.pluginDependencies : [])
       ]
     });
@@ -398,14 +558,19 @@ export class ResourceLibraryService {
   async inspectPackComposition(input = {}, { basePack = null } = {}) {
     const { character, worldBooks, prompts } = await this.resolvePackResources(input);
     const includeBaseContent = input.includeBaseContent !== false;
+    const baseInheritanceMode = basePack
+      ? normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
+      : includeBaseContent ? 'full' : 'none';
     const base = basePack
       ? structuredClone(basePack)
       : createCustomBaselineSeed('custom-preview', input.customBaseline, this.now);
-    const mode = includeBaseContent
+    const inheritedWorldBook = selectInheritedWorldBook(base.worldBook, baseInheritanceMode);
+    const inheritedPromptModules = selectInheritedPromptModules(base.promptModules, baseInheritanceMode);
+    const mode = baseInheritanceMode !== 'none'
       ? normalizeWorldBookMergeMode(input.worldBookMergeMode)
       : 'resources-only';
     const composition = composeWorldBookEntries({
-      baseEntries: base.worldBook || [],
+      baseEntries: inheritedWorldBook,
       resourceGroups: worldBooks.map((item) => ({
         resourceId: item.id,
         title: item.title,
@@ -413,17 +578,37 @@ export class ResourceLibraryService {
       })),
       mode
     });
+    const promptComposition = composePromptModules({
+      baseModules: inheritedPromptModules,
+      resources: prompts
+    });
+    const communityCompatibility = aggregateCommunityCompatibility(
+      [character, ...worldBooks, ...prompts]
+        .filter(Boolean)
+        .map((item) => item.diagnostics?.communityCompatibility)
+    );
     return {
-      ...composition.report,
+      mode: composition.report.mode,
+      baseInheritanceMode,
+      summary: {
+        ...composition.report.summary,
+        ...promptComposition.report.summary
+      },
+      conflicts: [
+        ...composition.report.conflicts,
+        ...promptComposition.report.conflicts
+      ],
       selected: {
         characterResourceId: character?.id || '',
         worldBookResourceIds: worldBooks.map((item) => item.id),
         promptResourceIds: prompts.map((item) => item.id)
       },
       promptModules: {
-        base: includeBaseContent ? Number(base.promptModules?.length || 0) : 0,
-        selected: prompts.length
-      }
+        base: inheritedPromptModules.length,
+        selected: prompts.length,
+        final: promptComposition.modules.length
+      },
+      communityCompatibility
     };
   }
 
@@ -443,7 +628,7 @@ export class ResourceLibraryService {
     const character = selected.find((item) => item.id === input.characterResourceId && item.kind === 'character');
     const worldBooks = selected.filter((item) => item.kind === 'worldbook');
     const prompts = selected.filter((item) => item.kind === 'prompt');
-    return { character, worldBooks, prompts };
+    return { character, worldBooks, prompts, selected };
   }
 
   async inspectContentPackBundle(bundle, { checkInstallConflicts = true } = {}) {
@@ -552,14 +737,8 @@ export class ResourceLibraryService {
 
   async removePack(packId) {
     const id = normalizeId(packId);
-    if (!id || !id.startsWith('custom-')) return false;
-    try {
-      await rm(this.store.resolve(`${PACK_DIR}/${id}.json`));
-      return true;
-    } catch (error) {
-      if (error.code === 'ENOENT') return false;
-      throw error;
-    }
+    if (!id || !await this.getPack(id)) return false;
+    return this.store.remove(`${PACK_DIR}/${id}.json`);
   }
 
   async loadStoredPacks() {
@@ -583,7 +762,11 @@ function resolveResourceConflictType({ candidate, existing, fingerprint }) {
 
 function buildPreviewCandidates(preview, source) {
   if (preview?.kind === 'character-card') {
-    const card = normalizeCharacterCard(preview.importData?.characterCard || {});
+    const entries = Array.isArray(preview.importData?.worldBook) ? preview.importData.worldBook : [];
+    const card = enrichCharacterCard(
+      normalizeCharacterCard(preview.importData?.characterCard || {}),
+      { worldBookEntries: entries }
+    ).card;
     const candidates = [{
       kind: 'character',
       title: card.name || '未命名角色',
@@ -593,7 +776,6 @@ function buildPreviewCandidates(preview, source) {
       hasEmbeddedPortrait: preview.summary?.hasEmbeddedPortrait === true,
       version: card.characterVersion
     }];
-    const entries = Array.isArray(preview.importData?.worldBook) ? preview.importData.worldBook : [];
     if (entries.length) candidates.push(buildWorldBookCandidate(entries, source.title || `${card.name}的设定集`));
     return candidates;
   }
@@ -612,6 +794,29 @@ function buildPreviewCandidates(preview, source) {
       payload: prompt,
       version: source.version
     }];
+  }
+
+  if (preview?.kind === 'prompt-preset') {
+    const preset = preview.importData?.promptPreset || {};
+    const prompts = Array.isArray(preview.importData?.promptModules)
+      ? preview.importData.promptModules
+      : [];
+    return prompts.map((item, index) => {
+      const prompt = normalizePromptModule(item);
+      return {
+        kind: 'prompt',
+        title: prompt.title || `${preview.title || '导入预设'} · ${index + 1}`,
+        summary: summarizeText(prompt.content),
+        tags: uniqueStrings([
+          'SillyTavern',
+          '提示词预设',
+          preset.sourceFormat,
+          prompt.role
+        ]),
+        payload: prompt,
+        version: source.version
+      };
+    });
   }
 
   throw new Error('UNSUPPORTED_RESOURCE_PREVIEW');
@@ -649,8 +854,31 @@ function normalizeSource(source, candidate, importedAt) {
   };
 }
 
+function summarizePackSourceResource(resource = {}) {
+  const source = resource.source || {};
+  return {
+    id: String(resource.id || '').trim(),
+    kind: String(resource.kind || '').trim(),
+    title: String(resource.title || '').trim(),
+    fingerprint: String(resource.fingerprint || '').trim(),
+    source: {
+      adapterId: String(source.adapterId || '').trim(),
+      community: String(source.community || '').trim(),
+      site: String(source.site || '').trim(),
+      url: String(source.url || '').trim(),
+      author: String(source.author || '').trim(),
+      license: String(source.license || '').trim(),
+      version: String(source.version || '').trim(),
+      fileName: String(source.fileName || '').trim(),
+      importedAt: String(source.importedAt || '').trim(),
+      originalHash: String(source.originalHash || '').trim()
+    }
+  };
+}
+
 function summarizeCustomPack(pack, compatibility = null) {
   const manifest = summarizeContentPackManifest(pack);
+  const openingTemplate = createCustomOpeningTemplate(pack);
   return {
     id: pack.id,
     title: pack.title,
@@ -659,6 +887,7 @@ function summarizeCustomPack(pack, compatibility = null) {
     characterName: pack.characterCard?.name || '',
     characterPortrait: structuredClone(pack.characterCard?.portrait || null),
     stageBackground: structuredClone(pack.stageBackground || null),
+    openingTemplate: structuredClone(openingTemplate),
     custom: true,
     visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || '',
     basePackId: pack.resourceManifest?.basePackId || '',
@@ -680,6 +909,375 @@ function summarizeCustomPack(pack, compatibility = null) {
     },
     resourceManifest: structuredClone(pack.resourceManifest || {})
   };
+}
+
+function createCustomOpeningTemplate(pack = {}) {
+  const character = pack.characterCard || {};
+  const visibleEntries = (Array.isArray(pack.worldBook) ? pack.worldBook : [])
+    .filter((entry) => entry && entry.enabled !== false)
+    .filter((entry) => {
+      const visibility = entry?.extensions?.visibility || entry?.visibility || 'player';
+      return visibility !== 'gm' && entry?.extensions?.gmOnly !== true;
+    })
+    .map((entry, index) => {
+      const title = normalizeOpeningEntryTitle(entry.title || entry.id, character.name);
+      const content = summarizeOpeningText(entry.content, 260);
+      return {
+        entry,
+        index,
+        title,
+        content,
+        score: scoreOpeningEntry(entry, title, content)
+      };
+    })
+    .filter((item) => item.title && item.content)
+    .filter((item) => !isOpeningMetaEntry(item.title))
+    .sort((left, right) => right.score - left.score || left.index - right.index);
+  const genre = inferCustomOpeningGenre(pack, visibleEntries);
+  const packTitle = String(pack.title || character.name || '自定义剧本').trim().slice(0, 80);
+  const characterName = String(character.name || '').trim();
+  const narrativeLead = summarizeOpeningText(
+    character.scenario
+      || pack.description
+      || visibleEntries[0]?.content
+      || character.description
+      || character.firstMessage,
+    140
+  );
+  const tabs = buildCustomOpeningTabs(visibleEntries, character);
+  const destinyCards = buildCustomDestinyCards(visibleEntries, character, packTitle);
+
+  return {
+    source: 'custom-pack',
+    packId: String(pack.id || ''),
+    genre,
+    title: packTitle,
+    subtitle: characterName ? `${characterName} · 独立角色剧本` : '角色卡世界 · 独立开局',
+    tagline: narrativeLead || '以当前角色卡、世界书与已选设定为边界，生成这段故事的第一幕。',
+    buttonText: '[ 封存当前设定 · 开始故事 ]',
+    tabs,
+    fields: buildCustomOpeningFields(character, visibleEntries),
+    destinyCards: {
+      label: `开局抉择 · ${packTitle}`,
+      hint: '候选取自当前角色卡和世界书；选择后会写入开局提示与长期事实。',
+      maxSelections: Math.min(3, Math.max(1, destinyCards.length)),
+      cards: destinyCards
+    },
+    sidebar: {
+      tabs: customOpeningSidebarTabs(genre)
+    }
+  };
+}
+
+function inferCustomOpeningGenre(pack, entries = []) {
+  const character = pack.characterCard || {};
+  const primaryEvidence = [
+    pack.title,
+    pack.description,
+    pack.sessionTitle,
+    character.name,
+    character.description,
+    character.personality,
+    character.scenario,
+    character.systemPrompt,
+    ...(character.tags || [])
+  ].filter(Boolean).join(' ');
+  const entryTitles = entries.slice(0, 32).map((item) => item.title).filter(Boolean).join(' ');
+  const entryContents = entries.slice(0, 20).map((item) => item.content).filter(Boolean).join(' ');
+  const visualGenre = String(pack.visualPackId || pack.resourceManifest?.basePackId || '').trim();
+  const patterns = {
+    yingxiongzhi: /英雄志|怒苍|正统军|五朝旧账/,
+    mingmo: /明末|崇祯|大明|辽东|密诏|饷银|东林/,
+    lingyi: /灵异|恐怖|诡异|怪谈|鬼怪|鬼物|鬼魂|阴阳|禁忌|凶宅|民俗|邪祟|诅咒/,
+    xianxia: /修仙|仙侠|仙途|飞升|灵根|金丹|元婴|宗门|道侣|炉鼎|灵气|渡劫|境界|神宫|功法|法宝/,
+    xuanhuan: /玄幻|武道|斗气|魔法|异界|神荒|江湖|武侠/
+  };
+  const scores = Object.fromEntries(Object.keys(patterns).map((genre) => [genre, 0]));
+  Object.entries(patterns).forEach(([genre, pattern]) => {
+    scores[genre] += countOpeningGenreMatches(primaryEvidence, pattern) * 5;
+    scores[genre] += countOpeningGenreMatches(entryTitles, pattern) * 2;
+    scores[genre] += Math.min(8, countOpeningGenreMatches(entryContents, pattern) * 0.25);
+  });
+  if (Object.hasOwn(scores, visualGenre)) scores[visualGenre] += 4;
+  return Object.entries(scores)
+    .sort((left, right) => right[1] - left[1])
+    .find(([, score]) => score > 0)?.[0] || 'xuanhuan';
+}
+
+function countOpeningGenreMatches(text, pattern) {
+  const matches = String(text || '').match(new RegExp(pattern.source, 'g'));
+  return matches?.length || 0;
+}
+
+function buildCustomOpeningTabs(entries, character) {
+  const selected = entries.slice(0, 5);
+  const fallbacks = [
+    ['character', '角色底稿', character.description],
+    ['personality', '性格与边界', character.personality],
+    ['scenario', '开局场景', character.scenario],
+    ['first-message', '初始引子', character.firstMessage]
+  ].filter(([, , content]) => summarizeOpeningText(content, 260));
+  const sections = selected.length ? selected.map((item, index) => [
+    `worldbook-${index + 1}`,
+    item.title,
+    item.content
+  ]) : fallbacks;
+
+  return Object.fromEntries(sections.map(([key, label, content]) => [
+    key,
+    { label, content: summarizeOpeningText(content, 260) }
+  ]));
+}
+
+function buildCustomOpeningFields(character, entries = []) {
+  const profileText = findCustomProtagonistEntry(entries)?.entry?.content || '';
+  const openingText = selectCharacterOpeningText(character);
+  const generatedFields = character.extensions?.local_roleplay_agent?.enrichment?.generatedFields || [];
+  const authoredScenario = generatedFields.includes('scenario')
+    ? ''
+    : summarizeOpeningText(character.scenario, 110);
+  const role = extractOpeningProfileValue(profileText, ['角色', '当前身份', '身份'])
+    || summarizeOpeningText(character.role || character.description, 90);
+  const background = extractOpeningProfileValue(profileText, ['背景与家庭生活', '背景经历', '背景', '来历', '出身'])
+    || summarizeOpeningText(character.description, 110);
+  const appearance = extractOpeningProfileValue(profileText, ['外貌与衣着', '外貌', '容貌', '形貌'])
+    || summarizeOpeningText(character.appearance, 90);
+  const personality = extractOpeningProfileValue(profileText, ['性格与底线', '性格', '心性', '人格'])
+    || summarizeOpeningText(character.personality, 90);
+  const ability = extractOpeningProfileValue(profileText, ['特殊体质', '能力与境界', '能力', '修为境界', '修为', '境界', '体质'])
+    || inferOpeningAbility(profileText);
+  const faction = extractOpeningProfileValue(profileText, ['阵营与归属', '阵营', '归属', '宗门', '门派'])
+    || inferOpeningFaction(role);
+  const inventory = extractOpeningProfileValue(profileText, ['随身物品', '重要物品', '物品', '法宝', '装备']);
+  const relationship = extractOpeningProfileValue(profileText, ['关系模式', '重要关系', '人物关系', '关系'])
+    || findOpeningSentence(profileText, /相依为命|青梅竹马|师徒|道侣|盟友|宿敌|仇敌|亲友|同伴/);
+  const explicitGoal = authoredScenario
+    || extractOpeningProfileValue(profileText, ['当前目标', '核心目标', '主线目标', '目标', '动机'])
+    || findOpeningEntryValue(entries, /目标|任务|主线|诉求|目的/, /目标|任务|必须|想要|寻找|查清|守住|逃离|完成/);
+  const goal = explicitGoal || buildOpeningGoal({ role, ability, relationship });
+  const explicitRisk = extractOpeningProfileValue(profileText, ['秘密与风险', '秘密', '风险', '弱点', '禁忌'])
+    || findOpeningEntryValue(
+      entries,
+      /风险|秘密|发现与后果|禁忌|弱点|代价|限制/,
+      /暴露|发现|争夺|抢夺|追杀|圈养|控制|危险|代价|限制|禁忌/,
+      /一旦暴露|保密的重要性|整个修真界/
+    );
+  const secret = explicitRisk || buildOpeningRisk(ability);
+  const explicitOpening = findOpeningEntryValue(entries, /开局|当前处境|起始|第一幕|初始场景/, /开局|当前|正在|即将|必须|危机|处境/);
+  const openingPressure = explicitOpening || openingText;
+
+  return {
+    name: createCustomOpeningField('姓名 / 称谓', '输入角色姓名', character.name),
+    role: createCustomOpeningField('当前身份', '在当前世界中的公开身份', role),
+    background: createCustomOpeningField('来历与经历', '从何处来，背负什么旧事', background),
+    appearance: createCustomOpeningField('外貌与衣着', '外貌、服饰与显眼特征', appearance),
+    personality: createCustomOpeningField('性格与底线', '行事方式、欲望与不可触碰的底线', personality),
+    ability: createCustomOpeningField('能力 / 境界', '当前真正掌握的能力及其代价', ability),
+    faction: createCustomOpeningField('阵营 / 归属', '门派、家族、组织或独行身份', faction),
+    inventory: createCustomOpeningField('随身物品', '开局能够实际使用的重要物品', inventory),
+    goal: createCustomOpeningField('当前目标', '此刻最想完成的事情', goal),
+    secret: createCustomOpeningField('秘密 / 风险', '不愿公开的事实或迫近的危险', secret),
+    relationshipStyle: createCustomOpeningField('关系模式', '角色与他人建立关系的方式', relationship),
+    openingPressure: createCustomOpeningField('开局处境', '第一幕发生时正在面对的压力', openingPressure)
+  };
+}
+
+function createCustomOpeningField(label, placeholder, value, alternatives = []) {
+  const values = uniqueStrings([value, ...alternatives])
+    .map((item) => summarizeOpeningText(item, 110))
+    .filter(Boolean);
+  return {
+    label,
+    placeholder: values[0] || placeholder,
+    ...(values.length ? { defaultValue: values[0], values } : {})
+  };
+}
+
+function findCustomProtagonistEntry(entries) {
+  return entries.find((item) => /^(?:主角|男主角|女主角).*(?:人设|设定|档案)?$/.test(item.title))
+    || entries.find((item) => /\[\s*(?:角色|身份)\s*[：:]/.test(String(item.entry?.content || '')))
+    || null;
+}
+
+function extractOpeningProfileValue(content, labels = []) {
+  const source = String(content || '');
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const bracketMatch = source.match(new RegExp(`\\[\\s*${escaped}\\s*[：:]\\s*([\\s\\S]*?)\\]`, 'i'));
+    const lineMatch = source.match(new RegExp(`(?:^|[\\r\\n])\\s*[-*]?\\s*${escaped}\\s*[：:]\\s*([^\\r\\n]+)`, 'i'));
+    const value = summarizeOpeningText(bracketMatch?.[1] || lineMatch?.[1], 110);
+    if (value) return value;
+  }
+  return '';
+}
+
+function selectCharacterOpeningText(character) {
+  const candidates = [
+    character.firstMessage,
+    ...(Array.isArray(character.alternateGreetings) ? character.alternateGreetings : []),
+    character.scenario
+  ];
+  for (const candidate of candidates) {
+    const raw = String(candidate || '').trim();
+    if (!raw || /^【[^】]{1,40}】$/.test(raw)) continue;
+    const paragraphs = raw
+      .split(/(?:<UpdateVariable>|<StatusPlaceHolderImpl)/i)[0]
+      .replace(/<SFW_IMG>[\s\S]*?<\/SFW_IMG>/gi, ' ')
+      .replace(/<NSFW_IMG>[\s\S]*?<\/NSFW_IMG>/gi, ' ')
+      .replace(/\{\{\s*user\s*\}\}/gi, '主角')
+      .split(/\r?\n\s*\r?\n/)
+      .map((item) => summarizeOpeningText(item, 90))
+      .filter((item) => item.length >= 8)
+      .slice(0, 3);
+    const opening = summarizeOpeningText(paragraphs.join(' '), 110);
+    if (opening) return opening;
+  }
+  return '';
+}
+
+function findOpeningEntryValue(entries, titlePattern, sentencePattern, preferredPattern = null) {
+  const matched = entries.find((item) => titlePattern.test(item.title));
+  if (!matched) return '';
+  return findOpeningSentence(matched.entry?.content || matched.content, sentencePattern, {
+    exclude: [matched.title],
+    preferredPattern
+  })
+    || summarizeOpeningText(matched.entry?.content || matched.content, 110);
+}
+
+function findOpeningSentence(content, pattern, { exclude = [], preferredPattern = null } = {}) {
+  const excluded = new Set(exclude.map((item) => normalizeOpeningComparable(item)).filter(Boolean));
+  const sentences = String(content || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\{\{\s*user\s*\}\}/gi, '主角')
+    .split(/(?<=[。！？；])|\r?\n/)
+    .map((item) => summarizeOpeningText(item, 110))
+    .filter((item) => item.length >= 6)
+    .filter((item) => !excluded.has(normalizeOpeningComparable(item)));
+  const matches = sentences.filter((item) => pattern.test(item));
+  return (preferredPattern && matches.find((item) => preferredPattern.test(item)))
+    || matches[0]
+    || '';
+}
+
+function normalizeOpeningComparable(value) {
+  return String(value || '')
+    .replace(/^[#>*_【】\s-]+|[#>*_【】\s-]+$/g, '')
+    .replace(/[：:。；;，,！？!?]/g, '')
+    .trim();
+}
+
+function inferOpeningAbility(profileText) {
+  const source = summarizeOpeningText(profileText, 500);
+  const match = source.match(/(?:拥有|身负|觉醒)(?:修真界第一)?(?:特殊)?体质[“"：:\s]*([^”"'，,。；\s]{2,24})/);
+  return match ? match[1] : '';
+}
+
+function inferOpeningFaction(role) {
+  const match = String(role || '').match(/([\u4e00-\u9fff]{2,12}(?:宗|门|宫|派|阁|教|府|司|军|族))/);
+  return match?.[1] || '';
+}
+
+function buildOpeningGoal({ role, ability, relationship }) {
+  if (!role && !ability && !relationship) return '';
+  const parts = [role ? `以${trimOpeningClause(role, 52)}的身份在当前局势中立足` : '在当前局势中立足'];
+  if (ability) parts.push(`守住${trimOpeningClause(ability, 28)}的秘密`);
+  if (relationship) parts.push(`维系${trimOpeningClause(relationship, 34)}`);
+  return `${parts.join('，')}。`;
+}
+
+function buildOpeningRisk(ability) {
+  if (!ability) return '';
+  return `${trimOpeningClause(ability, 36)}一旦暴露，可能引来知情势力的争夺与控制。`;
+}
+
+function trimOpeningClause(value, maxLength) {
+  return summarizeOpeningText(value, maxLength)
+    .replace(/[”"'，,。；;！？!?\s]+$/g, '')
+    .trim();
+}
+
+function buildCustomDestinyCards(entries, character, packTitle) {
+  const hookPattern = /世界|基调|主角|人设|角色|地点|物品|体质|境界|势力|关系|危机|事件|任务|开局|规则|秘密|线索|因果|目标|禁忌/;
+  const prioritized = [
+    ...entries.filter((item) => hookPattern.test(item.title)),
+    ...entries.filter((item) => !hookPattern.test(item.title))
+  ];
+  const seen = new Set();
+  const cards = [];
+  prioritized.forEach((item) => {
+    const identity = item.title.toLowerCase();
+    if (seen.has(identity) || cards.length >= 8) return;
+    seen.add(identity);
+    cards.push({
+      id: `custom-world-hook-${cards.length + 1}`,
+      title: item.title,
+      content: summarizeOpeningText(item.content, 180),
+      defaultSelected: cards.length < 3
+    });
+  });
+
+  if (cards.length) return cards;
+  const fallbackCards = [
+    ['角色来历', character.description],
+    ['开局处境', character.scenario || character.firstMessage],
+    ['性格底线', character.personality]
+  ].filter(([, content]) => summarizeOpeningText(content, 180));
+  if (!fallbackCards.length) {
+    fallbackCards.push(['世界初动', `${packTitle}的第一幕将从主角眼前正在发生的事件开始。`]);
+  }
+  return fallbackCards.map(([title, content], index) => ({
+    id: `custom-character-hook-${index + 1}`,
+    title,
+    content: summarizeOpeningText(content, 180),
+    defaultSelected: index < 3
+  }));
+}
+
+function normalizeOpeningEntryTitle(value, characterName = '') {
+  return String(value || '')
+    .replace(/\{\{\s*user\s*\}\}/gi, '主角')
+    .replace(/\{\{\s*char\s*\}\}/gi, characterName || '角色')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/^[#*_\-\s]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64);
+}
+
+function summarizeOpeningText(value, maxLength = 180) {
+  const text = String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<\/?[^>]+>/g, ' ')
+    .replace(/\{\{[\s\S]*?\}\}/g, ' ')
+    .replace(/^[#>*_\-\s]+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, Math.max(1, maxLength - 1)).trim()}…` : text;
+}
+
+function isOpeningMetaEntry(title) {
+  return /选开|COT|思维链|变量更新|插图|格式规则|正则|状态栏模板|生成模板|快速生成|免责声明|输出规则|破甲|NSFW|SFW|提示词模板/i.test(title);
+}
+
+function scoreOpeningEntry(entry, title, content) {
+  const constantWeight = entry.constant ? 24 : 0;
+  const priorityWeight = Math.max(0, Math.min(100, Number(entry.priority ?? 50))) / 5;
+  const hookWeight = /世界|基调|主角|人设|角色|地点|物品|体质|境界|势力|关系|危机|事件|任务|开局|规则|秘密|线索|因果|目标|禁忌/.test(title) ? 32 : 0;
+  const contentWeight = Math.min(content.length, 260) / 26;
+  return constantWeight + priorityWeight + hookWeight + contentWeight;
+}
+
+function customOpeningSidebarTabs(genre) {
+  const tabsByGenre = {
+    xianxia: ['主角信息', '互动角色', '世界规则', '关系与势力', '故事线索'],
+    lingyi: ['调查者档案', '互动角色', '禁忌规则', '线索证物', '事件进度'],
+    mingmo: ['主角文书', '互动角色', '银粮账目', '关系与势力', '故事线索'],
+    yingxiongzhi: ['人物档案', '互动角色', '剧情节点', '旧账关系', '江湖传闻'],
+    xuanhuan: ['主角信息', '互动角色', '世界规则', '关系与势力', '故事线索']
+  };
+  return tabsByGenre[genre] || tabsByGenre.xuanhuan;
 }
 
 function createCharacterStageBackground(characterCard, resourceTitle = '') {
@@ -849,6 +1447,83 @@ function normalizeWorldBookMergeMode(value) {
     : 'smart';
 }
 
+function normalizeBaseInheritanceMode(value, includeBaseContent = true) {
+  if (includeBaseContent === false) return 'none';
+  const mode = String(value || '').trim().toLowerCase();
+  return BASE_INHERITANCE_MODES.has(mode) ? mode : 'full';
+}
+
+function selectInheritedWorldBook(entries = [], mode = 'full') {
+  if (mode === 'none') return [];
+  if (mode === 'full') return structuredClone(entries || []);
+  return structuredClone((entries || []).filter((entry) => {
+    const scope = String(entry?.extensions?.inheritanceScope || entry?.inheritanceScope || '').trim().toLowerCase();
+    return scope === 'genre' || scope === 'global';
+  }));
+}
+
+function selectInheritedPromptModules(modules = [], mode = 'full') {
+  if (mode === 'none') return [];
+  if (mode === 'full') return structuredClone(modules || []);
+  return structuredClone((modules || []).filter((module) => {
+    const scope = String(module?.extensions?.inheritanceScope || module?.inheritanceScope || '').trim().toLowerCase();
+    if (scope === 'story' || scope === 'none') return false;
+    if (scope === 'genre' || scope === 'global') return true;
+    const identity = [module?.id, module?.title].filter(Boolean).join(' ');
+    return !STORY_SPECIFIC_PROMPT_PATTERN.test(identity);
+  }));
+}
+
+function createComposedMemory(base, id, mode = 'full') {
+  if (mode === 'full') {
+    return {
+      ...structuredClone(base.memory || {}),
+      resourcePackId: id
+    };
+  }
+  const seed = createEmptyPackSeed(id).memory;
+  const genre = String(
+    base.memory?.worldState?.flags?.genre
+    || base.memory?.worldState?.genre
+    || base.id
+    || 'custom'
+  ).trim() || 'custom';
+  return {
+    ...seed,
+    resourcePackId: id,
+    worldState: {
+      ...seed.worldState,
+      genre,
+      flags: {
+        ...(seed.worldState?.flags || {}),
+        genre
+      }
+    }
+  };
+}
+
+function createComposedRuleSystem(base, id, mode = 'full', sourcePackId = '') {
+  if (mode === 'full') {
+    return {
+      ...structuredClone(base.ruleSystem || createEmptyPackSeed(id).ruleSystem),
+      contentPackId: id,
+      sourceContentPackId: sourcePackId
+    };
+  }
+  const seed = createEmptyPackSeed(id).ruleSystem;
+  const genreLabel = String(base.title || '题材基线').trim();
+  return {
+    ...seed,
+    title: mode === 'genre' ? `${genreLabel} · 通用规则` : seed.title,
+    boundary: mode === 'genre'
+      ? '角色卡及其同批世界书决定人物、地点、关系、故事前提与行文风格；题材基线只提供通用世界规则。'
+      : seed.boundary,
+    contentPackId: id,
+    sourceContentPackId: mode === 'genre' ? sourcePackId : '',
+    panels: []
+  };
+}
+
 function composeWorldBookEntries({ baseEntries = [], resourceGroups = [], mode = 'smart' } = {}) {
   const mergeMode = normalizeWorldBookMergeMode(mode);
   const candidates = [];
@@ -943,6 +1618,72 @@ function composeWorldBookEntries({ baseEntries = [], resourceGroups = [], mode =
         triggerOverlaps,
         replacedBaseEntries,
         skippedSelectedEntries
+      },
+      conflicts
+    }
+  };
+}
+
+function composePromptModules({ baseModules = [], resources = [] } = {}) {
+  const candidates = [
+    ...(baseModules || []).map((item) => ({
+      module: normalizePromptModule(item),
+      origin: 'base',
+      resourceId: '',
+      resourceTitle: '题材基线'
+    })),
+    ...(resources || []).map((resource) => ({
+      module: normalizePromptModule(resource.payload || {}),
+      origin: 'resource',
+      resourceId: resource.id || '',
+      resourceTitle: resource.title || '补充预设'
+    }))
+  ];
+  const accepted = [];
+  const conflicts = [];
+  let promptExactDuplicates = 0;
+  let promptIdConflicts = 0;
+  let replacedPromptModules = 0;
+
+  candidates.forEach((candidate) => {
+    const fingerprint = createFingerprint(candidate.module);
+    if (accepted.some((item) => item.fingerprint === fingerprint)) {
+      promptExactDuplicates += 1;
+      return;
+    }
+
+    const idKey = normalizeTitle(candidate.module.id || candidate.module.title);
+    const sameIdIndex = idKey
+      ? accepted.findIndex((item) => normalizeTitle(item.module.id || item.module.title) === idKey)
+      : -1;
+    if (sameIdIndex >= 0) {
+      const previous = accepted[sameIdIndex];
+      promptIdConflicts += 1;
+      conflicts.push({
+        type: 'prompt-id-conflict',
+        title: candidate.module.title || candidate.module.id,
+        message: `${candidate.module.title || candidate.module.id}：${previous.resourceTitle}与${candidate.resourceTitle}使用相同模块 ID`,
+        resourceId: candidate.resourceId
+      });
+      if (candidate.origin === 'resource') {
+        accepted[sameIdIndex] = { ...candidate, fingerprint };
+        replacedPromptModules += 1;
+      }
+      return;
+    }
+    accepted.push({ ...candidate, fingerprint });
+  });
+
+  return {
+    modules: accepted.map((item) => item.module),
+    report: {
+      summary: {
+        basePromptModules: Number(baseModules?.length || 0),
+        selectedPromptModules: Number(resources?.length || 0),
+        finalPromptModules: accepted.length,
+        promptExactDuplicates,
+        promptIdConflicts,
+        replacedPromptModules
       },
       conflicts
     }

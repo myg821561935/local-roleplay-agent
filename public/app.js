@@ -15,6 +15,15 @@ import {
   getStoryPackCategories as getPackCategories,
   getStoryPackVisualId as resolveStoryPackVisualId
 } from './modules/storyLauncher.js';
+import { STORY_IMPORT_MODES, evaluateStoryImportRoute } from './modules/importRouting.js';
+import { createCommunityCompatibilitySection } from './modules/importCompatibility.js';
+import {
+  applyLightFrontendDisplayTransforms,
+  expandLightFrontendQuickReply,
+  getLightFrontendPanels,
+  getLightFrontendQuickReplies,
+  resolveLightFrontendPanel
+} from './modules/lightFrontend.js';
 
 const MASKED_SECRET = '********';
 const CUSTOM_MODEL_VALUE = '__custom_model__';
@@ -381,6 +390,7 @@ const STORY_CATALOG_VIEW_KEY = 'localRoleplayStoryCatalogView';
 const STORY_CATALOG_CATEGORY_KEY = 'localRoleplayStoryCatalogCategory';
 const CUSTOM_STORY_DRAFT_KEY = 'localRoleplayCustomStoryDraft';
 const CUSTOM_STORY_BASE_PACK_ID = '__original__';
+const CUSTOM_STORY_STEPS = ['baseline', 'character', 'worldbook', 'prompt', 'review'];
 const CUSTOM_BASELINE_TEMPLATES = {
   blank: {
     label: '纯原创空白',
@@ -486,9 +496,15 @@ function createCustomStoryDraft(value = {}) {
     worldBookResourceIds: Array.isArray(value.worldBookResourceIds)
       ? Array.from(new Set(value.worldBookResourceIds.map((id) => String(id || '')).filter(Boolean)))
       : [],
+    promptResourceIds: Array.isArray(value.promptResourceIds)
+      ? Array.from(new Set(value.promptResourceIds.map((id) => String(id || '')).filter(Boolean)))
+      : [],
     worldBookMergeMode: ['smart', 'base-first', 'resources-only'].includes(value.worldBookMergeMode)
       ? value.worldBookMergeMode
       : 'smart',
+    creationMode: value.creationMode === STORY_IMPORT_MODES.INDEPENDENT
+      ? STORY_IMPORT_MODES.INDEPENDENT
+      : 'composed',
     customBaseline: createCustomBaselineDraft(value.customBaseline)
   };
 }
@@ -521,6 +537,7 @@ const state = {
   immersiveSidebarTab: '',
   prologueTemplate: null,
   pendingJourneyDraft: null,
+  openingError: '',
   contentPackCharacterPresets: {},
   contentPacks: [],
   sessionSummaries: [],
@@ -529,6 +546,7 @@ const state = {
   storyCatalogView: localStorage.getItem(STORY_CATALOG_VIEW_KEY) === 'list' ? 'list' : 'grid',
   storyCatalogCategory: localStorage.getItem(STORY_CATALOG_CATEGORY_KEY) || 'all',
   customStoryDraft: loadCustomStoryDraft(),
+  customStoryStep: 'baseline',
   customStoryComposition: { key: '', status: 'idle', report: null, error: '' },
   resourceLibrary: [],
   resourcePacks: [],
@@ -538,7 +556,8 @@ const state = {
   simulationPublicSnapshot: null,
   simulationBusy: false,
   chatStreaming: false,
-  recommendedActionPending: false
+  recommendedActionPending: false,
+  pendingQuickReply: null
 };
 
 let currentSessionId = localStorage.getItem('localRoleplaySessionId') || 'main';
@@ -548,11 +567,13 @@ let pendingImportCanCommit = false;
 let pendingImportKind = '';
 let pendingImportIntent = '';
 let pendingImportBasePackId = '';
+let pendingImportDisposition = STORY_IMPORT_MODES.ATTACH;
 let importSources = FALLBACK_IMPORT_SOURCES;
 let sourceResultItems = [];
 let usageRefreshTimer = null;
 let customStoryInspectionTimer = null;
 let customStoryInspectionRequest = 0;
+let storyEditTarget = null;
 
 const els = {
   assetCenter: document.querySelector('#asset-center'),
@@ -572,11 +593,23 @@ const els = {
   storyPackGrid: document.querySelector('#story-pack-grid'),
   openStoryCustomDialog: document.querySelector('#open-story-custom-dialog'),
   storyCustomDialog: document.querySelector('#story-custom-dialog'),
+  storyEditDialog: document.querySelector('#story-edit-dialog'),
+  storyEditForm: document.querySelector('#story-edit-form'),
+  storyEditDialogTitle: document.querySelector('#story-edit-dialog-title'),
+  storyEditTitle: document.querySelector('#story-edit-title'),
+  storyEditDescription: document.querySelector('#story-edit-description'),
+  storyEditStatus: document.querySelector('#story-edit-status'),
+  closeStoryEditDialog: document.querySelector('#close-story-edit-dialog'),
+  cancelStoryEdit: document.querySelector('#cancel-story-edit'),
+  storyCustomSteps: document.querySelector('#story-custom-steps'),
+  storyCustomStepButtons: Array.from(document.querySelectorAll('[data-story-custom-step]')),
+  storyCustomStepPanels: Array.from(document.querySelectorAll('[data-story-custom-panel]')),
   closeStoryCustomDialog: document.querySelector('#close-story-custom-dialog'),
   cancelStoryCustomDialog: document.querySelector('#cancel-story-custom-dialog'),
   storyImportBase: document.querySelector('#story-import-base'),
   storyImportTrigger: document.querySelector('#story-import-trigger'),
   storyImportFile: document.querySelector('#story-import-file'),
+  storyCustomLibrarySummary: document.querySelector('#story-custom-library-summary'),
   storyCustomTitle: document.querySelector('#story-custom-title'),
   storyCustomCharacter: document.querySelector('#story-custom-character'),
   storyCustomCharacterBackgroundOption: document.querySelector('#story-custom-character-background-option'),
@@ -592,12 +625,16 @@ const els = {
   storyCustomProseStyle: document.querySelector('#story-custom-prose-style'),
   storyCustomHardRules: document.querySelector('#story-custom-hard-rules'),
   storyCustomWorldbookList: document.querySelector('#story-custom-worldbook-list'),
+  storyCustomPromptList: document.querySelector('#story-custom-prompt-list'),
+  storyCustomStackPreview: document.querySelector('#story-custom-stack-preview'),
   storyCustomReadinessBadge: document.querySelector('#story-custom-readiness-badge'),
   storyCustomTokenEstimate: document.querySelector('#story-custom-token-estimate'),
   storyCustomChecklist: document.querySelector('#story-custom-checklist'),
   storyCustomConflicts: document.querySelector('#story-custom-conflicts'),
   storyCustomGuidance: document.querySelector('#story-custom-guidance'),
   storyCustomCreate: document.querySelector('#story-custom-create'),
+  storyCustomPrev: document.querySelector('#story-custom-prev'),
+  storyCustomNext: document.querySelector('#story-custom-next'),
   storyCustomStatus: document.querySelector('#story-custom-status'),
   storyLauncherStatus: document.querySelector('#story-launcher-status'),
   openAdvancedSession: document.querySelector('#open-advanced-session'),
@@ -916,10 +953,12 @@ const assetCenterController = createAssetCenterController({
   getResources: () => state.resourceLibrary,
   getPacks: () => state.resourcePacks,
   onRefresh: () => loadResourceLibrary(),
-  onImport: () => els.characterCardImport?.click(),
+  onImport: openAssetImportPicker,
   onUseAsset: useAssetFromCenter,
   onOpenComposer: openAssetComposer,
+  onReevaluateAsset: reevaluateAssetFromCenter,
   onSaveMetadata: saveAssetMetadata,
+  onSaveContent: saveAssetContent,
   onDeleteAsset: deleteAssetFromCenter,
   onBatchMetadata: saveAssetBatchMetadata,
   onExportAssets: exportAssetsFromCenter,
@@ -952,6 +991,13 @@ document.addEventListener('DOMContentLoaded', () => {
   startUsagePolling();
 });
 
+function shouldSubmitChatInput(event) {
+  return event.key === 'Enter'
+    && !event.shiftKey
+    && !event.isComposing
+    && event.keyCode !== 229;
+}
+
 function bindEvents() {
   assetCenterController.bindEvents();
   els.openAssetCenter?.addEventListener('click', () => openAssetCenter());
@@ -972,8 +1018,24 @@ function bindEvents() {
   els.storyCustomDialog?.addEventListener('click', (event) => {
     if (event.target === els.storyCustomDialog) closeCustomStoryDialog();
   });
+  els.storyEditDialog?.addEventListener('click', (event) => {
+    if (event.target === els.storyEditDialog) closeStoryEditDialog();
+  });
+  els.closeStoryEditDialog?.addEventListener('click', closeStoryEditDialog);
+  els.cancelStoryEdit?.addEventListener('click', closeStoryEditDialog);
+  els.storyEditForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void saveStoryEdit();
+  });
+  els.storyCustomSteps?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-story-custom-step]');
+    if (button) setCustomStoryStep(button.dataset.storyCustomStep, { focus: true });
+  });
+  els.storyCustomPrev?.addEventListener('click', () => moveCustomStoryStep(-1));
+  els.storyCustomNext?.addEventListener('click', () => moveCustomStoryStep(1));
   els.storyImportBase?.addEventListener('change', () => {
     state.customStoryDraft.basePackId = els.storyImportBase.value;
+    state.customStoryDraft.creationMode = 'composed';
     if (!state.customStoryDraft.titleCustomized) {
       state.customStoryDraft.title = getCustomStorySuggestedTitle();
     }
@@ -1056,6 +1118,15 @@ function bindEvents() {
     persistCustomStoryDraft();
     renderCustomStoryReadiness();
   });
+  els.storyCustomPromptList?.addEventListener('change', (event) => {
+    if (!event.target.matches('input[type="checkbox"]')) return;
+    state.customStoryDraft.promptResourceIds = Array.from(
+      els.storyCustomPromptList.querySelectorAll('input:checked')
+    ).map((input) => input.value);
+    invalidateCustomStoryInspection();
+    persistCustomStoryDraft();
+    renderCustomStoryReadiness();
+  });
   els.storyCustomCreate?.addEventListener('click', createCustomStoryFromDraft);
   els.storyImportTrigger?.addEventListener('click', () => els.storyImportFile?.click());
   els.storyImportFile?.addEventListener('change', () => {
@@ -1071,12 +1142,37 @@ function bindEvents() {
     });
   });
   els.storyPackGrid?.addEventListener('click', (event) => {
+    const edit = event.target.closest('[data-edit-story-pack]');
+    if (edit) {
+      openStoryEditDialog('pack', edit.dataset.editStoryPack);
+      return;
+    }
+    const remove = event.target.closest('[data-delete-story-pack]');
+    if (remove) {
+      void deleteStoryPack(remove.dataset.deleteStoryPack);
+      return;
+    }
+    const derive = event.target.closest('[data-derive-story-pack]');
+    if (derive) {
+      openDerivedStoryBuilder(derive.dataset.deriveStoryPack);
+      return;
+    }
     const action = event.target.closest('[data-start-story-pack]');
     if (action) void startStoryFromPack(action.dataset.startStoryPack, action);
   });
   els.storyPackGrid?.addEventListener('pointerover', previewStoryPackFromEvent);
   els.storyPackGrid?.addEventListener('focusin', previewStoryPackFromEvent);
   els.storyProjectList?.addEventListener('click', (event) => {
+    const edit = event.target.closest('[data-edit-story-project]');
+    if (edit) {
+      openStoryEditDialog('project', edit.dataset.editStoryProject);
+      return;
+    }
+    const remove = event.target.closest('[data-delete-story-project]');
+    if (remove) {
+      void deleteStoryProject(remove.dataset.deleteStoryProject);
+      return;
+    }
     const action = event.target.closest('[data-open-story-session]');
     if (action) {
       void openStorySession(action.dataset.openStorySession);
@@ -1123,6 +1219,16 @@ function bindEvents() {
   els.chatForm.addEventListener('submit', (event) => {
     event.preventDefault();
     sendMessage();
+  });
+  els.chatInput?.addEventListener('keydown', (event) => {
+    if (!shouldSubmitChatInput(event)) return;
+    event.preventDefault();
+    els.chatForm.requestSubmit();
+  });
+  els.chatInput?.addEventListener('input', () => {
+    if (state.pendingQuickReply?.content !== els.chatInput.value.trim()) {
+      state.pendingQuickReply = null;
+    }
   });
 
   els.refreshState.addEventListener('click', () => loadState());
@@ -1275,6 +1381,13 @@ function bindEvents() {
   document.querySelector('#new-session-cancel')?.addEventListener('click', () => els.newSessionDialog?.close());
 
   els.messages.addEventListener('click', (event) => {
+    const immersiveOption = event.target.closest('[data-immersive-option-action]');
+    if (immersiveOption) {
+      const action = decodeImmersiveAction(immersiveOption.dataset.immersiveOptionAction);
+      useRecommendedAction(action, immersiveOption);
+      return;
+    }
+
     const recommendation = event.target.closest('[data-recommended-action]');
     if (recommendation) {
       useRecommendedAction(recommendation.dataset.recommendedAction, recommendation);
@@ -1331,13 +1444,15 @@ function bindEvents() {
 
     const actionTemplate = event.target.closest('[data-action-template]');
     if (actionTemplate) {
-      els.chatInput.value = actionTemplate.dataset.actionTemplate;
-      els.chatInput.focus();
+      setChatInputFromQuickReply({
+        label: actionTemplate.textContent,
+        content: actionTemplate.dataset.actionTemplate
+      });
       return;
     }
 
     if (event.target.closest('[data-scroll-bottom]')) {
-      els.messages.scrollTop = els.messages.scrollHeight;
+      chatController.scrollToLatest();
     }
   });
 
@@ -1533,6 +1648,19 @@ function openAssetCenter() {
   assetCenterController.open();
 }
 
+function openAssetImportPicker(kind = '') {
+  if (!els.characterCardImport) return;
+  const acceptedTypes = {
+    character: '.png,.json,image/png,application/json',
+    worldbook: '.json,.yaml,.yml,.txt,application/json,text/yaml,text/plain',
+    prompt: '.json,.yaml,.yml,.txt,application/json,text/yaml,text/plain'
+  };
+  els.characterCardImport.dataset.assetImportKind = kind;
+  els.characterCardImport.accept = acceptedTypes[kind]
+    || '.json,.png,.yaml,.yml,.txt,application/json,image/png,text/yaml,text/plain';
+  els.characterCardImport.click();
+}
+
 function useAssetFromCenter(item) {
   if (!item) return;
   if (item.kind === 'pack') {
@@ -1597,6 +1725,22 @@ async function saveAssetMetadata(item, updates) {
   });
 }
 
+async function saveAssetContent(item, updates) {
+  if (!item?.id || !['worldbook', 'prompt'].includes(item.kind)) return;
+  await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}/content`, {
+    method: 'PATCH',
+    body: updates
+  });
+}
+
+async function reevaluateAssetFromCenter(item) {
+  if (!item?.id || item.kind === 'pack') return;
+  await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}/reevaluate`, {
+    method: 'POST',
+    body: {}
+  });
+}
+
 async function deleteAssetFromCenter(item) {
   if (!item?.id) return;
   const path = item.kind === 'pack'
@@ -1645,19 +1789,169 @@ function downloadJsonFile(payload, fileName) {
   URL.revokeObjectURL(url);
 }
 
-function openCustomStoryDialog(options = {}) {
+async function openCustomStoryDialog(options = {}) {
   if (!els.storyCustomDialog) return;
+  state.customStoryStep = CUSTOM_STORY_STEPS.includes(options.step) ? options.step : 'baseline';
   renderStoryImportBaseOptions();
   renderCustomStoryBuilder();
   if (!els.storyCustomDialog.open) els.storyCustomDialog.showModal();
   if (options.resetStatus !== false) {
     setStatus(els.storyCustomStatus, '选择基线与素材后，系统会先检查完整性再创建剧本。');
   }
-  window.setTimeout(() => els.storyImportBase?.focus(), 0);
+  setCustomStoryStep(state.customStoryStep);
+  window.setTimeout(() => {
+    const activePanel = els.storyCustomStepPanels.find((panel) => panel.dataset.storyCustomPanel === state.customStoryStep);
+    activePanel?.querySelector('select, input, textarea, button')?.focus();
+  }, 0);
+  await loadResourceLibrary();
+  renderStoryImportBaseOptions();
+  renderCustomStoryBuilder();
 }
 
 function closeCustomStoryDialog() {
   if (els.storyCustomDialog?.open) els.storyCustomDialog.close();
+}
+
+function openStoryEditDialog(kind, id) {
+  const collection = kind === 'pack' ? state.contentPacks : state.storyProjects;
+  const item = (collection || []).find((entry) => entry.id === id);
+  if (!item || !els.storyEditDialog) return;
+  storyEditTarget = { kind, id };
+  els.storyEditDialogTitle.textContent = kind === 'pack' ? '编辑剧本' : '编辑故事';
+  els.storyEditTitle.value = item.title || '';
+  els.storyEditDescription.value = item.description || '';
+  setStatus(els.storyEditStatus, kind === 'pack'
+    ? '只修改本地剧本的名称和说明，不改动角色卡、世界书与已有存档。'
+    : '修改书架中的故事名称和说明，不改动会话内容。');
+  if (!els.storyEditDialog.open) els.storyEditDialog.showModal();
+  window.setTimeout(() => els.storyEditTitle?.focus(), 0);
+}
+
+function closeStoryEditDialog() {
+  storyEditTarget = null;
+  if (els.storyEditDialog?.open) els.storyEditDialog.close();
+}
+
+async function saveStoryEdit() {
+  if (!storyEditTarget) return;
+  const title = String(els.storyEditTitle?.value || '').trim();
+  const description = String(els.storyEditDescription?.value || '').trim();
+  if (!title) {
+    setStatus(els.storyEditStatus, '名称不能为空。', 'error');
+    return;
+  }
+  const { kind, id } = storyEditTarget;
+  setStatus(els.storyEditStatus, '正在保存...', 'busy');
+  try {
+    if (kind === 'project') {
+      const payload = await apiRequest(`/api/story-projects/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: { title, description }
+      });
+      state.storyProjects = (state.storyProjects || []).map((project) => (
+        project.id === id ? payload.summary : project
+      ));
+      renderStoryProjects();
+    } else {
+      await apiRequest(`/api/resource-library/packs/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: { title, description, sessionTitle: title }
+      });
+      const payload = await apiRequest('/api/content-packs');
+      state.contentPacks = payload.contentPacks || [];
+      renderStoryCatalogFilters();
+      renderStoryPackGrid();
+    }
+    closeStoryEditDialog();
+    setStatus(els.storyLauncherStatus, `已保存《${title}》。`, 'ok');
+  } catch (error) {
+    setStatus(els.storyEditStatus, `保存失败：${humanizeApiError(error)}`, 'error');
+  }
+}
+
+function openDerivedStoryBuilder(packId) {
+  const pack = (state.contentPacks || []).find((item) => item.id === packId && item.custom !== true);
+  if (!pack) return;
+  state.customStoryDraft = createCustomStoryDraft({
+    basePackId: pack.id,
+    title: `${pack.title || pack.id} · 派生版`,
+    titleCustomized: true
+  });
+  invalidateCustomStoryInspection();
+  persistCustomStoryDraft();
+  openCustomStoryDialog({ step: 'baseline' });
+}
+
+async function deleteStoryProject(projectId) {
+  const project = (state.storyProjects || []).find((item) => item.id === projectId);
+  if (!project) return;
+  const sessionNote = Number(project.sessionCount || 0) > 0
+    ? `\n\n${project.sessionCount} 个会话存档会保留，仍可从会话列表打开。`
+    : '';
+  if (!window.confirm(`从书架删除《${project.title || '未命名故事'}》？${sessionNote}`)) return;
+  try {
+    await apiRequest(`/api/story-projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE',
+      body: {}
+    });
+    state.storyProjects = (state.storyProjects || []).filter((item) => item.id !== projectId);
+    renderStoryProjects();
+    setStatus(els.storyLauncherStatus, '故事已从书架删除，会话存档未被删除。', 'ok');
+  } catch (error) {
+    setStatus(els.storyLauncherStatus, `删除失败：${humanizeApiError(error)}`, 'error');
+  }
+}
+
+async function deleteStoryPack(packId) {
+  const pack = (state.contentPacks || []).find((item) => item.id === packId && item.custom === true);
+  if (!pack) return;
+  const dependentProjects = (state.storyProjects || []).filter((project) => project.basePackId === packId);
+  const dependencyNote = dependentProjects.length
+    ? `\n\n已有 ${dependentProjects.length} 个故事使用它。已有会话可继续，但这些故事将不能再创建新卷。`
+    : '';
+  if (!window.confirm(`移除本地剧本《${pack.title || pack.id}》？\n\n角色卡、世界书原素材和会话存档都会保留。${dependencyNote}`)) return;
+  try {
+    await apiRequest(`/api/resource-library/packs/${encodeURIComponent(packId)}`, {
+      method: 'DELETE',
+      body: {}
+    });
+    state.contentPacks = (state.contentPacks || []).filter((item) => item.id !== packId);
+    renderStoryCatalogFilters();
+    renderStoryPackGrid();
+    setStoryLauncherBackground(state.contentPacks[0]);
+    setStatus(els.storyLauncherStatus, '本地剧本已移除，原始素材和会话存档未被删除。', 'ok');
+  } catch (error) {
+    setStatus(els.storyLauncherStatus, `删除失败：${humanizeApiError(error)}`, 'error');
+  }
+}
+
+function setCustomStoryStep(step, { focus = false } = {}) {
+  if (!CUSTOM_STORY_STEPS.includes(step)) return;
+  state.customStoryStep = step;
+  const activeIndex = CUSTOM_STORY_STEPS.indexOf(step);
+  els.storyCustomStepButtons.forEach((button, index) => {
+    const active = button.dataset.storyCustomStep === step;
+    button.toggleAttribute('aria-current', active);
+    button.classList.toggle('is-active', active);
+    button.classList.toggle('is-complete', index < activeIndex);
+  });
+  els.storyCustomStepPanels.forEach((panel) => {
+    panel.hidden = panel.dataset.storyCustomPanel !== step;
+  });
+  if (els.storyCustomPrev) els.storyCustomPrev.hidden = activeIndex === 0;
+  if (els.storyCustomNext) els.storyCustomNext.hidden = activeIndex === CUSTOM_STORY_STEPS.length - 1;
+  if (els.storyCustomCreate) els.storyCustomCreate.hidden = step !== 'review';
+  if (step === 'review') renderCustomStoryStackPreview();
+  if (focus) {
+    const activePanel = els.storyCustomStepPanels.find((panel) => panel.dataset.storyCustomPanel === step);
+    activePanel?.querySelector('select, input, textarea, button')?.focus();
+  }
+}
+
+function moveCustomStoryStep(offset) {
+  const currentIndex = Math.max(0, CUSTOM_STORY_STEPS.indexOf(state.customStoryStep));
+  const nextIndex = Math.max(0, Math.min(CUSTOM_STORY_STEPS.length - 1, currentIndex + offset));
+  setCustomStoryStep(CUSTOM_STORY_STEPS[nextIndex], { focus: true });
 }
 
 function renderStoryLauncher() {
@@ -1793,19 +2087,33 @@ function buildCustomPackRequest({ title = '' } = {}) {
   const isOriginal = draft.basePackId === CUSTOM_STORY_BASE_PACK_ID;
   const resolvedTitle = String(title || draft.title || getCustomStorySuggestedTitle()).trim();
   const baseline = createCustomBaselineDraft(draft.customBaseline);
+  const hasImportedStack = Boolean(
+    draft.characterResourceId
+    || draft.worldBookResourceIds.length
+    || draft.promptResourceIds.length
+  );
+  const baseInheritanceMode = draft.creationMode === STORY_IMPORT_MODES.INDEPENDENT
+    ? 'none'
+    : !isOriginal && hasImportedStack
+      ? 'genre'
+      : 'full';
   return {
     title: resolvedTitle,
     sessionTitle: resolvedTitle,
     description: isOriginal
       ? `原创世界《${baseline.worldName || resolvedTitle}》，由本地素材组装生成。`
-      : '由本地素材创建，继承所选内容包的规则、主题与叙事基线。',
+      : hasImportedStack
+        ? '由本地素材创建，仅继承所选内容包的通用题材规则与视觉，不继承固定剧情。'
+        : '由所选内容包完整派生，继承规则、主题与叙事基线。',
     basePackId: isOriginal ? '' : draft.basePackId,
     characterResourceId: draft.characterResourceId,
     useCharacterPortraitAsBackground: draft.useCharacterPortraitAsBackground,
     worldBookResourceIds: [...draft.worldBookResourceIds],
-    promptResourceIds: [],
-    includeBaseContent: true,
+    promptResourceIds: [...draft.promptResourceIds],
+    includeBaseContent: draft.creationMode !== STORY_IMPORT_MODES.INDEPENDENT,
+    baseInheritanceMode,
     worldBookMergeMode: draft.worldBookMergeMode,
+    creationMode: draft.creationMode,
     visualPackId: isOriginal ? baseline.visualPackId : '',
     customBaseline: isOriginal ? baseline : null
   };
@@ -1816,8 +2124,14 @@ function renderCustomStoryBuilder() {
   const resources = Array.isArray(state.resourceLibrary) ? state.resourceLibrary : [];
   const characters = resources.filter((item) => item.kind === 'character');
   const worldBooks = resources.filter((item) => item.kind === 'worldbook');
+  const prompts = resources.filter((item) => item.kind === 'prompt');
   const basePack = (state.contentPacks || []).find((pack) => pack.id === state.customStoryDraft.basePackId);
   const isOriginal = state.customStoryDraft.basePackId === CUSTOM_STORY_BASE_PACK_ID;
+  if (els.storyCustomLibrarySummary) {
+    els.storyCustomLibrarySummary.textContent = resources.length
+      ? `优先从素材库选择：${characters.length} 张角色卡 · ${worldBooks.length} 本世界书 · ${prompts.length} 个预设`
+      : '素材库暂无可用素材，可先创建基础剧本，或使用右侧入口补充导入。';
+  }
 
   const selectedCharacterId = characters.some((item) => item.id === state.customStoryDraft.characterResourceId)
     ? state.customStoryDraft.characterResourceId
@@ -1883,6 +2197,43 @@ function renderCustomStoryBuilder() {
     });
   }
 
+  const availablePromptIds = new Set(prompts.map((item) => item.id));
+  state.customStoryDraft.promptResourceIds = state.customStoryDraft.promptResourceIds
+    .filter((id) => availablePromptIds.has(id));
+  if (els.storyCustomPromptList) {
+    els.storyCustomPromptList.innerHTML = '';
+    if (!prompts.length) {
+      const empty = document.createElement('p');
+      empty.className = 'story-custom-resource-empty';
+      empty.textContent = isOriginal
+        ? '素材库中暂无 Prompt，可先使用原创叙事风格与硬规则。'
+        : '素材库中暂无补充预设，将沿用题材基线的叙事规则。';
+      els.storyCustomPromptList.append(empty);
+    } else {
+      const selectedPrompts = new Set(state.customStoryDraft.promptResourceIds);
+      prompts.forEach((resource) => {
+        const label = document.createElement('label');
+        label.className = 'story-custom-resource-option';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = resource.id;
+        input.checked = selectedPrompts.has(resource.id);
+        const copy = document.createElement('span');
+        const title = document.createElement('strong');
+        title.textContent = resource.title || resource.payload?.title || '未命名预设';
+        const meta = document.createElement('small');
+        const score = Number(resource.diagnostics?.score || 0);
+        const tokens = Number(resource.diagnostics?.estimatedTokens || 0);
+        meta.textContent = [score ? `${score}分` : '', tokens ? `${formatTokenCount(tokens)} tokens` : '', resource.source?.site || '本地']
+          .filter(Boolean)
+          .join(' · ');
+        copy.append(title, meta);
+        label.append(input, copy);
+        els.storyCustomPromptList.append(label);
+      });
+    }
+  }
+
   if (els.storyCustomWorldbookMode) els.storyCustomWorldbookMode.value = state.customStoryDraft.worldBookMergeMode;
   renderCustomBaselineEditor();
   if (!state.customStoryDraft.title) {
@@ -1891,6 +2242,7 @@ function renderCustomStoryBuilder() {
   if (els.storyCustomTitle) els.storyCustomTitle.value = state.customStoryDraft.title;
   persistCustomStoryDraft();
   renderCustomStoryReadiness();
+  setCustomStoryStep(state.customStoryStep);
 }
 
 function renderCustomStoryCharacterBackground(character) {
@@ -1917,7 +2269,8 @@ function getCustomStoryReadiness() {
   const resources = Array.isArray(state.resourceLibrary) ? state.resourceLibrary : [];
   const character = resources.find((item) => item.id === draft.characterResourceId && item.kind === 'character');
   const worldBooks = resources.filter((item) => draft.worldBookResourceIds.includes(item.id) && item.kind === 'worldbook');
-  const selectedResources = [character, ...worldBooks].filter(Boolean);
+  const prompts = resources.filter((item) => draft.promptResourceIds.includes(item.id) && item.kind === 'prompt');
+  const selectedResources = [character, ...worldBooks, ...prompts].filter(Boolean);
   const blockingIssues = selectedResources.flatMap((item) => item.diagnostics?.blockingIssues || []);
   const missingFields = character?.diagnostics?.missingFields || [];
   const warningCount = selectedResources.reduce((sum, item) => sum + Number(item.diagnostics?.warnings?.length || 0), 0);
@@ -1935,9 +2288,28 @@ function getCustomStoryReadiness() {
   const compositionSummary = state.customStoryComposition.report?.summary || {};
   const conflictCount = Number(compositionSummary.sameTitleConflicts || 0)
     + Number(compositionSummary.constantConflicts || 0)
-    + Number(compositionSummary.triggerOverlaps || 0);
+    + Number(compositionSummary.triggerOverlaps || 0)
+    + Number(compositionSummary.promptIdConflicts || 0);
+  const fallbackRuntimeCompatibility = selectedResources.reduce((summary, item) => {
+    const counts = item.diagnostics?.communityCompatibility?.counts || {};
+    summary.missing += Number(counts.missing || 0);
+    summary.degraded += Number(counts.degraded || 0);
+    return summary;
+  }, { missing: 0, degraded: 0 });
+  const inspectedRuntimeCounts = state.customStoryComposition.report?.communityCompatibility?.counts;
+  const runtimeCompatibility = inspectedRuntimeCounts
+    ? {
+        missing: Number(inspectedRuntimeCounts.missing || 0),
+        degraded: Number(inspectedRuntimeCounts.degraded || 0)
+      }
+    : fallbackRuntimeCompatibility;
   const canCreate = baselineReady && !baseBlocked && blockingIssues.length === 0;
-  const needsReview = missingFields.length > 0 || warningCount > 0 || estimatedTokens > 60000 || conflictCount > 0;
+  const needsReview = missingFields.length > 0
+    || warningCount > 0
+    || estimatedTokens > 60000
+    || conflictCount > 0
+    || runtimeCompatibility.missing > 0
+    || runtimeCompatibility.degraded > 0;
   const effectiveBaseWorldBookCount = isOriginal ? originalWorldBookCount : baseWorldBookCount;
   const effectiveBasePromptCount = isOriginal ? originalPromptCount : basePromptCount;
 
@@ -1973,9 +2345,18 @@ function getCustomStoryReadiness() {
     {
       label: '叙事规则',
       value: isOriginal
-        ? (effectiveBasePromptCount ? '已生成原创叙事规则' : '尚未填写叙事风格或硬规则')
-        : `继承基线 ${effectiveBasePromptCount} 个规则模块`,
-      tone: effectiveBasePromptCount > 0 ? 'ready' : 'review'
+        ? `${effectiveBasePromptCount ? '原创规则' : '尚未填写原创规则'}${prompts.length ? ` + ${prompts.length} 个预设` : ''}`
+        : `继承基线 ${effectiveBasePromptCount} 个规则模块${prompts.length ? ` + 补充 ${prompts.length} 个` : ''}`,
+      tone: effectiveBasePromptCount + prompts.length > 0 ? 'ready' : 'review'
+    },
+    {
+      label: '扩展依赖',
+      value: runtimeCompatibility.missing
+        ? `${runtimeCompatibility.missing} 项缺少运行时，相关脚本将保持禁用`
+        : runtimeCompatibility.degraded
+          ? `${runtimeCompatibility.degraded} 项需要兼容转换`
+          : '所选素材均可原生装配',
+      tone: runtimeCompatibility.missing || runtimeCompatibility.degraded ? 'review' : 'ready'
     }
   ];
 
@@ -1984,6 +2365,7 @@ function getCustomStoryReadiness() {
   else if (!isOriginal && !basePack) guidance = '请先选择一个题材基线，系统需要它提供运行规则与视觉主题。';
   else if (baseBlocked || blockingIssues.length) guidance = `存在 ${Number(basePack?.compatibility?.blockingCount || 0) + blockingIssues.length} 个阻断项，请先修复后再创建。`;
   else if (missingFields.length) guidance = `角色卡可创建，但缺少：${missingFields.map((item) => item.label || item.field).join('、')}。这些字段将暂由模型与基线补足。`;
+  else if (runtimeCompatibility.missing) guidance = `检测到 ${runtimeCompatibility.missing} 项外部运行时依赖。素材可以保存和使用，但酒馆助手、小白 X 或未知脚本能力不会执行。`;
   else if (conflictCount) guidance = `检测到 ${conflictCount} 组潜在设定重叠。当前合并策略可以继续创建，也可先查看下方冲突摘要。`;
   else if (estimatedTokens > 60000) guidance = `素材可直接创建，但增量约 ${formatTokenCount(estimatedTokens)} tokens；建议后续压缩常驻条目，避免每轮上下文过重。`;
   else if (warningCount) guidance = `素材可直接创建，评定器还有 ${warningCount} 条改进建议，可在资源库中稍后处理。`;
@@ -1995,10 +2377,12 @@ function getCustomStoryReadiness() {
     baseline,
     character,
     worldBooks,
+    prompts,
     checks,
     canCreate,
     needsReview,
     estimatedTokens,
+    runtimeCompatibility,
     guidance
   };
 }
@@ -2033,7 +2417,43 @@ function renderCustomStoryReadiness() {
   els.storyCustomGuidance.textContent = readiness.guidance;
   els.storyCustomCreate.disabled = !readiness.canCreate;
   renderCustomStoryConflicts();
+  if (state.customStoryStep === 'review') renderCustomStoryStackPreview(readiness);
   scheduleCustomStoryInspection(readiness);
+}
+
+function renderCustomStoryStackPreview(readiness = getCustomStoryReadiness()) {
+  if (!els.storyCustomStackPreview) return;
+  const baseLabel = readiness.isOriginal
+    ? (readiness.baseline.worldName || '原创世界')
+    : (readiness.basePack?.title || readiness.basePack?.id || '未选择');
+  const characterLabel = readiness.character?.title
+    || readiness.character?.payload?.name
+    || (readiness.isOriginal ? '开局时创建主角' : readiness.basePack?.characterName || '沿用基线角色');
+  const rows = [
+    ['世界基线', baseLabel, readiness.isOriginal ? '原创规则' : '继承内容包'],
+    ['主角角色卡', characterLabel, readiness.character ? '素材库角色' : '基线角色'],
+    ['世界书', `${readiness.worldBooks.length} 份补充素材`, state.customStoryDraft.worldBookMergeMode === 'smart' ? '智能合并' : state.customStoryDraft.worldBookMergeMode === 'base-first' ? '基线优先' : '仅所选素材'],
+    ['Prompt / 预设', `${readiness.prompts.length} 个补充预设`, readiness.prompts.length ? '基线后注入' : '沿用基线'],
+    ['扩展运行时', readiness.runtimeCompatibility.missing ? `缺少 ${readiness.runtimeCompatibility.missing} 项` : '无需额外运行时', readiness.runtimeCompatibility.degraded ? `${readiness.runtimeCompatibility.degraded} 项待转换` : '未知脚本不执行'],
+    ['增量上下文', readiness.estimatedTokens ? `${formatTokenCount(readiness.estimatedTokens)} tokens` : '使用基线体量', readiness.estimatedTokens > 60000 ? '建议压缩' : '预算可控']
+  ];
+  els.storyCustomStackPreview.innerHTML = '';
+  rows.forEach(([label, value, note]) => {
+    const row = document.createElement('div');
+    row.className = 'story-custom-stack-row';
+    const copy = document.createElement('span');
+    copy.className = 'story-custom-stack-copy';
+    const title = document.createElement('small');
+    title.textContent = label;
+    const detail = document.createElement('strong');
+    detail.textContent = value;
+    copy.append(title, detail);
+    const badge = document.createElement('em');
+    badge.className = 'story-custom-stack-note';
+    badge.textContent = note;
+    row.append(copy, badge);
+    els.storyCustomStackPreview.append(row);
+  });
 }
 
 function renderCustomStoryConflicts() {
@@ -2058,7 +2478,8 @@ function renderCustomStoryConflicts() {
   const summary = report.summary || {};
   const reviewCount = Number(summary.sameTitleConflicts || 0)
     + Number(summary.constantConflicts || 0)
-    + Number(summary.triggerOverlaps || 0);
+    + Number(summary.triggerOverlaps || 0)
+    + Number(summary.promptIdConflicts || 0);
   els.storyCustomConflicts.className = `story-custom-conflicts ${reviewCount ? 'is-review' : 'is-clean'}`;
   els.storyCustomConflicts.innerHTML = '';
   const title = document.createElement('strong');
@@ -2069,7 +2490,8 @@ function renderCustomStoryConflicts() {
     Number(summary.exactDuplicates || 0) ? `去重 ${summary.exactDuplicates}` : '',
     Number(summary.sameTitleConflicts || 0) ? `同名 ${summary.sameTitleConflicts}` : '',
     Number(summary.constantConflicts || 0) ? `常驻冲突 ${summary.constantConflicts}` : '',
-    Number(summary.triggerOverlaps || 0) ? `触发重叠 ${summary.triggerOverlaps}` : ''
+    Number(summary.triggerOverlaps || 0) ? `触发重叠 ${summary.triggerOverlaps}` : '',
+    Number(summary.promptIdConflicts || 0) ? `Prompt 重名 ${summary.promptIdConflicts}` : ''
   ].filter(Boolean).join(' · ');
   els.storyCustomConflicts.append(title, meta);
   const samples = Array.isArray(report.conflicts) ? report.conflicts.slice(0, 3) : [];
@@ -2222,6 +2644,22 @@ function renderStoryProjects() {
     ].filter(Boolean).join(' · ');
     copy.append(title, meta);
 
+    const actions = document.createElement('div');
+    actions.className = 'story-project-actions';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'story-project-tool';
+    edit.dataset.editStoryProject = project.id;
+    edit.setAttribute('aria-label', `编辑${project.title || '故事'}`);
+    edit.title = '编辑名称和说明';
+    edit.textContent = '✎';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'story-project-tool danger';
+    remove.dataset.deleteStoryProject = project.id;
+    remove.setAttribute('aria-label', `删除${project.title || '故事'}`);
+    remove.title = '从书架删除';
+    remove.textContent = '×';
     const open = document.createElement('button');
     open.type = 'button';
     open.className = 'story-project-open';
@@ -2229,7 +2667,8 @@ function renderStoryProjects() {
     open.setAttribute('aria-label', `打开${project.title || '故事'}`);
     open.title = project.activeSessionId ? '继续故事' : '创建第一卷';
     open.textContent = '›';
-    item.append(copy, open);
+    actions.append(edit, remove, open);
+    item.append(copy, actions);
     fragment.append(item);
   });
   els.storyProjectList.append(fragment);
@@ -2304,13 +2743,40 @@ function createStoryPackCard(pack) {
     createStoryStat('角色', counts.characterPresets || (pack.characterName ? 1 : 0)),
     createStoryStat('规则', counts.promptModules || 0)
   );
+  const actions = document.createElement('div');
+  actions.className = 'story-card-actions';
   const action = document.createElement('button');
   action.type = 'button';
   action.className = 'story-card-action';
   action.dataset.startStoryPack = pack.id;
   action.disabled = blocked;
   action.textContent = blocked ? '依赖不完整，暂不可开局' : '以此剧本新开一局';
-  body.append(title, description, stats, action);
+  const manage = document.createElement('div');
+  manage.className = 'story-card-manage';
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'story-card-secondary-action';
+  if (pack.custom) {
+    edit.dataset.editStoryPack = pack.id;
+    edit.textContent = '编辑';
+    edit.title = '修改剧本名称和说明';
+  } else {
+    edit.dataset.deriveStoryPack = pack.id;
+    edit.textContent = '派生修改';
+    edit.title = '以此内置剧本为基线创建副本';
+  }
+  manage.append(edit);
+  if (pack.custom) {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'story-card-secondary-action danger';
+    remove.dataset.deleteStoryPack = pack.id;
+    remove.textContent = '删除';
+    remove.title = '移除本地剧本，保留原始素材和存档';
+    manage.append(remove);
+  }
+  actions.append(action, manage);
+  body.append(title, description, stats, actions);
   card.append(top, body);
   return card;
 }
@@ -3402,6 +3868,10 @@ function renderOpeningWorkflow(genre, tpl) {
     scriptStats.append(stat);
   });
   currentScript.append(scriptCopy, scriptStats);
+  wrapper.append(steps, currentScript);
+
+  const errorPanel = createOpeningErrorPanel();
+  if (errorPanel) wrapper.append(errorPanel);
 
   const status = document.createElement('div');
   status.className = 'epic-flow-status';
@@ -3418,8 +3888,23 @@ function renderOpeningWorkflow(genre, tpl) {
     status.append(chip);
   });
 
-  wrapper.append(steps, currentScript, status);
+  wrapper.append(status);
   return wrapper;
+}
+
+function createOpeningErrorPanel() {
+  if (!state.openingError) return null;
+  const errorPanel = document.createElement('div');
+  errorPanel.className = 'epic-opening-error';
+  errorPanel.setAttribute('role', 'alert');
+  const errorCopy = document.createElement('span');
+  errorCopy.textContent = state.openingError;
+  const providerButton = document.createElement('button');
+  providerButton.type = 'button';
+  providerButton.textContent = '检查接口';
+  providerButton.addEventListener('click', () => openProviderSettings());
+  errorPanel.append(errorCopy, providerButton);
+  return errorPanel;
 }
 
 async function startGuidedJourney(genre) {
@@ -3451,6 +3936,19 @@ function getCurrentPrologueGenre() {
 function resolvePrologueTemplate() {
   const templates = state.prologueTemplate?.genres || {};
   const genre = getCurrentPrologueGenre();
+  const boundPackId = getBoundStoryPackId();
+  const boundPack = (state.contentPacks || []).find((item) => item.id === boundPackId);
+  const customTemplate = boundPack?.custom === true
+    && boundPack.openingTemplate
+    && typeof boundPack.openingTemplate === 'object'
+    ? boundPack.openingTemplate
+    : null;
+  if (customTemplate) {
+    const customGenre = openingGenreIds().includes(customTemplate.genre)
+      ? customTemplate.genre
+      : genre;
+    return { genre: customGenre, tpl: customTemplate };
+  }
   const theme = state.session?.settings?.theme;
   const themeFallback = state.prologueTemplate?.themes?.[theme]
     || state.prologueTemplate?.themes?.['wuxia-scroll'];
@@ -3465,6 +3963,7 @@ function resolvePrologueTemplate() {
 
 function inferPrologueGenreFromTemplate(tpl) {
   const genres = state.prologueTemplate?.genres || {};
+  if (openingGenreIds().includes(tpl?.genre)) return tpl.genre;
   const direct = Object.entries(genres).find(([, candidate]) => candidate === tpl);
   if (direct) return direct[0];
   const title = `${tpl?.title || ''} ${tpl?.subtitle || ''} ${tpl?.tagline || ''}`;
@@ -3532,6 +4031,13 @@ function composeInventory(genre) {
 }
 
 function generateSetupFieldValue(genre, key, field, context = {}) {
+  const scopedValues = Array.isArray(field?.values)
+    ? field.values.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (scopedValues.length) return randomFrom(scopedValues);
+  const scopedDefault = String(field?.defaultValue || '').trim();
+  if (scopedDefault) return scopedDefault;
+
   const descriptor = setupFieldDescriptor(key, field);
   const lowerKey = String(key || '').toLowerCase();
 
@@ -3649,6 +4155,88 @@ function getJourneyTabSummaries(tpl) {
     }));
 }
 
+function cleanJourneySettingBeat(value) {
+  return String(value || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/^[\s\-*>#]+/gm, '')
+    .replace(/【[^】]{1,24}】/g, '')
+    .replace(/\[[^\]]{1,24}\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function firstJourneySettingBeat(tab, maxLength = 120) {
+  const candidates = String(tab?.content || '')
+    .split(/\n+|(?<=[。！？；])\s*/)
+    .map(cleanJourneySettingBeat)
+    .filter((value) => value.length >= 8);
+  return truncateText(candidates[0] || '', maxLength).replace(/[；，、：]+$/g, '');
+}
+
+function findJourneyFieldValue(formData, tpl, pattern) {
+  const entry = Object.entries(formData || {}).find(([key, value]) => {
+    if (!String(value || '').trim()) return false;
+    const label = tpl?.fields?.[key]?.label || key;
+    return pattern.test(`${key} ${label}`);
+  });
+  return entry ? String(entry[1]).trim() : '';
+}
+
+function detectJourneyOpeningGenre(tpl) {
+  const identity = `${tpl?.title || ''} ${tpl?.subtitle || ''} ${tpl?.tagline || ''}`;
+  if (/灵异|夜录|禁忌|命案|鬼|阴阳/.test(identity)) return 'lingyi';
+  if (/明末|乱世|饷银|粮道|朝局/.test(identity)) return 'history';
+  if (/英雄志|群像|旧账|五朝/.test(identity)) return 'heroic';
+  if (/仙境|仙途|飞升|修仙|道统/.test(identity)) return 'xianxia';
+  if (/武界|江湖|武道|旧案/.test(identity)) return 'wuxia';
+  return 'generic';
+}
+
+function buildJourneyOpeningProse(formData, tpl, destinyCards = [], worldbookSnapshot = buildJourneyWorldbookSnapshot()) {
+  const tabs = getJourneyTabSummaries(tpl);
+  const worldTab = tabs.find((tab) => /定界|世界|山河|乾坤|星域|五朝|阴阳/.test(tab.label)) || tabs[0];
+  const crisisTab = tabs.find((tab) => /危机|卷目|事件|开局/.test(tab.label)) || tabs[1];
+  const worldBeat = firstJourneySettingBeat(worldTab, 110);
+  const crisisBeat = firstJourneySettingBeat(crisisTab, 120);
+  const name = findJourneyFieldValue(formData, tpl, /name|姓名|大名|尊号|道名|称谓|代号/);
+  const role = findJourneyFieldValue(formData, tpl, /role|身份|门派|出身|宗门|道统|阵营/);
+  const goal = findJourneyFieldValue(formData, tpl, /goal|目标|问道|第一目标/);
+  const risk = findJourneyFieldValue(formData, tpl, /secret|risk|karma|mark|隐秘|风险|因果|标记|旧账|盲区/);
+  const destiny = destinyCards.find((card) => card?.content) || null;
+  const leadByGenre = {
+    lingyi: '子夜将近，城里最后一排灯火正沿着长街逐盏熄灭。',
+    history: '暮色压过驿道，城门的更鼓比往日早了一刻。',
+    heroic: '风从官道尽头卷来，带着尘土、马汗和一段没人肯说完的旧闻。',
+    xianxia: '天光未破，云海仍压着昨夜未散的寒意。',
+    wuxia: '夜雨敲过城檐，湿漉漉的石板路上已听不见寻常行人的脚步。',
+    generic: '天色渐沉，远处的风声把一桩尚未揭开的旧事送到眼前。'
+  };
+  const paragraphs = [leadByGenre[detectJourneyOpeningGenre(tpl)] || leadByGenre.generic];
+
+  if (worldBeat) paragraphs.push(`${worldBeat.replace(/[。！？]+$/g, '')}，而今所有平静都只剩下一层薄壳。`);
+  if (crisisBeat && crisisBeat !== worldBeat) paragraphs.push(`${crisisBeat.replace(/[。！？]+$/g, '')}。`);
+
+  const protagonist = name || '你';
+  const identity = role ? `以${role}的身份` : '';
+  const purpose = goal ? `，此行只为${goal.replace(/[。！？]+$/g, '')}` : '';
+  paragraphs.push(identity || purpose
+    ? `${protagonist}${identity}${purpose}。`
+    : `${protagonist}已经走到这场风波的边缘，再退一步也未必还能置身事外。`);
+
+  if (risk) {
+    paragraphs.push(`只是你比旁人更清楚，${risk.replace(/[。！？]+$/g, '')}，这件事迟早会在最不合时宜的时候追上来。`);
+  }
+  if (destiny) {
+    paragraphs.push(`偏在此刻，${cleanJourneySettingBeat(destiny.content).replace(/[。！？]+$/g, '')}。故事的第一道门，已经在你面前打开。`);
+  } else if (worldbookSnapshot.entries.length) {
+    const anchorTitles = worldbookSnapshot.entries.slice(0, 2).map((entry) => entry.title).filter(Boolean);
+    if (anchorTitles.length) paragraphs.push(`关于${anchorTitles.join('与')}的传闻，正把你引向今晚真正的风暴中心。`);
+  }
+
+  return paragraphs.filter(Boolean).slice(0, 6);
+}
+
 function buildJourneyPrompt(formData, tpl, destinyCards = [], worldbookSnapshot = buildJourneyWorldbookSnapshot()) {
   let promptText = `[ 命途设定：${tpl.title} ]\n\n`;
 
@@ -3685,7 +4273,14 @@ function buildJourneyPrompt(formData, tpl, destinyCards = [], worldbookSnapshot 
     });
   }
 
-  promptText += `\n（系统指令：请根据上述主角设定，结合当前世界观和已加载 World Book 背景，以旁白视角输出一段沉浸式的开场环境描写，并为主角抛出第一个危机或冲突情境。使用第二人称“你”。
+  promptText += `\n（系统指令：请根据上述主角设定，结合当前世界观和已加载 World Book 背景，以旁白视角写出一段沉浸式小说开头，并为主角抛出第一个危机或冲突情境。使用第二人称“你”。
+
+开场写作要求：
+- 直接从具体时间、地点、感官细节或正在发生的动作切入，不要先介绍设定。
+- 只选取 2 至 4 个与当前场景最相关的世界书事实自然融入叙事，不要复述、罗列或总结世界书、主角字段与规则条目。
+- 不要输出“世界背景”“主角信息”“当前危机”等说明性标题，不要暴露系统提示、XML 标签、状态协议或推理过程。
+- 让人物通过称谓、动作、停顿和对话显出性格；不要替用户决定主角的核心行动、台词或内心结论。
+- 正文结束后再给出选项区块，正文与选项之间留一个空行。
 
 **极其重要：** 当你需要让用户做出选择时，必须且只能使用以下 Markdown 格式输出选项区块：
 > [天机选项：(此处简述当前情境)]
@@ -3694,7 +4289,7 @@ function buildJourneyPrompt(formData, tpl, destinyCards = [], worldbookSnapshot 
 - 选项3：...
 - 选项4：自定义
 
-同时请把世界书摘要、当前 World Book 背景、主角锚点和已选天命/危机卡视为长期事实候选；不要替用户决定主角的核心行动、台词或内心结论。）`;
+同时请把世界书摘要、当前 World Book 背景、主角锚点和已选天命/危机卡视为长期事实候选。）`;
 
   return promptText;
 }
@@ -3713,6 +4308,7 @@ function buildJourneyDraft(formData, tpl, destinyCards = []) {
     tabs: getJourneyTabSummaries(tpl),
     destinyCards,
     worldbookSnapshot,
+    openingProse: buildJourneyOpeningProse(formData, tpl, destinyCards, worldbookSnapshot),
     promptText: buildJourneyPrompt(formData, tpl, destinyCards, worldbookSnapshot)
   };
 }
@@ -3730,6 +4326,9 @@ function appendJourneySection(parent, title, body) {
 function renderJourneyDraft(draft) {
   const wrapper = document.createElement('div');
   wrapper.className = 'epic-journey-draft';
+
+  const errorPanel = createOpeningErrorPanel();
+  if (errorPanel) wrapper.append(errorPanel);
 
   const header = document.createElement('header');
   const title = document.createElement('h1');
@@ -3750,6 +4349,35 @@ function renderJourneyDraft(draft) {
   });
   appendJourneySection(wrapper, '已选择的主角锚点', fieldList);
 
+  const opening = document.createElement('div');
+  opening.className = 'epic-journey-opening-prose';
+  (draft.openingProse || []).forEach((paragraph) => {
+    const block = document.createElement('p');
+    block.textContent = paragraph;
+    opening.append(block);
+  });
+  appendJourneySection(wrapper, '入局引子', opening);
+
+  const settingSummary = document.createElement('div');
+  settingSummary.className = 'epic-journey-setting-summary';
+  const settingLabels = [
+    ...draft.tabs.map((tab) => tab.label),
+    ...draft.destinyCards.map((card) => card.title),
+    ...draft.worldbookSnapshot.entries.slice(0, 5).map((entry) => entry.title)
+  ].filter(Boolean);
+  [...new Set(settingLabels)].slice(0, 10).forEach((label) => {
+    const chip = document.createElement('span');
+    chip.textContent = label;
+    settingSummary.append(chip);
+  });
+  appendJourneySection(wrapper, '本卷设定', settingSummary);
+
+  const details = document.createElement('details');
+  details.className = 'epic-journey-setting-details';
+  const detailsSummary = document.createElement('summary');
+  detailsSummary.textContent = `查看设定依据 · 公开 ${draft.worldbookSnapshot.publicTotal || 0} / 总计 ${draft.worldbookSnapshot.total}`;
+  details.append(detailsSummary);
+
   const worldText = document.createElement('div');
   worldText.className = 'epic-journey-world-text';
   draft.tabs.forEach((tab) => {
@@ -3759,7 +4387,7 @@ function renderJourneyDraft(draft) {
     block.append(strong, document.createTextNode(tab.content || '暂无内容。'));
     worldText.append(block);
   });
-  appendJourneySection(wrapper, '当前世界书背景', worldText);
+  details.append(worldText);
 
   const worldbookList = document.createElement('ul');
   worldbookList.className = 'epic-journey-worldbook-list';
@@ -3780,11 +4408,8 @@ function renderJourneyDraft(draft) {
       : '当前没有启用的 World Book 条目。';
     worldbookList.append(item);
   }
-  appendJourneySection(
-    wrapper,
-    `已加载 World Book（公开 ${draft.worldbookSnapshot.publicTotal || 0} / 总计 ${draft.worldbookSnapshot.total}）`,
-    worldbookList
-  );
+  details.append(worldbookList);
+  wrapper.append(details);
 
   if (draft.destinyCards.length) {
     const destinyList = document.createElement('ul');
@@ -3838,7 +4463,14 @@ function renderImmersiveSidebar() {
   if (!els.immersiveRightSidebar || !els.immersiveSidebarTabs) return;
   const { genre, tpl } = resolvePrologueTemplate();
   const sidebar = tpl?.sidebar || {};
-  const tabs = Array.isArray(sidebar.tabs) ? sidebar.tabs.filter(Boolean) : [];
+  const builtInTabs = Array.isArray(sidebar.tabs) ? sidebar.tabs.filter(Boolean) : [];
+  const lightPanels = getLightFrontendPanels(state.config?.lightFrontend)
+    .map((panel) => resolveLightFrontendPanel(panel, getLightFrontendContext()))
+    .filter(Boolean);
+  const tabs = [...new Set([
+    ...builtInTabs,
+    ...lightPanels.map((panel) => panel.title).filter((title) => title && !builtInTabs.includes(title))
+  ])];
 
   if (!tabs.length) {
     els.immersiveRightSidebar.classList.add('hidden');
@@ -3868,6 +4500,11 @@ function renderImmersiveSidebar() {
   if (!expanded) return;
 
   els.immersiveSidebarTitle.textContent = state.immersiveSidebarTab;
+  const lightPanel = lightPanels.find((panel) => panel.title === state.immersiveSidebarTab);
+  if (lightPanel) {
+    renderImmersiveCommunityPanel(lightPanel);
+    return;
+  }
   if (/主角|档案|文书|调查者/.test(state.immersiveSidebarTab)) {
     renderImmersiveProtagonistCard(genre);
     return;
@@ -3891,6 +4528,48 @@ function renderImmersiveSidebar() {
   els.immersiveSidebarBody.innerHTML = renderSafeMarkdown(
     buildImmersiveSidebarText(state.immersiveSidebarTab, tpl, genre)
   );
+}
+
+function renderImmersiveCommunityPanel(panel) {
+  if (!els.immersiveSidebarBody || !panel) return;
+  const dossier = createImmersiveDossier({
+    kind: 'community',
+    eyebrow: panel.subtitle || '社区轻前端 · 声明式面板',
+    title: panel.title || '社区面板',
+    summary: panel.summary || '这个面板由导入素材的安全声明式配置生成。',
+    metrics: [
+      ['字段', panel.fields?.length || 0],
+      ['条目', panel.items?.length || 0],
+      ['说明', panel.content ? 1 : 0]
+    ]
+  });
+  dossier.root.classList.add(`is-${panel.tone || 'default'}`);
+
+  if (panel.fields?.length) {
+    appendImmersiveFactGrid(
+      dossier.body,
+      panel.fields.map((field) => ({ label: field.label, value: field.value })),
+      'immersive-progress-facts community-panel-fields'
+    );
+  }
+  if (panel.items?.length) {
+    appendImmersiveLedgerSection(dossier.body, '当前条目', panel.items, {
+      numbered: true,
+      tone: panel.tone === 'default' ? '' : panel.tone
+    });
+  }
+  if (panel.content) {
+    const section = document.createElement('section');
+    section.className = 'immersive-community-prose';
+    const heading = document.createElement('h4');
+    heading.textContent = '面板说明';
+    const body = document.createElement('div');
+    body.innerHTML = renderSafeMarkdown(panel.content);
+    section.append(heading, body);
+    dossier.body.append(section);
+  }
+  appendImmersiveDossierEmpty(dossier.body, '暂无可显示的社区面板数据。');
+  els.immersiveSidebarBody.replaceChildren(dossier.root);
 }
 
 function renderImmersiveProtagonistCard(genre) {
@@ -4974,7 +5653,10 @@ function renderSetupPanel(tpl) {
       input.dataset.setupField = key;
       input.placeholder = field?.placeholder || '';
       input.autocomplete = 'off';
-      if (/^name$/i.test(key) && state.config?.characterCard?.name) {
+      const fieldDefault = String(field?.defaultValue || '').trim();
+      if (fieldDefault) {
+        input.value = fieldDefault;
+      } else if (/^name$/i.test(key) && state.config?.characterCard?.name) {
         input.value = state.config.characterCard.name;
       } else if (/^role$/i.test(key) && state.config?.characterCard?.role) {
         input.value = state.config.characterCard.role;
@@ -5280,7 +5962,11 @@ function createMessageNode(message) {
   const content = document.createElement('div');
   content.className = 'message-content';
   const visibleContent = presentation ? presentation.content : (message.content || '');
-  content.innerHTML = renderSafeMarkdown(visibleContent);
+  const displayContent = applyLightFrontendDisplayTransforms(visibleContent, state.config?.lightFrontend, {
+    role,
+    context: getLightFrontendContext()
+  });
+  content.innerHTML = renderSafeMarkdown(displayContent);
 
   article.append(meta, content);
   article.append(createMessageTools(message, role));
@@ -5358,7 +6044,7 @@ function createRecommendedActionsNode(actions) {
   heading.className = 'recommended-actions-label';
   heading.textContent = '下一步怎么走';
   const hint = document.createElement('span');
-  hint.textContent = '选择会填入输入框，你仍可继续修改';
+  hint.textContent = '点击后会结合当前角色与场景组织行动并发送';
   header.append(heading, hint);
   wrap.append(header);
 
@@ -5395,7 +6081,9 @@ async function useRecommendedAction(action, trigger) {
   }
 
   state.recommendedActionPending = true;
-  const actionButtons = Array.from(els.messages.querySelectorAll('.recommendation-button'));
+  const actionButtons = Array.from(els.messages.querySelectorAll(
+    '.recommendation-button, .immersive-option-item[data-immersive-option-action]'
+  ));
   actionButtons.forEach((button) => { button.disabled = true; });
   trigger?.classList.add('is-expanding');
   trigger?.setAttribute('aria-busy', 'true');
@@ -5434,6 +6122,18 @@ function buildRecommendedActionFallback(action) {
   if (!text) return '';
   if (/^(?:我|吾|在下|本官|朕|臣|贫道|贫僧)/.test(text)) return `${text}。`;
   return `我${text}。`;
+}
+
+function decodeImmersiveAction(value) {
+  let decoded = String(value || '');
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // Keep the original text if an imported card contains a malformed escape sequence.
+  }
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = decoded;
+  return textarea.value.trim();
 }
 
 async function editMessage(messageId) {
@@ -6331,20 +7031,58 @@ function renderQuickReplies() {
 function renderQuickRepliesBar() {
   const replies = Array.isArray(state.config?.quickReplies) ? state.config.quickReplies : [];
   const active = replies.filter((r) => r.enabled !== false && r.content);
+  const imported = getLightFrontendQuickReplies(state.config?.lightFrontend);
   els.quickRepliesBar.innerHTML = '';
-  if (!active.length) return;
-  for (const reply of active) {
+  if (!active.length && !imported.length) return;
+  for (const reply of [...active, ...imported]) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'quick-reply-chip';
-    btn.textContent = reply.label || reply.content.slice(0, 12);
-    btn.title = reply.content;
+    btn.className = `quick-reply-chip${reply.source ? ' is-imported' : ''}`;
+    const content = reply.source
+      ? expandLightFrontendQuickReply(reply, getLightFrontendContext())
+      : reply.content;
+    btn.textContent = reply.label || content.slice(0, 12);
+    btn.title = reply.source ? `${content}\n来自社区轻前端，点击后仍可编辑` : content;
     btn.addEventListener('click', () => {
-      els.chatInput.value = reply.content;
-      els.chatInput.focus();
+      setChatInputFromQuickReply({ ...reply, content });
     });
     els.quickRepliesBar.append(btn);
   }
+}
+
+function setChatInputFromQuickReply(reply = {}) {
+  const content = String(reply.content || '').trim();
+  if (!content) return;
+  els.chatInput.value = content;
+  els.chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+  state.pendingQuickReply = {
+    content,
+    hiddenFromChat: isSilentQuickReply(reply)
+  };
+  els.chatInput.focus();
+}
+
+function isSilentQuickReply(reply = {}) {
+  if (reply.showInChat === false || reply.hiddenFromChat === true) return true;
+  const label = String(reply.label || '').trim();
+  const content = String(reply.content || '').trim();
+  return /^继续推进(?:剧情)?$/u.test(label)
+    || /^[（(]?\s*请继续推进剧情\s*[）)]?[。.]?$/u.test(content);
+}
+
+function getLightFrontendContext() {
+  const memory = state.session?.memory || {};
+  const worldState = memory.worldState || {};
+  return {
+    user: state.config?.persona?.name || '我',
+    char: state.config?.characterCard?.name || '',
+    scene: memory.narrativeState?.activeArc || worldState.activeArc || '',
+    location: worldState.location?.current || worldState.location || '',
+    time: worldState.time || worldState.date || '',
+    persona: state.config?.persona || {},
+    character: state.config?.characterCard || {},
+    mvu: memory.lightFrontendState || state.config?.lightFrontend?.mvu || {}
+  };
 }
 
 function renderQuickRepliesEditor() {
@@ -6846,7 +7584,7 @@ function renderPluginRegistry() {
     const description = document.createElement('p');
     description.textContent = plugin.manifest?.description || '未提供插件说明。';
     const meta = document.createElement('small');
-    meta.textContent = `${plugin.origin === 'core' ? '内置' : '本地'} · v${plugin.version || '0.0.0'} · 引擎 ${plugin.manifest?.engine || '*'} · ${Number(plugin.adapterCount || 0)} 个适配器`;
+    meta.textContent = `${plugin.origin === 'core' ? '内置' : '本地'} · v${plugin.version || '0.0.0'} · ${plugin.runtime === 'declarative' ? '声明式运行时' : '未知运行时'} · ${Number(plugin.adapterCount || 0)} 个适配器 · ${Number(plugin.capabilityCount || 0)} 项受控能力`;
     body.append(heading, description, meta);
     if (plugin.blockingIssues?.length || plugin.warnings?.length) {
       const notice = document.createElement('small');
@@ -8790,10 +9528,12 @@ function getImportStatusTarget(intent = pendingImportIntent) {
 async function importCharacterCardFile(input = els.characterCardImport, options = {}) {
   const file = input?.files?.[0];
   if (!file) return;
+  const expectedKind = String(input?.dataset?.assetImportKind || '');
   const intent = options.intent === 'create-story' ? 'create-story' : '';
   const statusTarget = getImportStatusTarget(intent);
   pendingImportIntent = intent;
   pendingImportBasePackId = intent ? String(options.basePackId || '') : '';
+  pendingImportDisposition = STORY_IMPORT_MODES.ATTACH;
   setStatus(statusTarget, intent ? '正在评定剧本素材...' : '正在解析导入文件...', 'busy');
   setImportButtonsDisabled(true);
   try {
@@ -8810,6 +9550,15 @@ async function importCharacterCardFile(input = els.characterCardImport, options 
         source: { site: 'local-file', fileName: file.name }
       }
     });
+    const actualKind = String(payload.preview?.kind || '');
+    const expectedMatches = !expectedKind
+      || (expectedKind === 'character' && actualKind === 'character-card')
+      || (expectedKind === 'worldbook' && actualKind === 'world-book')
+      || (expectedKind === 'prompt' && ['prompt-module', 'prompt-preset'].includes(actualKind));
+    if (!expectedMatches) {
+      const labels = { character: '角色卡', worldbook: '世界书', prompt: '预设 / Prompt' };
+      throw new Error(`所选文件不是可识别的${labels[expectedKind] || '素材'}格式`);
+    }
     pendingImportPayload = importPayload;
     pendingImportSource = { site: 'local-file', fileName: file.name };
     renderImportPreview(payload.preview);
@@ -8818,7 +9567,10 @@ async function importCharacterCardFile(input = els.characterCardImport, options 
     clearPendingImport({ resetFile: false });
     setStatus(statusTarget, `解析失败：${humanizeApiError(error)}`, 'error');
   } finally {
-    if (input) input.value = '';
+    if (input) {
+      input.value = '';
+      delete input.dataset.assetImportKind;
+    }
     setImportButtonsDisabled(false);
   }
 }
@@ -8831,12 +9583,13 @@ async function commitPendingImport() {
 
   const importIntent = pendingImportIntent;
   const importBasePackId = pendingImportBasePackId;
+  const importDisposition = pendingImportDisposition;
   const importSource = pendingImportSource || {};
   const statusTarget = getImportStatusTarget(importIntent);
   setStatus(statusTarget, importIntent === 'create-story' ? '正在入库并准备自定义剧本...' : '正在写入导入内容...', 'busy');
   setImportButtonsDisabled(true);
   try {
-    const isPackageImport = pendingImportKind === 'plugin-manifest' || pendingImportKind === 'content-pack';
+    const isPackageImport = ['plugin-manifest', 'content-pack', 'prompt-preset'].includes(pendingImportKind);
     const applyToActiveConfig = importIntent !== 'create-story' && !isPackageImport && els.importApplyCurrent?.checked === true;
     const payload = await apiRequest('/api/import/commit', {
       method: 'POST',
@@ -8851,7 +9604,8 @@ async function commitPendingImport() {
       if (pendingImportKind === 'content-pack') {
         const result = await createStoryFromCommittedImport(payload, {
           basePackId: importBasePackId,
-          source: importSource
+          source: importSource,
+          disposition: importDisposition
         });
         clearPendingImport({ resetFile: false });
         setStatus(els.appStatus, `已建立《${result.project.title}》，请从封面进入主角塑成。`, 'ok');
@@ -8859,7 +9613,8 @@ async function commitPendingImport() {
       }
       const staged = stageStoryResourcesFromCommittedImport(payload, {
         basePackId: importBasePackId,
-        source: importSource
+        source: importSource,
+        disposition: importDisposition
       });
       clearPendingImport({ resetFile: false });
       await loadResourceLibrary();
@@ -8868,7 +9623,9 @@ async function commitPendingImport() {
       openCustomStoryDialog({ resetStatus: false });
       setStatus(
         els.storyCustomStatus,
-        `已载入 ${staged.resourceCount} 份素材。请审阅缺失项，然后点击“创建剧本并进入”。`,
+        staged.independentCopy
+          ? `已保留 ${staged.resourceCount} 份原始素材，并切换为独立副本。请审阅世界边界后创建剧本。`
+          : `已载入 ${staged.resourceCount} 份素材。请审阅缺失项，然后点击“创建剧本并进入”。`,
         'ok'
       );
       return;
@@ -8902,32 +9659,62 @@ async function commitPendingImport() {
   }
 }
 
-function stageStoryResourcesFromCommittedImport(payload, { basePackId, source = {} } = {}) {
+function stageStoryResourcesFromCommittedImport(payload, {
+  basePackId,
+  source = {},
+  disposition = STORY_IMPORT_MODES.ATTACH
+} = {}) {
   if (payload.preview?.kind === 'plugin-manifest') {
     throw new Error('插件清单不能直接创建剧本，请从扩展页安装');
   }
   const resources = Array.isArray(payload.libraryResources) ? payload.libraryResources : [];
   const character = resources.find((resource) => resource.kind === 'character');
   const worldBooks = resources.filter((resource) => resource.kind === 'worldbook');
-  if (!character && !worldBooks.length) throw new Error('导入内容中没有可用于剧本的角色卡或世界书');
+  const prompts = resources.filter((resource) => resource.kind === 'prompt');
+  if (!character && !worldBooks.length && !prompts.length) {
+    throw new Error('导入内容中没有可用于剧本的角色卡、世界书或预设');
+  }
 
-  const availableBase = basePackId === CUSTOM_STORY_BASE_PACK_ID
+  const independentCopy = disposition === STORY_IMPORT_MODES.INDEPENDENT;
+  const resolvedBasePackId = independentCopy ? CUSTOM_STORY_BASE_PACK_ID : basePackId;
+  const availableBase = resolvedBasePackId === CUSTOM_STORY_BASE_PACK_ID
     || (state.contentPacks || []).some((pack) => pack.id === basePackId && pack.custom !== true);
   if (!availableBase) throw new Error('所选题材基线已不可用，请返回书架重新选择');
-  state.customStoryDraft.basePackId = basePackId;
+  state.customStoryDraft.basePackId = resolvedBasePackId;
+  state.customStoryDraft.creationMode = independentCopy ? STORY_IMPORT_MODES.INDEPENDENT : 'composed';
+  if (independentCopy) {
+    state.customStoryDraft.worldBookMergeMode = 'resources-only';
+    state.customStoryDraft.characterResourceId = '';
+    state.customStoryDraft.worldBookResourceIds = [];
+    state.customStoryDraft.promptResourceIds = [];
+    state.customStoryDraft.customBaseline = createImportedIndependentBaseline(payload.preview, {
+      character,
+      worldBooks,
+      source,
+      fallbackBasePackId: basePackId
+    });
+  }
   if (character) state.customStoryDraft.characterResourceId = character.id;
   state.customStoryDraft.worldBookResourceIds = Array.from(new Set([
     ...state.customStoryDraft.worldBookResourceIds,
     ...worldBooks.map((resource) => resource.id)
   ]));
+  state.customStoryDraft.promptResourceIds = Array.from(new Set([
+    ...state.customStoryDraft.promptResourceIds,
+    ...prompts.map((resource) => resource.id)
+  ]));
   state.customStoryDraft.title = getImportedStoryTitle(payload.preview, source);
   state.customStoryDraft.titleCustomized = false;
   invalidateCustomStoryInspection();
   persistCustomStoryDraft();
-  return { resourceCount: resources.length, character, worldBooks };
+  return { resourceCount: resources.length, character, worldBooks, prompts, independentCopy };
 }
 
-async function createStoryFromCommittedImport(payload, { basePackId, source = {} } = {}) {
+async function createStoryFromCommittedImport(payload, {
+  basePackId,
+  source = {},
+  disposition = STORY_IMPORT_MODES.ATTACH
+} = {}) {
   if (payload.preview?.kind === 'plugin-manifest') {
     throw new Error('插件清单不能直接创建剧本，请从扩展页安装');
   }
@@ -8937,12 +9724,25 @@ async function createStoryFromCommittedImport(payload, { basePackId, source = {}
     const resources = Array.isArray(payload.libraryResources) ? payload.libraryResources : [];
     const character = resources.find((resource) => resource.kind === 'character');
     const worldBooks = resources.filter((resource) => resource.kind === 'worldbook');
-    if (!character && !worldBooks.length) throw new Error('导入内容中没有可用于剧本的角色卡或世界书');
+    const prompts = resources.filter((resource) => resource.kind === 'prompt');
+    if (!character && !worldBooks.length && !prompts.length) {
+      throw new Error('导入内容中没有可用于剧本的角色卡、世界书或预设');
+    }
 
-    const isOriginal = basePackId === CUSTOM_STORY_BASE_PACK_ID;
+    const independentCopy = disposition === STORY_IMPORT_MODES.INDEPENDENT;
+    const resolvedBasePackId = independentCopy ? CUSTOM_STORY_BASE_PACK_ID : basePackId;
+    const isOriginal = resolvedBasePackId === CUSTOM_STORY_BASE_PACK_ID;
     const basePack = (state.contentPacks || []).find((item) => item.id === basePackId);
     if (!isOriginal && !basePack) throw new Error('所选题材基线已不可用，请返回书架重新选择');
     const title = getImportedStoryTitle(payload.preview, source);
+    const independentBaseline = isOriginal
+      ? createImportedIndependentBaseline(payload.preview, {
+          character,
+          worldBooks,
+          source,
+          fallbackBasePackId: basePackId
+        })
+      : null;
     const packPayload = await apiRequest('/api/resource-library/packs', {
       method: 'POST',
       body: {
@@ -8951,14 +9751,15 @@ async function createStoryFromCommittedImport(payload, { basePackId, source = {}
         description: isOriginal
           ? '由导入素材创建的原创剧本。'
           : `由本地素材创建，继承《${basePack.title || basePack.id}》的规则基线。`,
-        basePackId: isOriginal ? '' : basePackId,
+        basePackId: isOriginal ? '' : resolvedBasePackId,
         characterResourceId: character?.id || '',
         worldBookResourceIds: worldBooks.map((resource) => resource.id),
-        promptResourceIds: [],
-        includeBaseContent: true,
-        worldBookMergeMode: state.customStoryDraft.worldBookMergeMode,
-        visualPackId: isOriginal ? state.customStoryDraft.customBaseline.visualPackId : '',
-        customBaseline: isOriginal ? state.customStoryDraft.customBaseline : null
+        promptResourceIds: prompts.map((resource) => resource.id),
+        includeBaseContent: !independentCopy,
+        worldBookMergeMode: independentCopy ? 'resources-only' : state.customStoryDraft.worldBookMergeMode,
+        creationMode: independentCopy ? STORY_IMPORT_MODES.INDEPENDENT : 'composed',
+        visualPackId: independentBaseline?.visualPackId || '',
+        customBaseline: independentBaseline
       }
     });
     pack = packPayload.pack;
@@ -8966,6 +9767,44 @@ async function createStoryFromCommittedImport(payload, { basePackId, source = {}
 
   const result = await createAndOpenStoryProject(pack);
   return { pack, project: result.project, session: result.session };
+}
+
+function createImportedIndependentBaseline(preview = {}, {
+  character,
+  worldBooks = [],
+  source = {},
+  fallbackBasePackId = ''
+} = {}) {
+  const summary = preview.summary || {};
+  const card = character?.payload || {};
+  const title = getImportedStoryTitle(preview, source).replace(/(?:的故事| · 新卷)$/u, '');
+  const genre = String(summary.declaredGenre || (Array.isArray(summary.tags) ? summary.tags.join(' · ') : '') || '自定义角色世界').trim();
+  const worldBookTitles = worldBooks.map((item) => item.title).filter(Boolean).slice(0, 6);
+  const premise = String(
+    card.scenario
+    || card.description
+    || (worldBookTitles.length ? `世界边界由《${worldBookTitles.join('》《')}》共同定义。` : '')
+    || `围绕${summary.characterName || title || '导入角色'}展开的独立故事世界。`
+  ).trim().slice(0, 5000);
+  return createCustomBaselineDraft({
+    templateId: 'blank',
+    worldName: title || summary.characterName || '导入世界',
+    genre,
+    premise,
+    proseStyle: '优先遵循导入角色卡的语言风格、示例对话与场景约束；未声明部分保持克制，不擅自借用其他剧本设定。',
+    hardRules: '以本次导入的角色卡、附带世界书和所选补充素材为最高设定边界；不得混入原剧本的人物、力量体系、地点或历史。',
+    visualPackId: inferImportedVisualPack(summary, fallbackBasePackId)
+  });
+}
+
+function inferImportedVisualPack(summary = {}, fallbackBasePackId = '') {
+  const text = [summary.declaredGenre, ...(Array.isArray(summary.tags) ? summary.tags : [])].join(' ').toLowerCase();
+  if (/仙侠|修仙|修真|宗门/.test(text)) return 'xianxia';
+  if (/灵异|怪谈|恐怖|民俗|悬疑/.test(text)) return 'lingyi';
+  if (/明末|历史|古代|朝堂/.test(text)) return 'mingmo';
+  if (/武侠|江湖|群像/.test(text)) return 'yingxiongzhi';
+  if (/玄幻|武道|奇幻/.test(text)) return 'xuanhuan';
+  return getStoryPackVisualId(fallbackBasePackId || 'xuanhuan');
 }
 
 function getImportedStoryTitle(preview = {}, source = {}) {
@@ -9001,10 +9840,19 @@ function cancelPendingImport() {
 function renderImportPreview(preview = {}) {
   const summary = preview.summary || {};
   const inspection = preview.inspection || {};
+  const communityCompatibility = inspection.communityCompatibility || null;
   const resources = Array.isArray(inspection.resources) ? inspection.resources : [];
-  const isPackageImport = preview.kind === 'content-pack' || preview.kind === 'plugin-manifest';
+  const isPackageImport = ['content-pack', 'plugin-manifest', 'prompt-preset'].includes(preview.kind);
   const isStoryImport = pendingImportIntent === 'create-story';
+  const importBasePack = (state.contentPacks || []).find((pack) => pack.id === pendingImportBasePackId);
+  const storyImportRoute = isStoryImport
+    ? evaluateStoryImportRoute(preview, {
+        basePackId: pendingImportBasePackId,
+        basePackTitle: importBasePack?.title || ''
+      })
+    : null;
   pendingImportKind = preview.kind || '';
+  pendingImportDisposition = storyImportRoute?.recommendedMode || STORY_IMPORT_MODES.ATTACH;
   pendingImportCanCommit = inspection.canImport !== false && !(isStoryImport && preview.kind === 'plugin-manifest');
   els.importPreview.innerHTML = '';
 
@@ -9038,6 +9886,7 @@ function renderImportPreview(preview = {}) {
   eyebrow.textContent = {
     'world-book': '世界书',
     'character-card': '角色卡',
+    'prompt-preset': '酒馆 Prompt 预设',
     'content-pack': '版本化内容包',
     'plugin-manifest': '声明式适配插件'
   }[preview.kind] || '创作资源';
@@ -9056,6 +9905,10 @@ function renderImportPreview(preview = {}) {
   verdict.textContent = inspection.verdictLabel || inspection.grade || '待检查';
   assessment.append(score, assessmentCopy, verdict);
   els.importPreview.append(assessment);
+
+  if (storyImportRoute && preview.kind !== 'plugin-manifest') {
+    els.importPreview.append(createStoryImportRouteSection(storyImportRoute, importBasePack));
+  }
 
   if (Array.isArray(inspection.dimensions) && inspection.dimensions.length) {
     const dimensionSection = document.createElement('section');
@@ -9089,6 +9942,11 @@ function renderImportPreview(preview = {}) {
     els.importPreview.append(dimensionSection);
   }
 
+  const compatibilitySection = createCommunityCompatibilitySection(communityCompatibility, {
+    storyImport: isStoryImport
+  });
+  if (compatibilitySection) els.importPreview.append(compatibilitySection);
+
   const list = document.createElement('ul');
   list.className = 'import-preview-list';
   if (preview.kind === 'character-card') {
@@ -9120,6 +9978,18 @@ function renderImportPreview(preview = {}) {
     appendImportPreviewItem(list, '引擎范围', summary.engine || inspection.manifest?.engine || '未声明');
     appendImportPreviewItem(list, '格式适配器', `${Number(summary.adapterCount || inspection.manifest?.adapters?.length || 0)} 个`);
     appendImportPreviewItem(list, '依赖', `${Number(summary.dependencyCount || inspection.dependencies?.length || 0)} 项`);
+  } else if (preview.kind === 'prompt-preset') {
+    appendImportPreviewItem(list, '来源格式', summary.sourceFormat === 'tavern-helper-preset' ? '酒馆助手标准化预设' : 'SillyTavern 原生预设');
+    appendImportPreviewItem(list, 'Prompt 模块', `${Number(summary.promptModuleCount || 0)} 个`);
+    appendImportPreviewItem(list, '已启用提示', `${Number(summary.enabledPromptCount || 0)} 个`);
+    appendImportPreviewItem(list, '内置锚点', `${Number(summary.placeholderCount || 0)} 个`);
+    appendImportPreviewItem(list, '正则脚本', `${Number(summary.regexScriptCount || 0)} 条 · 仅诊断，不自动执行`);
+    appendImportPreviewItem(list, '酒馆助手脚本', `${Number(summary.tavernHelperScriptCount || 0)} 个 · 保持禁用`);
+    appendImportPreviewItem(
+      list,
+      '生成参数',
+      summarizeImportedGenerationSettings(summary.generationSettings)
+    );
   }
   if (!isPackageImport) {
     appendImportPreviewItem(
@@ -9138,6 +10008,13 @@ function renderImportPreview(preview = {}) {
     );
   }
   appendImportPreviewItem(list, '格式适配', inspection.adapter?.label || inspection.adapter?.id || '通用适配');
+  if (communityCompatibility) {
+    appendImportPreviewItem(
+      list,
+      '扩展兼容',
+      `${communityCompatibility.label || '待检查'} · 原生 ${Number(communityCompatibility.counts?.supported || 0)} / 转换 ${Number(communityCompatibility.counts?.degraded || 0)} / 缺失 ${Number(communityCompatibility.counts?.missing || 0)}`
+    );
+  }
   appendImportPreviewItem(list, '预计体量', `${formatTokenCount(inspection.estimatedTokens || 0)} tokens`);
   appendImportPreviewItem(
     list,
@@ -9204,6 +10081,7 @@ function renderImportPreview(preview = {}) {
 
   if (els.importReviewDialog) {
     els.importReviewDialog.dataset.verdict = inspection.verdict || 'review';
+    els.importReviewDialog.dataset.runtimeReady = communityCompatibility?.readyToPlay === false ? 'false' : 'true';
   }
   if (els.importApplyCurrent) els.importApplyCurrent.checked = false;
   if (els.importApplyCurrent) els.importApplyCurrent.disabled = isPackageImport || isStoryImport;
@@ -9214,6 +10092,68 @@ function renderImportPreview(preview = {}) {
   updateImportActionLabel();
   setImportButtonsDisabled(false);
   if (els.importReviewDialog && !els.importReviewDialog.open) els.importReviewDialog.showModal();
+}
+
+function createStoryImportRouteSection(route, basePack) {
+  const section = document.createElement('section');
+  section.className = `import-story-route is-${route.compatibility || 'unknown'}`;
+  const heading = document.createElement('div');
+  heading.className = 'import-section-heading';
+  const title = document.createElement('strong');
+  title.textContent = '导入去向';
+  const note = document.createElement('span');
+  note.textContent = route.compatibility === 'mismatch' ? '检测到题材不一致' : '创建前可调整';
+  heading.append(title, note);
+
+  const choices = document.createElement('div');
+  choices.className = 'import-story-route-choices';
+  const options = [
+    {
+      mode: STORY_IMPORT_MODES.ATTACH,
+      title: `挂载到${basePack?.title ? `《${basePack.title}》` : '当前基线'}`,
+      description: '继承基线规则与世界书，把本次资源作为补充素材。',
+      disabled: !route.canAttach
+    },
+    {
+      mode: STORY_IMPORT_MODES.INDEPENDENT,
+      title: '创建独立副本',
+      description: '不继承当前世界书；保留原角色卡、附带设定、立绘、作者与来源。',
+      disabled: false
+    }
+  ];
+  options.forEach((option) => {
+    const label = document.createElement('label');
+    label.className = 'import-story-route-option';
+    label.classList.toggle('is-recommended', route.recommendedMode === option.mode);
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'story-import-route';
+    input.value = option.mode;
+    input.checked = pendingImportDisposition === option.mode;
+    input.disabled = option.disabled;
+    const copy = document.createElement('span');
+    const optionTitle = document.createElement('strong');
+    optionTitle.textContent = option.title;
+    const description = document.createElement('small');
+    description.textContent = option.description;
+    copy.append(optionTitle, description);
+    label.append(input, copy);
+    choices.append(label);
+  });
+  choices.addEventListener('change', (event) => {
+    const input = event.target.closest('input[name="story-import-route"]');
+    if (!input) return;
+    pendingImportDisposition = input.value === STORY_IMPORT_MODES.INDEPENDENT
+      ? STORY_IMPORT_MODES.INDEPENDENT
+      : STORY_IMPORT_MODES.ATTACH;
+    updateImportActionLabel();
+  });
+
+  const reason = document.createElement('p');
+  reason.className = 'import-story-route-reason';
+  reason.textContent = route.reason;
+  section.append(heading, choices, reason);
+  return section;
 }
 
 function getPendingImportPortraitDataUrl() {
@@ -9280,6 +10220,19 @@ function appendImportPreviewItem(list, label, value) {
   list.append(item);
 }
 
+function summarizeImportedGenerationSettings(settings = {}) {
+  const items = [
+    ['上下文', settings.maxContext],
+    ['最大输出', settings.maxCompletionTokens],
+    ['温度', settings.temperature],
+    ['Top P', settings.topP],
+    ['流式', settings.stream === undefined ? undefined : settings.stream ? '开启' : '关闭']
+  ].filter(([, value]) => value !== undefined && value !== '');
+  return items.length
+    ? `${items.map(([label, value]) => `${label} ${value}`).join(' · ')}（仅保存建议值）`
+    : '未声明';
+}
+
 function clearPendingImport({ resetFile = true } = {}) {
   pendingImportPayload = null;
   pendingImportSource = null;
@@ -9287,9 +10240,11 @@ function clearPendingImport({ resetFile = true } = {}) {
   pendingImportKind = '';
   pendingImportIntent = '';
   pendingImportBasePackId = '';
+  pendingImportDisposition = STORY_IMPORT_MODES.ATTACH;
   els.importPreview.innerHTML = '';
   if (els.importReviewDialog?.open) els.importReviewDialog.close();
   if (els.importReviewDialog) delete els.importReviewDialog.dataset.verdict;
+  if (els.importReviewDialog) delete els.importReviewDialog.dataset.runtimeReady;
   if (els.importApplyCurrent) {
     els.importApplyCurrent.checked = false;
     els.importApplyCurrent.disabled = false;
@@ -9318,8 +10273,19 @@ function updateImportActionLabel() {
       : verdict === 'duplicate' ? '已在素材库' : '修正后再导入';
     return;
   }
+  const runtimeReady = els.importReviewDialog?.dataset.runtimeReady !== 'false';
+  if (!runtimeReady) {
+    els.confirmImport.textContent = pendingImportIntent === 'create-story'
+      ? '保存原件并配置待完善副本'
+      : '仅安全保存原件';
+    return;
+  }
   if (pendingImportIntent === 'create-story') {
-    els.confirmImport.textContent = pendingImportKind === 'content-pack' ? '安装并创建剧本' : '存入并继续配置';
+    els.confirmImport.textContent = pendingImportKind === 'content-pack'
+      ? '安装并创建剧本'
+      : pendingImportDisposition === STORY_IMPORT_MODES.INDEPENDENT
+        ? '存入并配置独立副本'
+        : '存入并继续配置';
     return;
   }
   if (pendingImportKind === 'plugin-manifest') {
@@ -10550,6 +11516,7 @@ async function savePromptModules() {
 async function startJourney(formData, tpl, destinyCards = [], options = {}) {
   const draft = buildJourneyDraft(formData, tpl, destinyCards);
   state.pendingJourneyDraft = draft;
+  state.openingError = '';
   els.chatInput.value = draft.promptText;
   if (options.autoSend) {
     await sendMessage();
@@ -10566,22 +11533,30 @@ async function sendMessage() {
   }
   const content = els.chatInput.value.trim();
   if (!content) return;
+  const pendingQuickReply = state.pendingQuickReply;
+  const hideUserMessage = Boolean(
+    pendingQuickReply?.hiddenFromChat
+    && pendingQuickReply.content === content
+  );
+  state.pendingQuickReply = null;
 
   setStreamingState(true, originalOpeningStatus(state.pendingJourneyDraft));
   const originalDraft = state.pendingJourneyDraft;
   state.pendingJourneyDraft = null;
   els.chatInput.value = '';
   const preview = appendStreamingPreview(content);
-  if (originalDraft) preview.userNode.hidden = true;
+  if (originalDraft || hideUserMessage) preview.userNode.hidden = true;
 
   try {
     const payload = await streamChat({
       sessionId: currentSessionId,
       content,
       targetSpeaker: state.targetSpeaker || undefined,
+      hideUserMessage,
       onToken: (token) => updateStreamingPreview(preview, token)
     });
     state.session = payload.session || state.session;
+    state.openingError = '';
     state.targetSpeaker = '';
     renderMessages();
     els.memoryView.textContent = prettyJson(state.session?.memory || {});
@@ -10589,6 +11564,9 @@ async function sendMessage() {
     setStatus(els.appStatus, '对话已更新', 'ok');
   } catch (error) {
     state.pendingJourneyDraft = originalDraft;
+    if (originalDraft) {
+      state.openingError = `第一幕生成失败：${humanizeApiError(error)}`;
+    }
     renderMessages();
     setStatus(els.sessionStatus, `发送失败：${humanizeApiError(error)}`, 'error');
   } finally {
@@ -10726,6 +11704,7 @@ async function rewriteChatInput() {
 }
 
 function appendStreamingPreview(userContent) {
+  const scrollState = chatController.captureScrollState();
   els.messages.querySelectorAll('.empty-state, .epic-cover-page').forEach((node) => node.remove());
   els.messages.classList.remove('has-cover-page');
   els.messages.classList.remove('has-journey-draft');
@@ -10734,7 +11713,7 @@ function appendStreamingPreview(userContent) {
   const assistantNode = createPreviewNode('assistant', '');
   assistantNode.classList.add('is-streaming');
   els.messages.append(userNode, assistantNode);
-  els.messages.scrollTop = els.messages.scrollHeight;
+  chatController.restoreScrollState(scrollState);
   return {
     content: '',
     userNode,
@@ -10761,11 +11740,12 @@ function createPreviewNode(role, content) {
 
 function updateStreamingPreview(preview, token) {
   if (!preview?.contentNode) return;
+  const scrollState = chatController.captureScrollState();
   preview.content += token;
   const presentation = extractRoleplayPresentation(preview.content);
   const visible = presentation.content || (presentation.protocolDetected ? '正在铺陈场景…' : preview.content);
   preview.contentNode.innerHTML = renderSafeMarkdown(visible);
-  els.messages.scrollTop = els.messages.scrollHeight;
+  chatController.restoreScrollState(scrollState);
 }
 
 function originalOpeningStatus(pendingDraft) {
@@ -11169,6 +12149,7 @@ function humanizeApiError(error) {
   if (error.code === 'NO_ACTIVE_PROVIDER') return '未配置可用 Provider';
   if (error.code === 'EMPTY_REWRITE_TEXT') return '请先输入要润色的内容';
   if (error.code === 'PROVIDER_ERROR') return 'Provider 调用失败';
+  if (error.code === 'PROVIDER_QUOTA_EXHAUSTED') return 'Provider 额度不足，请充值或切换 Provider';
   if (error.code === 'PROVIDER_REASONING_ONLY_RESPONSE') return '模型只返回了推理过程，没有生成剧情正文；请提高 Max Tokens，或在 Provider 中关闭思考模式';
   if (error.code === 'PROVIDER_EMPTY_RESPONSE') return '模型没有返回可显示的剧情正文，请重试或切换模型';
   if (error.code === 'PROVIDER_TEST_FAILED') return error.message || 'Provider 连接测试失败';

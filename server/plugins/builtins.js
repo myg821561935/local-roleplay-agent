@@ -41,6 +41,24 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
   },
   {
     spec: PLUGIN_SPEC,
+    id: 'core.sillytavern-preset',
+    version: '1.0.0',
+    name: 'SillyTavern Prompt 预设适配',
+    description: '保留提示词顺序、角色、插入位置与生成参数，并诊断正则和酒馆助手脚本依赖。',
+    engine: ENGINE_RANGE,
+    adapters: [{
+      id: 'sillytavern-prompt-preset',
+      version: '1.0.0',
+      label: 'SillyTavern Prompt 预设',
+      kinds: ['prompt'],
+      formats: ['json'],
+      priority: 180,
+      capabilities: ['inspect', 'normalize', 'prompt-order', 'generation-settings', 'dependency-report'],
+      match: { previewKinds: ['prompt-preset'] }
+    }]
+  },
+  {
+    spec: PLUGIN_SPEC,
     id: 'core.text-resource',
     version: '1.0.0',
     name: '文本与 YAML 素材适配',
@@ -54,7 +72,7 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
       formats: ['txt', 'yaml', 'yml', 'json'],
       priority: 1,
       capabilities: ['inspect', 'normalize'],
-      match: { previewKinds: ['character-card', 'world-book', 'prompt-module'], fallback: true }
+      match: { previewKinds: ['character-card', 'world-book', 'prompt-module', 'prompt-preset'], fallback: true }
     }]
   },
   {
@@ -73,7 +91,7 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
       priority: 120,
       capabilities: ['inspect', 'normalize', 'provenance'],
       match: {
-        previewKinds: ['character-card', 'world-book', 'prompt-module'],
+        previewKinds: ['character-card', 'world-book', 'prompt-module', 'prompt-preset'],
         sourceIncludes: ['类脑', 'liunao']
       }
     }]

@@ -14,8 +14,12 @@ fi
 URL="http://${BROWSER_HOST}:${PORT}"
 HEALTH_URL="${URL}/api/health"
 RUNTIME_DIR="${ROOT_DIR}/.runtime"
-PID_FILE="${RUNTIME_DIR}/server.pid"
-LOG_FILE="${RUNTIME_DIR}/server.log"
+RUNTIME_SUFFIX=""
+if [[ "$PORT" != "5178" ]]; then
+  RUNTIME_SUFFIX="-${PORT}"
+fi
+PID_FILE="${RUNTIME_DIR}/server${RUNTIME_SUFFIX}.pid"
+LOG_FILE="${RUNTIME_DIR}/server${RUNTIME_SUFFIX}.log"
 
 mkdir -p "$RUNTIME_DIR"
 

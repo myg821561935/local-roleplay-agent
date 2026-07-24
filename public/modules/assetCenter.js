@@ -1,3 +1,5 @@
+import { openWorldbookEntryEditor } from './inspector.js';
+
 const KIND_LABELS = {
   character: '角色卡',
   worldbook: '世界书',
@@ -15,7 +17,9 @@ export function createAssetCenterController({
   onImport,
   onUseAsset,
   onOpenComposer,
+  onReevaluateAsset,
   onSaveMetadata,
+  onSaveContent,
   onDeleteAsset,
   onBatchMetadata,
   onExportAssets,
@@ -26,7 +30,8 @@ export function createAssetCenterController({
   const ui = {
     close: root.querySelector('#close-asset-center'),
     refresh: root.querySelector('#asset-center-refresh'),
-    import: root.querySelector('#asset-center-import'),
+    importMenu: root.querySelector('#asset-center-import'),
+    importButtons: Array.from(root.querySelectorAll('[data-asset-import-kind]')),
     compose: root.querySelector('#asset-center-compose'),
     query: root.querySelector('#asset-center-query'),
     sort: root.querySelector('#asset-center-sort'),
@@ -66,7 +71,12 @@ export function createAssetCenterController({
   function bindEvents() {
     ui.close?.addEventListener('click', close);
     ui.refresh?.addEventListener('click', refresh);
-    ui.import?.addEventListener('click', () => onImport?.());
+    ui.importButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        onImport?.(button.dataset.assetImportKind || '');
+        ui.importMenu?.removeAttribute('open');
+      });
+    });
     ui.compose?.addEventListener('click', () => {
       close();
       onOpenComposer?.();
@@ -249,12 +259,19 @@ export function createAssetCenterController({
     const metrics = createMetricsPanel(item);
     const source = createSourcePanel(item);
     const characterProfile = item.kind === 'character' ? createCharacterProfilePanel(item) : null;
+    const contentManager = item.kind === 'worldbook'
+      ? createWorldbookManagementPanel(item)
+      : item.kind === 'prompt'
+        ? createPromptManagementPanel(item)
+        : null;
     const versions = item.versionCount > 1 ? createVersionPanel(item, getCatalog()) : null;
     const evaluation = createEvaluationPanel(item);
     const preview = createPreviewPanel(item);
     const editor = item.kind === 'pack' ? null : createMetadataEditor(item);
     const actions = createDetailActions(item);
-    [header, visual, metrics, characterProfile, source, versions, evaluation, preview, editor, actions].filter(Boolean).forEach((node) => ui.detail.append(node));
+    [header, visual, metrics, characterProfile, contentManager, source, versions, evaluation, preview, editor, actions]
+      .filter(Boolean)
+      .forEach((node) => ui.detail.append(node));
   }
 
   async function handleDetailClick(event) {
@@ -282,6 +299,53 @@ export function createAssetCenterController({
     }
     if (action === 'favorite' && item.kind !== 'pack') {
       await saveMetadata(item, { favorite: !item.favorite });
+      return;
+    }
+    if (action === 'reevaluate' && item.kind !== 'pack') {
+      try {
+        setStatus(`正在重新评估：${item.title}`);
+        await onReevaluateAsset?.(item);
+        await refresh({ announce: false });
+        setStatus('已补全可提炼字段并更新兼容评定', 'ok');
+      } catch (error) {
+        setStatus(`重新评估失败：${error.message}`, 'error');
+      }
+      return;
+    }
+    if (action === 'worldbook-add' && item.kind === 'worldbook') {
+      openWorldbookEntryEditor(createWorldbookEntryTemplate(), (updated) => {
+        if (!updated) return;
+        void saveContent(item, {
+          entries: [...(item.payload?.entries || []), updated]
+        }, '已新增世界书条目');
+      });
+      return;
+    }
+    if (action === 'worldbook-edit' && item.kind === 'worldbook') {
+      const index = Number(event.target.closest('[data-asset-index]')?.dataset.assetIndex);
+      const entries = [...(item.payload?.entries || [])];
+      if (!Number.isInteger(index) || !entries[index]) return;
+      openWorldbookEntryEditor(entries[index], (updated) => {
+        if (!updated) return;
+        entries[index] = updated;
+        void saveContent(item, { entries }, '世界书条目已保存');
+      });
+      return;
+    }
+    if (action === 'worldbook-delete' && item.kind === 'worldbook') {
+      const index = Number(event.target.closest('[data-asset-index]')?.dataset.assetIndex);
+      const entries = [...(item.payload?.entries || [])];
+      if (!Number.isInteger(index) || !entries[index]) return;
+      if (!window.confirm(`删除世界书条目“${entries[index].title || '未命名条目'}”？`)) return;
+      entries.splice(index, 1);
+      await saveContent(item, { entries }, '世界书条目已删除');
+      return;
+    }
+    if (action === 'prompt-edit' && item.kind === 'prompt') {
+      openPromptResourceEditor(item, (updated) => {
+        if (!updated) return;
+        void saveContent(item, updated, '预设模块已保存', updated.title);
+      });
       return;
     }
     if (action === 'save' && item.kind !== 'pack') {
@@ -417,6 +481,17 @@ export function createAssetCenterController({
       await onSaveMetadata?.(item, updates);
       await refresh({ announce: false });
       setStatus('素材资料已保存', 'ok');
+    } catch (error) {
+      setStatus(`保存失败：${error.message}`, 'error');
+    }
+  }
+
+  async function saveContent(item, payload, message, title = item.title) {
+    try {
+      setStatus(`正在保存：${item.title}`);
+      await onSaveContent?.(item, { payload, title });
+      await refresh({ announce: false });
+      setStatus(message || '素材内容已保存', 'ok');
     } catch (error) {
       setStatus(`保存失败：${error.message}`, 'error');
     }
@@ -665,7 +740,209 @@ function createSourcePanel(item) {
     list.append(dt, dd);
   });
   section.append(list);
+  const payload = item.payload || {};
+  const generatedFields = Array.isArray(payload.extensions?.local_roleplay_agent?.enrichment?.generatedFields)
+    ? payload.extensions.local_roleplay_agent.enrichment.generatedFields
+    : [];
+  if (generatedFields.length) {
+    const labels = {
+      personality: '人格核心',
+      scenario: '当前场景',
+      postHistoryInstructions: '行为约束',
+      exampleDialog: '示例对话'
+    };
+    const note = document.createElement('p');
+    note.className = 'asset-enrichment-note';
+    note.textContent = `系统提炼：${generatedFields.map((field) => labels[field] || field).join('、')}。仅补空缺，原始字段未覆盖。`;
+    section.append(note);
+  }
   return section;
+}
+
+function createWorldbookManagementPanel(item) {
+  const section = createDetailSection('世界书管理');
+  section.classList.add('asset-worldbook-manager');
+  const toolbar = document.createElement('div');
+  toolbar.className = 'asset-content-manager-toolbar';
+  const summary = document.createElement('span');
+  const entries = Array.isArray(item.payload?.entries) ? item.payload.entries : [];
+  summary.textContent = `${entries.length} 条设定，可在馆藏中独立维护`;
+  const add = createActionButton('新增条目', 'worldbook-add', 'asset-secondary-button');
+  toolbar.append(summary, add);
+  section.append(toolbar);
+
+  const list = document.createElement('div');
+  list.className = 'asset-worldbook-entry-list';
+  if (!entries.length) {
+    list.innerHTML = '<div class="asset-content-manager-empty">这本世界书还没有条目。</div>';
+  } else {
+    entries.forEach((entry, index) => {
+      const row = document.createElement('article');
+      row.className = 'asset-worldbook-entry';
+      const copy = document.createElement('div');
+      const title = document.createElement('strong');
+      title.textContent = entry.title || `未命名条目 ${index + 1}`;
+      const meta = document.createElement('small');
+      meta.textContent = [
+        entry.constant ? '常驻' : (entry.matchMode || '关键词'),
+        `深度 ${entry.depth ?? 4}`,
+        entry.enabled === false ? '已停用' : '已启用'
+      ].join(' · ');
+      const preview = document.createElement('p');
+      preview.textContent = truncate(entry.content, 150) || '暂无内容';
+      copy.append(title, meta, preview);
+      const actions = document.createElement('div');
+      actions.className = 'asset-worldbook-entry-actions';
+      const edit = createActionButton('编辑', 'worldbook-edit', 'asset-secondary-button');
+      const remove = createActionButton('删除', 'worldbook-delete', 'asset-text-danger');
+      edit.dataset.assetIndex = String(index);
+      remove.dataset.assetIndex = String(index);
+      actions.append(edit, remove);
+      row.append(copy, actions);
+      list.append(row);
+    });
+  }
+  section.append(list);
+  return section;
+}
+
+function createPromptManagementPanel(item) {
+  const section = createDetailSection('预设管理');
+  section.classList.add('asset-prompt-manager');
+  const payload = item.payload || {};
+  const grid = document.createElement('dl');
+  grid.className = 'asset-prompt-summary';
+  [
+    ['角色', payload.role || 'system'],
+    ['位置', payload.position || '默认'],
+    ['深度', payload.depth ?? '默认'],
+    ['状态', payload.enabled === false ? '已停用' : '已启用']
+  ].forEach(([label, value]) => {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = String(value);
+    grid.append(dt, dd);
+  });
+  const edit = createActionButton('编辑预设模块', 'prompt-edit', 'asset-secondary-button');
+  section.append(grid, edit);
+  return section;
+}
+
+function createWorldbookEntryTemplate() {
+  return {
+    id: crypto.randomUUID(),
+    type: 'world-book',
+    title: '',
+    keywords: [],
+    secondaryKeywords: [],
+    matchMode: 'keyword',
+    regex: [],
+    logic: 'any',
+    content: '',
+    priority: 50,
+    depth: 4,
+    insertionOrder: 0,
+    constant: false,
+    caseSensitive: false,
+    position: 'after_character',
+    scope: 'prompt',
+    enabled: true,
+    source: 'asset-center'
+  };
+}
+
+function openPromptResourceEditor(item, onDone) {
+  const payload = item.payload || {};
+  const overlay = document.createElement('div');
+  overlay.className = 'wb-editor-overlay';
+  const dialog = document.createElement('div');
+  dialog.className = 'wb-editor-dialog asset-prompt-editor-dialog';
+  dialog.innerHTML = `
+    <div class="wb-editor-heading">
+      <div><h4>编辑预设模块</h4><p>仅保存声明式 Prompt 字段，不执行随资源附带的脚本。</p></div>
+    </div>
+    <div class="wb-editor-body asset-prompt-editor-body"></div>
+    <div class="wb-editor-actions"></div>
+  `;
+  const body = dialog.querySelector('.asset-prompt-editor-body');
+  const fields = [
+    ['title', '标题', 'text'],
+    ['role', '消息角色', 'select'],
+    ['position', '插入位置', 'select'],
+    ['depth', '插入深度', 'number'],
+    ['content', 'Prompt 内容', 'textarea']
+  ];
+  const inputs = {};
+  fields.forEach(([key, labelText, type]) => {
+    const label = document.createElement('label');
+    label.className = 'wb-editor-field is-simple';
+    const span = document.createElement('span');
+    span.textContent = labelText;
+    let input;
+    if (type === 'textarea') {
+      input = document.createElement('textarea');
+      input.rows = 12;
+    } else if (type === 'select') {
+      input = document.createElement('select');
+      const values = key === 'role'
+        ? [['system', '系统'], ['user', '用户'], ['assistant', '角色']]
+        : [['', '默认'], ['relative', '相对位置'], ['in_chat', '对话内']];
+      values.forEach(([value, text]) => input.append(createOption(value, text)));
+    } else {
+      input = document.createElement('input');
+      input.type = type;
+    }
+    input.className = 'form-input';
+    input.value = payload[key] ?? (key === 'role' ? 'system' : key === 'depth' ? 0 : '');
+    label.append(span, input);
+    body.append(label);
+    inputs[key] = input;
+  });
+  const enabledLabel = document.createElement('label');
+  enabledLabel.className = 'wb-editor-checkbox is-simple';
+  const enabled = document.createElement('input');
+  enabled.type = 'checkbox';
+  enabled.checked = payload.enabled !== false;
+  enabledLabel.append(enabled, document.createTextNode('启用此模块'));
+  body.append(enabledLabel);
+
+  const actions = dialog.querySelector('.wb-editor-actions');
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'ghost-button compact';
+  cancel.textContent = '取消';
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'primary-button compact';
+  save.textContent = '保存预设';
+  cancel.addEventListener('click', () => {
+    overlay.remove();
+    onDone(null);
+  });
+  save.addEventListener('click', () => {
+    const content = inputs.content.value.trim();
+    if (!content) {
+      inputs.content.focus();
+      return;
+    }
+    const updated = {
+      ...payload,
+      title: inputs.title.value.trim() || item.title,
+      role: inputs.role.value,
+      position: inputs.position.value,
+      depth: Number(inputs.depth.value || 0),
+      content,
+      enabled: enabled.checked
+    };
+    if (!updated.position) delete updated.position;
+    overlay.remove();
+    onDone(updated);
+  });
+  actions.append(cancel, save);
+  overlay.append(dialog);
+  document.body.append(overlay);
+  queueMicrotask(() => inputs.title.focus());
 }
 
 function createCharacterProfilePanel(item) {
@@ -810,6 +1087,7 @@ function createDetailActions(item) {
   footer.className = 'asset-detail-actions';
   if (item.kind !== 'pack') {
     footer.append(createActionButton(item.favorite ? '取消收藏' : '收藏', 'favorite', 'asset-secondary-button'));
+    footer.append(createActionButton('重新评估', 'reevaluate', 'asset-secondary-button'));
   }
   footer.append(createActionButton(item.kind === 'prompt' ? '打开剧本工坊' : item.kind === 'pack' ? '在书架查看' : '用于新剧本', 'use', 'asset-primary-button'));
   footer.append(createActionButton('高级拼装', 'compose', 'asset-secondary-button'));

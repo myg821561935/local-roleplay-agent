@@ -98,6 +98,131 @@ test('assemblePrompt injects the persistent narrative route before story content
   assert.equal(result.sections.narrativeArc, '补全断魂灯并查清师门旧案');
 });
 
+test('assemblePrompt gives an imported character card a near-turn priority anchor', () => {
+  const result = assemblePrompt({
+    promptModules: [{
+      id: 'base-route',
+      title: '基线固定主线',
+      enabled: true,
+      content: '继续追查断魂灯。'
+    }],
+    characterCard: {
+      name: '苏照影',
+      role: '导入角色',
+      description: '来自社区角色卡。',
+      sourceSpec: 'chara_card_v3',
+      enabled: true
+    },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    messages: [],
+    userMessage: '我走进客栈。'
+  });
+
+  assert.equal(result.messages.at(-1).content, '我走进客栈。');
+  assert.equal(result.messages.at(-2).role, 'system');
+  assert.match(result.messages.at(-2).content, /# 本轮导入角色卡优先级/);
+  assert.match(result.messages.at(-2).content, /不得用内容包自带的专属人物、地点、开局事件或固定主线替换导入卡设定/);
+  assert.equal(result.sections.hasCharacterSourcePriority, true);
+});
+
+test('assemblePrompt resolves safe community templates from session MVU state', () => {
+  const result = assemblePrompt({
+    promptModules: [{
+      id: 'relationship-rule',
+      title: '关系规则',
+      enabled: true,
+      content: '<% if (mvu.relationships.shen >= 20) { %>沈观澜可以透露旧案。<% } else { %>沈观澜保持戒备。<% } %>'
+    }],
+    characterCard: { name: '沈观澜', enabled: true },
+    worldBook: [],
+    memory: {
+      lightFrontendState: { enabled: true, values: { relationships: { shen: 25 } }, revision: 1 },
+      memoryCards: []
+    },
+    messages: [],
+    userMessage: '我询问旧案。'
+  });
+
+  assert.match(result.messages[0].content, /沈观澜可以透露旧案/);
+  assert.doesNotMatch(result.messages[0].content, /沈观澜保持戒备/);
+  assert.doesNotMatch(result.messages[0].content, /<%/);
+});
+
+test('assemblePrompt preserves SillyTavern prompt roles, sequence, and in-chat depth', () => {
+  const presetMeta = (sequence) => ({
+    sillyTavernPreset: {
+      presetTitle: '测试预设',
+      sourceFormat: 'sillytavern-preset',
+      sequence
+    }
+  });
+  const result = assemblePrompt({
+    promptModules: [
+      { id: 'legacy', title: '本地规则', enabled: true, content: '保留本地系统规则。' },
+      {
+        id: 'st-relative-user',
+        title: '用户侧预设',
+        enabled: true,
+        content: '以用户身份注入的预设。',
+        role: 'user',
+        position: 'relative',
+        extensions: presetMeta(1)
+      },
+      {
+        id: 'st-depth-assistant',
+        title: '历史助手预设',
+        enabled: true,
+        content: '深度一的助手预设。',
+        role: 'assistant',
+        position: 'in_chat',
+        depth: 1,
+        order: 20,
+        extensions: presetMeta(3)
+      },
+      {
+        id: 'st-depth-system',
+        title: '历史系统预设',
+        enabled: true,
+        content: '深度一的系统预设。',
+        role: 'system',
+        position: 'in_chat',
+        depth: 1,
+        order: 10,
+        extensions: presetMeta(2)
+      }
+    ],
+    characterCard: { name: '沈观澜', enabled: true },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    messages: [
+      { role: 'user', content: '上一轮用户消息。' },
+      { role: 'assistant', content: '上一轮助手消息。' }
+    ],
+    userMessage: '当前用户消息。'
+  });
+
+  assert.match(result.messages[0].content, /保留本地系统规则/);
+  assert.doesNotMatch(result.messages[0].content, /以用户身份注入的预设/);
+  assert.doesNotMatch(result.messages[0].content, /深度一的系统预设/);
+  assert.deepEqual(
+    result.messages.slice(1).map((message) => [message.role, message.content]),
+    [
+      ['user', '以用户身份注入的预设。'],
+      ['user', '上一轮用户消息。'],
+      ['assistant', '上一轮助手消息。'],
+      ['system', '深度一的系统预设。'],
+      ['assistant', '深度一的助手预设。'],
+      ['user', '当前用户消息。']
+    ]
+  );
+  assert.deepEqual(result.sections.promptPlacement, {
+    system: ['legacy'],
+    relative: ['st-relative-user'],
+    inChat: ['st-depth-system', 'st-depth-assistant']
+  });
+});
+
 test('retrieveCards ignores cards without keyword matches', () => {
   const card = {
     id: 'wb-1',

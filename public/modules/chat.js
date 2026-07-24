@@ -64,8 +64,43 @@ export function createChatController(deps) {
     createMessageNode,
     openProviderSettings
   } = deps;
+  let autoFollowLatest = true;
+
+  function isNearBottom(threshold = 112) {
+    if (!els.messages) return true;
+    const remaining = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight;
+    return remaining <= threshold;
+  }
+
+  function captureScrollState() {
+    return {
+      scrollTop: els.messages?.scrollTop || 0,
+      followLatest: autoFollowLatest || isNearBottom()
+    };
+  }
+
+  function restoreScrollState(snapshot = {}, { forceLatest = false } = {}) {
+    if (!els.messages) return;
+    if (forceLatest || snapshot.followLatest) {
+      els.messages.scrollTop = els.messages.scrollHeight;
+      autoFollowLatest = true;
+      return;
+    }
+    const maxScrollTop = Math.max(0, els.messages.scrollHeight - els.messages.clientHeight);
+    els.messages.scrollTop = Math.min(Number(snapshot.scrollTop || 0), maxScrollTop);
+    autoFollowLatest = false;
+  }
+
+  function scrollToLatest() {
+    restoreScrollState({ followLatest: true }, { forceLatest: true });
+  }
+
+  els.messages?.addEventListener('scroll', () => {
+    autoFollowLatest = isNearBottom();
+  }, { passive: true });
 
   function renderMessages() {
+    const scrollState = captureScrollState();
     const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
     const openingFocus = messages.length === 0 && !state.pendingJourneyDraft;
     document.body.classList.toggle('story-opening-focus', openingFocus);
@@ -130,17 +165,22 @@ export function createChatController(deps) {
     } else {
       const fragment = document.createDocumentFragment();
       messages
-        .filter((message) => !isJourneySetupMessage(message))
+        .filter((message) => !isJourneySetupMessage(message) && !message?.hiddenFromChat)
         .forEach((message) => fragment.append(createMessageNode(message)));
       els.messages.append(fragment);
-      els.messages.scrollTop = els.messages.scrollHeight;
+      restoreScrollState(scrollState);
     }
 
     const count = messages.length;
     setStatus(els.sessionStatus, `${getCurrentSessionId()} · ${count} 条消息`, '');
   }
 
-  return { renderMessages };
+  return {
+    renderMessages,
+    captureScrollState,
+    restoreScrollState,
+    scrollToLatest
+  };
 }
 
 function isJourneySetupMessage(message) {

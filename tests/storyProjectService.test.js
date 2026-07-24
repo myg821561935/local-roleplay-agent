@@ -50,3 +50,26 @@ test('story projects require a base content pack', async () => {
     /STORY_PROJECT_BASE_PACK_REQUIRED/
   );
 });
+
+test('story projects can be renamed and removed without deleting session records', async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), 'story-project-'));
+  const service = new StoryProjectService(new JsonStore(rootDir));
+  const created = await service.createProject({
+    title: '旧题名',
+    basePackId: 'xianxia'
+  });
+  const attached = await service.attachSession(created.id, 'session-kept');
+
+  const updated = await service.saveProject({
+    ...attached,
+    title: '太虚问道 · 新卷',
+    description: '保留存档，只整理书架信息。'
+  });
+  const removed = await service.deleteProject(created.id);
+
+  assert.equal(updated.title, '太虚问道 · 新卷');
+  assert.equal(updated.description, '保留存档，只整理书架信息。');
+  assert.deepEqual(removed.sessionIds, ['session-kept']);
+  assert.equal(await service.getProject(created.id), null);
+  assert.equal(await service.deleteProject(created.id), null);
+});

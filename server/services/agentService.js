@@ -8,6 +8,11 @@ import { VectorMemoryService } from '../agent/vectorMemory.js';
 import { resolveNarrativeContext } from '../agent/narrativeControl.js';
 import { parseRoleplayResponse } from '../agent/roleplayResponse.js';
 import { extractActionEnvelope } from '../simulation/actionProtocol.js';
+import {
+  applyMvuPatchEnvelope,
+  extractMvuPatchEnvelope,
+  normalizeMvuSnapshot
+} from '../compat/mvuProtocol.js';
 import { WorldSimulationService } from './worldSimulationService.js';
 
 const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
@@ -111,7 +116,7 @@ export class AgentService {
     };
   }
 
-  async sendMessageStream({ sessionId = 'main', content, targetSpeaker, onToken }) {
+  async sendMessageStream({ sessionId = 'main', content, targetSpeaker, hideUserMessage = false, onToken }) {
     const [globalConfig, session] = await Promise.all([
       this.configService.getAll(),
       this.sessionService.getSession(sessionId)
@@ -124,7 +129,8 @@ export class AgentService {
     const provider = getActiveProvider(globalConfig, session);
     const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
     const userMessage = createMessage('user', content, {
-      kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat'
+      kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat',
+      hiddenFromChat: hideUserMessage
     });
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
@@ -157,12 +163,17 @@ export class AgentService {
     });
     await streamFilter.end();
     const parsedOutput = parseAssistantOutput(assistantResult.content);
+    const mvuUpdate = applyAssistantMvuUpdate(session, parsedOutput);
     const speaker = parsedOutput.speaker;
     const parsedReply = parsedOutput.reply;
     const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
     const assistantMessage = createMessage('assistant', parsedReply.content, {
       recommendedActions: parsedReply.recommendedActions,
       usage,
+      actionEnvelope: parsedOutput.actionEnvelope,
+      actionError: parsedOutput.actionError,
+      mvuPatches: mvuUpdate.patches,
+      mvuError: mvuUpdate.error,
       roleplayPanels: parsedOutput.roleplayPanels,
       speaker
     });
@@ -404,6 +415,7 @@ export class AgentService {
       taskKey: 'chat'
     });
     const parsedOutput = parseAssistantOutput(assistantResult.content);
+    const mvuUpdate = applyAssistantMvuUpdate(session, parsedOutput);
     const speaker = parsedOutput.speaker;
     const parsedReply = parsedOutput.reply;
     const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
@@ -412,6 +424,8 @@ export class AgentService {
       usage,
       actionEnvelope: parsedOutput.actionEnvelope,
       actionError: parsedOutput.actionError,
+      mvuPatches: mvuUpdate.patches,
+      mvuError: mvuUpdate.error,
       roleplayPanels: parsedOutput.roleplayPanels,
       speaker
     });
@@ -552,6 +566,7 @@ export class AgentService {
     });
     await streamFilter.end();
     const parsedContinuation = parseAssistantOutput(assistantResult.content);
+    const mvuUpdate = applyAssistantMvuUpdate(session, parsedContinuation);
     const usage = buildUsageSnapshot({
       provider,
       assembled,
@@ -576,6 +591,12 @@ export class AgentService {
         detail: String(parsedContinuation.actionError.detail || parsedContinuation.actionError.message || '')
       };
     }
+    lastMessage.mvuPatches = [
+      ...(Array.isArray(lastMessage.mvuPatches) ? lastMessage.mvuPatches : []),
+      ...mvuUpdate.patches
+    ].slice(-64);
+    if (!lastMessage.mvuPatches.length) delete lastMessage.mvuPatches;
+    if (mvuUpdate.error) lastMessage.mvuError = structuredClone(mvuUpdate.error);
     delete lastMessage.adjudication;
     lastMessage.swipes = normalizeSwipes(lastMessage.swipes, lastMessage.content);
     lastMessage.activeSwipeIndex = Math.max(0, lastMessage.swipes.indexOf(lastMessage.content));
@@ -834,7 +855,17 @@ function createMessage(role, content, extras = {}) {
       detail: String(extras.actionError.detail || extras.actionError.message || '')
     };
   }
+  if (Array.isArray(extras.mvuPatches) && extras.mvuPatches.length) {
+    message.mvuPatches = structuredClone(extras.mvuPatches);
+  }
+  if (extras.mvuError) {
+    message.mvuError = {
+      code: String(extras.mvuError.code || 'MVU_PATCH_FAILED'),
+      detail: String(extras.mvuError.detail || extras.mvuError.message || '')
+    };
+  }
   if (extras.kind) message.kind = String(extras.kind);
+  if (extras.hiddenFromChat === true) message.hiddenFromChat = true;
   if (extras.speaker) message.speaker = String(extras.speaker).slice(0, 30);
   if (extras.roleplayPanels && typeof extras.roleplayPanels === 'object' && !Array.isArray(extras.roleplayPanels)) {
     message.roleplayPanels = structuredClone(extras.roleplayPanels);
@@ -1109,7 +1140,8 @@ function normalizeSwipes(swipes, fallbackContent) {
 }
 
 function parseAssistantOutput(rawContent) {
-  const actionParsed = extractActionEnvelope(rawContent);
+  const mvuParsed = extractMvuPatchEnvelope(rawContent);
+  const actionParsed = extractActionEnvelope(mvuParsed.content);
   const reply = extractRecommendedActions(actionParsed.content);
   const presentation = parseRoleplayResponse(reply.content);
   reply.content = presentation.content;
@@ -1119,7 +1151,44 @@ function parseAssistantOutput(rawContent) {
     speaker: presentation.speaker || extractSpeaker(actionParsed.content),
     roleplayPanels: presentation.panels,
     actionEnvelope: actionParsed.envelope,
-    actionError: actionParsed.error
+    actionError: actionParsed.error,
+    mvuEnvelope: mvuParsed.envelope,
+    mvuError: mvuParsed.error
+  };
+}
+
+function applyAssistantMvuUpdate(session, parsedOutput) {
+  const parsedError = parsedOutput?.mvuError;
+  if (!parsedOutput?.mvuEnvelope) {
+    return { patches: [], error: parsedError ? serializeMvuError(parsedError) : null };
+  }
+
+  const memory = session.memory || (session.memory = {});
+  const current = normalizeMvuSnapshot(memory.lightFrontendState);
+  if (!current.enabled) {
+    return {
+      patches: [],
+      error: { code: 'MVU_RUNTIME_DISABLED', detail: '当前会话未启用轻前端 MVU 状态。' }
+    };
+  }
+  if (!memory.lightFrontendBaseline || typeof memory.lightFrontendBaseline !== 'object') {
+    memory.lightFrontendBaseline = structuredClone(current);
+  }
+
+  try {
+    const applied = applyMvuPatchEnvelope(current, parsedOutput.mvuEnvelope);
+    memory.lightFrontendState = structuredClone(applied.state);
+    memory.lightFrontendReplayErrors = [];
+    return { patches: [applied.envelope], error: null };
+  } catch (error) {
+    return { patches: [], error: serializeMvuError(error) };
+  }
+}
+
+function serializeMvuError(error) {
+  return {
+    code: String(error?.code || error?.message || 'MVU_PATCH_FAILED'),
+    detail: String(error?.detail || error?.message || '')
   };
 }
 
@@ -1170,7 +1239,10 @@ function normalizeSwipeMetadata(message, swipes) {
     : [];
   while (metadata.length < swipes.length) metadata.push(emptySwipeMetadata());
   const activeIndex = Number(message?.activeSwipeIndex || 0);
-  if (metadata[activeIndex] && !metadata[activeIndex].actionEnvelope && message?.actionEnvelope) {
+  if (metadata[activeIndex]
+    && !metadata[activeIndex].actionEnvelope
+    && !metadata[activeIndex].mvuPatches?.length
+    && (message?.actionEnvelope || message?.mvuPatches?.length)) {
     metadata[activeIndex] = metadataFromMessage(message);
   }
   return metadata.slice(0, swipes.length);
@@ -1181,6 +1253,8 @@ function normalizeSwipeMetadataEntry(value) {
   return {
     actionEnvelope: value.actionEnvelope ? structuredClone(value.actionEnvelope) : null,
     actionError: value.actionError ? structuredClone(value.actionError) : null,
+    mvuPatches: Array.isArray(value.mvuPatches) ? structuredClone(value.mvuPatches) : [],
+    mvuError: value.mvuError ? structuredClone(value.mvuError) : null,
     adjudication: value.adjudication ? structuredClone(value.adjudication) : null,
     recommendedActions: Array.isArray(value.recommendedActions) ? structuredClone(value.recommendedActions) : [],
     roleplayPanels: value.roleplayPanels ? structuredClone(value.roleplayPanels) : null,
@@ -1192,6 +1266,8 @@ function metadataFromMessage(message) {
   return normalizeSwipeMetadataEntry({
     actionEnvelope: message?.actionEnvelope,
     actionError: message?.actionError,
+    mvuPatches: message?.mvuPatches,
+    mvuError: message?.mvuError,
     adjudication: message?.adjudication,
     recommendedActions: message?.recommendedActions,
     roleplayPanels: message?.roleplayPanels,
@@ -1203,6 +1279,8 @@ function emptySwipeMetadata() {
   return {
     actionEnvelope: null,
     actionError: null,
+    mvuPatches: [],
+    mvuError: null,
     adjudication: null,
     recommendedActions: [],
     roleplayPanels: null,
@@ -1215,6 +1293,8 @@ function applySwipeMetadata(message, metadata) {
   const normalized = normalizeSwipeMetadataEntry(metadata);
   if (normalized.actionEnvelope) message.actionEnvelope = normalized.actionEnvelope;
   if (normalized.actionError) message.actionError = normalized.actionError;
+  if (normalized.mvuPatches.length) message.mvuPatches = normalized.mvuPatches;
+  if (normalized.mvuError) message.mvuError = normalized.mvuError;
   if (normalized.adjudication) message.adjudication = normalized.adjudication;
   if (normalized.recommendedActions.length) message.recommendedActions = normalized.recommendedActions;
   else delete message.recommendedActions;
@@ -1225,6 +1305,8 @@ function applySwipeMetadata(message, metadata) {
 function clearMessageWorldUpdate(message) {
   delete message.actionEnvelope;
   delete message.actionError;
+  delete message.mvuPatches;
+  delete message.mvuError;
   delete message.adjudication;
   delete message.roleplayPanels;
   delete message.speaker;

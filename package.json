@@ -1,17 +1,22 @@
 {
   "name": "local-roleplay-agent",
-  "version": "0.4.1-rc.1",
+  "version": "0.5.0-rc.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node server/index.js",
-    "start": "node server/index.js",
+    "start": "zsh scripts/start-local.sh",
     "start:local": "zsh scripts/start-local.sh",
+    "stop": "zsh scripts/stop-local.sh",
+    "stop:local": "zsh scripts/stop-local.sh",
+    "restart": "zsh scripts/stop-local.sh && zsh scripts/start-local.sh",
+    "restart:local": "zsh scripts/stop-local.sh && zsh scripts/start-local.sh",
     "backup": "node scripts/data-cli.mjs backup",
     "backup:list": "node scripts/data-cli.mjs list",
     "restore": "node scripts/data-cli.mjs restore",
     "test": "node --test tests/*.test.js",
-    "release:check": "node --test tests/*.test.js && node scripts/release-check.mjs"
+    "repository:check": "node scripts/check-public-repository.mjs",
+    "release:check": "node --test tests/*.test.js && node scripts/check-public-repository.mjs && node scripts/release-check.mjs"
   },
   "engines": {
     "node": ">=20"

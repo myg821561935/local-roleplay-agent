@@ -92,6 +92,29 @@ test('expandMacros get_worldbook returns card content by title', () => {
   assert.equal(result, '夜市信息：子时后开张');
 });
 
+test('expandMacros renders safe EJS and read-only community variables', () => {
+  const context = {
+    characterCard: { name: '沈观澜' },
+    lightFrontendState: { values: { favor: 21, flags: { met: true } }, revision: 2 }
+  };
+  const result = expandMacros(
+    '<% if (mvu.flags.met) { %>{{char}}信任度 <%= getvar("favor") %> / {{getvar::favor}}<% } %>',
+    context
+  );
+
+  assert.equal(result, '沈观澜信任度 21 / 21');
+  assert.equal(context.lightFrontendState.values.favor, 21);
+});
+
+test('expandMacros strips unsupported EJS code without executing it', () => {
+  globalThis.__lightFrontendProbe = 0;
+  const result = expandMacros('<% globalThis.__lightFrontendProbe = 1 %>正文', {});
+
+  assert.equal(result, '正文');
+  assert.equal(globalThis.__lightFrontendProbe, 0);
+  delete globalThis.__lightFrontendProbe;
+});
+
 test('expandMacros pick selects from custom array', () => {
   const results = new Set();
   for (let i = 0; i < 30; i++) {

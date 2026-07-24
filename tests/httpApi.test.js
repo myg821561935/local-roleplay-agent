@@ -22,6 +22,41 @@ test('GET /api/state returns config and session', async () => {
   assert.equal(payload.session.settings.activeAgentProfileId, 'story-director');
 });
 
+test('light frontend MVU API applies revisioned declarative patches', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const first = await request(app, {
+    method: 'PATCH',
+    url: '/api/sessions/main/light-frontend/mvu',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      expectedRevision: 0,
+      operations: [
+        { op: 'set', path: 'relationships.shen', value: 10 },
+        { op: 'increment', path: 'clues', value: 1 }
+      ]
+    }
+  });
+  const conflict = await request(app, {
+    method: 'PATCH',
+    url: '/api/sessions/main/light-frontend/mvu',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      expectedRevision: 0,
+      operations: [{ op: 'increment', path: 'clues', value: 1 }]
+    }
+  });
+
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.json().mvu, {
+    enabled: true,
+    values: { relationships: { shen: 10 }, clues: 1 },
+    revision: 1
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.json().error, 'MVU_REVISION_CONFLICT');
+});
+
 test('authoring API lists profiles and persists a session ledger', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   const profilesResponse = await request(app, { url: '/api/agent-profiles' });
@@ -107,6 +142,45 @@ test('story project API rejects an unknown base content pack', async () => {
 
   assert.equal(response.status, 404);
   assert.equal(response.json().error, 'CONTENT_PACK_NOT_FOUND');
+});
+
+test('story project API edits and removes a bookshelf entry while preserving its session', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const created = (await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: 'xianxia', title: '旧题名' }
+  })).json().project;
+  const session = (await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(created.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  })).json().session;
+  const updatedResponse = await request(app, {
+    method: 'PUT',
+    url: `/api/story-projects/${encodeURIComponent(created.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: { title: '太虚问道 · 新卷', description: '书架说明' }
+  });
+  const deleteResponse = await request(app, {
+    method: 'DELETE',
+    url: `/api/story-projects/${encodeURIComponent(created.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+  const readAfterDelete = await request(app, {
+    url: `/api/story-projects/${encodeURIComponent(created.id)}`
+  });
+  const sessions = (await request(app, { url: '/api/sessions' })).json().sessions;
+
+  assert.equal(updatedResponse.status, 200);
+  assert.equal(updatedResponse.json().summary.title, '太虚问道 · 新卷');
+  assert.equal(deleteResponse.status, 200);
+  assert.deepEqual(deleteResponse.json().preservedSessionIds, [session.id]);
+  assert.equal(readAfterDelete.status, 404);
+  assert.ok(sessions.includes(session.id));
 });
 
 test('PUT /api/character-card saves character card', async () => {
@@ -251,6 +325,81 @@ test('POST /api/import/commit can store a resource without changing active creat
   assert.equal(payload.libraryResources.length, 2);
   assert.equal(library.resources.length, 2);
   assert.equal(state.config.characterCard.name, '未命名主角');
+});
+
+test('POST /api/import/commit stores SillyTavern prompt presets without executing helper scripts', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const preset = {
+    name: '社区叙事预设',
+    settings: { max_context: 32768, max_completion_tokens: 4096, temperature: 0.8 },
+    prompts: [
+      {
+        id: 'main',
+        name: '主提示',
+        enabled: true,
+        role: 'system',
+        content: '保持人物边界与长篇连续性。',
+        position: { type: 'relative' }
+      },
+      {
+        id: 'post-history',
+        name: '历史后约束',
+        enabled: true,
+        role: 'user',
+        content: '延续当前冲突，不解释系统规则。',
+        position: { type: 'in_chat', depth: 1, order: 3 }
+      }
+    ],
+    extensions: {
+      tavern_helper: { scripts: [{ id: 'runtime-hook' }] }
+    }
+  };
+
+  const previewResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/preview',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'community-preset.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(preset)
+      },
+      source: { site: '类脑社区', fileName: 'community-preset.json' }
+    }
+  });
+  const commitResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'community-preset.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(preset)
+      },
+      source: { site: '类脑社区', fileName: 'community-preset.json' },
+      applyToActiveConfig: true
+    }
+  });
+  const preview = previewResponse.json().preview;
+  const committed = commitResponse.json();
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(previewResponse.status, 200);
+  assert.equal(preview.kind, 'prompt-preset');
+  assert.equal(preview.inspection.adapter.id, 'sillytavern-prompt-preset');
+  assert.equal(preview.inspection.communityCompatibility.readyToPlay, false);
+  assert.equal(commitResponse.status, 200);
+  assert.equal(committed.applyMode, 'prompt-library');
+  assert.equal(committed.promptModuleCount, 2);
+  assert.equal(committed.generationSettings.maxContext, 32768);
+  assert.equal(committed.libraryResources[1].payload.position, 'in_chat');
+  assert.equal(
+    committed.libraryResources[0].payload.extensions.sillyTavernPreset.dependencySignals.tavern_helper.execution,
+    'disabled'
+  );
+  assert.equal(state.config.promptModules.some((item) => item.title === '主提示'), false);
 });
 
 test('PNG character import persists its portrait through the session, library and custom story pack', async () => {
@@ -560,6 +709,116 @@ test('PATCH /api/resource-library/resources/:id updates asset center metadata', 
   assert.equal(search[0].id, character.id);
 });
 
+test('PATCH /api/resource-library/resources/:id/content manages world books and prompt presets', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'shen.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(createV2CardPayload())
+      },
+      source: { site: 'local-file' },
+      applyToActiveConfig: false
+    }
+  });
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const worldBook = resources.find((item) => item.kind === 'worldbook');
+  const character = resources.find((item) => item.kind === 'character');
+  const worldBookResponse = await request(app, {
+    method: 'PATCH',
+    url: `/api/resource-library/resources/${encodeURIComponent(worldBook.id)}/content`,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        entries: [{
+          id: 'lore-revised',
+          title: '修订设定',
+          keywords: ['修订'],
+          content: '这是素材中心保存后的世界书内容。',
+          enabled: true
+        }]
+      }
+    }
+  });
+  const promptCreated = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/resources/prompt',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '叙事约束',
+      content: '保持角色视角。',
+      enabled: true,
+      source: { site: 'local-file' }
+    }
+  });
+  const prompt = promptCreated.json().resources[0];
+  const promptResponse = await request(app, {
+    method: 'PATCH',
+    url: `/api/resource-library/resources/${encodeURIComponent(prompt.id)}/content`,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '叙事约束 · 修订',
+      payload: {
+        ...prompt.payload,
+        role: 'system',
+        content: '保持角色视角，不替用户决定行动。',
+        enabled: true
+      }
+    }
+  });
+  const unsupported = await request(app, {
+    method: 'PATCH',
+    url: `/api/resource-library/resources/${encodeURIComponent(character.id)}/content`,
+    headers: { 'content-type': 'application/json' },
+    body: { payload: character.payload }
+  });
+
+  assert.equal(worldBookResponse.status, 200);
+  assert.equal(worldBookResponse.json().resource.payload.entries[0].title, '修订设定');
+  assert.equal(promptResponse.status, 200);
+  assert.equal(promptResponse.json().resource.title, '叙事约束 · 修订');
+  assert.equal(promptResponse.json().resource.payload.content.includes('不替用户决定行动'), true);
+  assert.equal(unsupported.status, 400);
+  assert.equal(unsupported.json().error, 'RESOURCE_CONTENT_KIND_UNSUPPORTED');
+});
+
+test('POST /api/resource-library/resources/:id/reevaluate refreshes legacy diagnostics', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'shen.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(createV2CardPayload())
+      },
+      source: { site: '类脑社区', author: '社区作者' },
+      applyToActiveConfig: false
+    }
+  });
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const character = resources.find((item) => item.kind === 'character');
+
+  const response = await request(app, {
+    method: 'POST',
+    url: `/api/resource-library/resources/${encodeURIComponent(character.id)}/reevaluate`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().resource.id, character.id);
+  assert.ok(response.json().resource.diagnostics.score > 0);
+  assert.ok(response.json().resource.diagnostics.communityCompatibility);
+  assert.equal(response.json().resource.payload.extensions.local_roleplay_agent.enrichment.version, 1);
+});
+
 test('PATCH /api/resource-library/resources/:id rejects non-object metadata', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   const response = await request(app, {
@@ -662,6 +921,38 @@ test('custom story composition endpoint previews conflicts and creates an origin
   assert.equal(pack.visualPackId, 'yingxiongzhi');
   assert.equal(projectResponse.status, 200);
   assert.equal(projectResponse.json().project.basePackId, pack.id);
+});
+
+test('custom pack API edits bookshelf metadata and removes only the stored pack', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const created = (await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '旧剧本名',
+      customBaseline: { worldName: '九州残卷', genre: '低魔武侠' }
+    }
+  })).json().pack;
+  const updatedResponse = await request(app, {
+    method: 'PATCH',
+    url: `/api/resource-library/packs/${encodeURIComponent(created.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: { title: '九州残卷 · 新卷', description: '书架说明', sessionTitle: '九州残卷' }
+  });
+  const deleteResponse = await request(app, {
+    method: 'DELETE',
+    url: `/api/resource-library/packs/${encodeURIComponent(created.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+  const packs = (await request(app, { url: '/api/content-packs' })).json().contentPacks;
+
+  assert.equal(updatedResponse.status, 200);
+  assert.equal(updatedResponse.json().pack.title, '九州残卷 · 新卷');
+  assert.equal(updatedResponse.json().pack.manifest.title, '九州残卷 · 新卷');
+  assert.equal(deleteResponse.status, 200);
+  assert.equal(packs.some((pack) => pack.id === created.id), false);
 });
 
 test('v0.2.2 plugin manifest preview installs declarative adapters and blocks executable plugins', async () => {
@@ -1302,7 +1593,7 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.4.1-rc.1',
+    version: '0.5.0-rc.1',
     releaseChannel: 'release-candidate-local',
     dataSchemaVersion: 3,
     targetDataSchemaVersion: 3
@@ -1599,6 +1890,31 @@ test('POST /api/chat/stream reports reasoning-only output without saving an empt
   assert.equal(response.status, 200);
   assert.match(response.text, /event: error/);
   assert.match(response.text, /PROVIDER_REASONING_ONLY_RESPONSE/);
+  assert.equal(state.session.messages.length, 0);
+});
+
+test('POST /api/chat/stream reports exhausted provider quota without saving the opening turn', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({
+    rootDir,
+    providerClient: {
+      stream: async () => {
+        throw new Error('Provider error 403: insufficient_user_quota, 剩余额度: $0.000000');
+      }
+    }
+  });
+  await saveHttpProvider(app);
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/chat/stream',
+    headers: { 'content-type': 'application/json' },
+    body: { content: '请生成开场。' }
+  });
+  const state = (await request(app, { url: '/api/state' })).json();
+
+  assert.equal(response.status, 200);
+  assert.match(response.text, /PROVIDER_QUOTA_EXHAUSTED/);
   assert.equal(state.session.messages.length, 0);
 });
 

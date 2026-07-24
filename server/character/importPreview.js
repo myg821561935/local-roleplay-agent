@@ -1,4 +1,5 @@
 import { extractCharacterCardImage, importCharacterCardFromPayload } from './characterCardImport.js';
+import { importSillyTavernPreset } from './presetImport.js';
 import { importWorldBookFromPayload } from './worldBookImport.js';
 import { CONTENT_PACK_SPEC, isContentPackBundle } from '../content/contentPackManifest.js';
 import { PLUGIN_SPEC } from '../plugins/pluginManifest.js';
@@ -8,6 +9,9 @@ export function previewImportPayload(payload = {}) {
   if (isContentPackBundle(structured)) return buildContentPackPreview(structured);
   if (isPluginManifestDocument(structured)) return buildPluginManifestPreview(structured);
 
+  const promptPreset = importSillyTavernPreset(structured, { fileName: payload.fileName });
+  if (promptPreset) return buildPromptPresetPreview(promptPreset);
+
   const characterImport = tryImportCharacterCard(payload);
   if (characterImport && hasCharacterCardSignal(characterImport)) {
     return buildCharacterCardPreview(characterImport, payload);
@@ -16,6 +20,33 @@ export function previewImportPayload(payload = {}) {
   const worldBook = importWorldBookFromPayload(payload);
   if (!worldBook.length) throw new Error('UNSUPPORTED_IMPORT_PAYLOAD');
   return buildWorldBookPreview(worldBook);
+}
+
+function buildPromptPresetPreview(preset) {
+  return {
+    kind: 'prompt-preset',
+    title: preset.title,
+    summary: {
+      sourceFormat: preset.sourceFormat,
+      promptModuleCount: preset.counts.modules,
+      enabledPromptCount: preset.counts.enabled,
+      placeholderCount: preset.counts.placeholders,
+      regexScriptCount: preset.counts.regexScripts,
+      tavernHelperScriptCount: preset.counts.tavernHelperScripts,
+      generationSettings: preset.generationSettings,
+      hasExecutableExtensions: preset.counts.tavernHelperScripts > 0
+    },
+    importData: {
+      promptModules: preset.promptModules,
+      promptPreset: {
+        title: preset.title,
+        sourceFormat: preset.sourceFormat,
+        generationSettings: preset.generationSettings,
+        promptLayout: preset.promptLayout,
+        dependencySignals: preset.dependencySignals
+      }
+    }
+  };
 }
 
 function buildContentPackPreview(bundle) {
@@ -79,6 +110,7 @@ function buildCharacterCardPreview(importData, payload) {
   const card = importData.characterCard || {};
   const worldBook = Array.isArray(importData.worldBook) ? importData.worldBook : [];
   const portrait = extractCharacterCardImage(payload);
+  const declaredContentPacks = collectDeclaredContentPacks(card);
   return {
     kind: 'character-card',
     summary: {
@@ -90,6 +122,9 @@ function buildCharacterCardPreview(importData, payload) {
       hasEmbeddedPortrait: Boolean(portrait),
       portraitWidth: portrait?.width || 0,
       portraitHeight: portrait?.height || 0,
+      declaredContentPacks,
+      declaredGenre: collectDeclaredGenre(card),
+      selfContained: Boolean(worldBook.length && (card.systemPrompt || card.postHistoryInstructions || card.scenario)),
       willReplaceCharacterCard: true,
       worldBookMode: 'append-dedupe'
     },
@@ -122,6 +157,35 @@ function collectKeywordSamples(worldBook) {
     }
   }
   return samples;
+}
+
+function collectDeclaredContentPacks(card = {}) {
+  const extensions = card.extensions && typeof card.extensions === 'object' && !Array.isArray(card.extensions)
+    ? card.extensions
+    : {};
+  return uniqueStrings([
+    extensions.contentPack,
+    extensions.content_pack,
+    extensions.contentPackId,
+    card.raw?.metadata?.contentPack,
+    card.raw?.metadata?.content_pack
+  ]);
+}
+
+function collectDeclaredGenre(card = {}) {
+  const extensions = card.extensions && typeof card.extensions === 'object' && !Array.isArray(card.extensions)
+    ? card.extensions
+    : {};
+  return uniqueStrings([
+    extensions.genre,
+    extensions.category,
+    card.raw?.metadata?.genre,
+    ...(Array.isArray(card.tags) ? card.tags : [])
+  ]).join(' · ');
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
 function isPluginManifestDocument(value) {

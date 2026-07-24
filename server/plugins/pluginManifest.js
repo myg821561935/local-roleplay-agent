@@ -3,12 +3,27 @@ import { APP_VERSION } from '../releaseInfo.js';
 
 export const PLUGIN_SPEC = 'lra.plugin/v1';
 export const DEFAULT_PLUGIN_ENGINE_RANGE = '>=0.2.2 <1.0.0';
+export const SUPPORTED_DECLARATIVE_CAPABILITIES = Object.freeze([
+  'safe-macros',
+  'regex-triggers',
+  'recommended-actions',
+  'world-state',
+  'sidebar-panels',
+  'action-protocol',
+  'prompt-ordering',
+  'safe-regex-display',
+  'quick-replies',
+  'mvu-state',
+  'safe-ejs-template',
+  'community-light-adapters'
+]);
 
 const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9.-]{2,79}$/;
 const ADAPTER_ID_PATTERN = /^[a-z][a-z0-9-]{2,79}$/;
 const SUPPORTED_KINDS = new Set(['character', 'worldbook', 'prompt', 'content-pack', 'plugin']);
 const SUPPORTED_FORMATS = new Set(['png', 'json', 'txt', 'yaml', 'yml']);
 const EXECUTABLE_FIELDS = ['entry', 'main', 'module', 'script', 'scripts', 'command', 'hooks'];
+const DECLARATIVE_CAPABILITY_SET = new Set(SUPPORTED_DECLARATIVE_CAPABILITIES);
 
 export function inspectPluginManifest(input = {}, {
   appVersion = APP_VERSION,
@@ -81,7 +96,7 @@ export function inspectPluginManifest(input = {}, {
     verdictLabel: verdict === 'recommended' ? '可安装' : verdict === 'review' ? '建议审阅' : '不可安装',
     summary: blockingIssues.length
       ? `发现 ${blockingIssues.length} 项阻断问题。`
-      : `${manifest.adapters.length} 个声明式适配器通过检查。`,
+      : `${manifest.adapters.length} 个声明式适配器、${manifest.capabilities.length} 项受控能力通过检查。`,
     canInstall: blockingIssues.length === 0,
     canImport: blockingIssues.length === 0,
     installAction,
@@ -93,7 +108,8 @@ export function inspectPluginManifest(input = {}, {
       dimension('manifest', '清单结构', blockingIssues.some((item) => item.path !== 'engine') ? 40 : 100, '只接受声明式字段。'),
       dimension('engine', '引擎兼容', blockingIssues.some((item) => item.code === 'plugin-engine-incompatible') ? 0 : 100, manifest.engine),
       dimension('dependencies', '依赖完整', dependencyReport.some((item) => item.status !== 'ready' && !item.optional) ? 30 : 100, `${dependencyReport.length} 项依赖`),
-      dimension('adapters', '适配能力', manifest.adapters.length ? 100 : 0, `${manifest.adapters.length} 个适配器`)
+      dimension('adapters', '适配能力', manifest.adapters.length ? 100 : 0, `${manifest.adapters.length} 个适配器`),
+      dimension('capabilities', '受控能力', manifest.capabilities.length ? 100 : 70, `${manifest.capabilities.length} 项声明式能力`)
     ]
   };
 }
@@ -113,11 +129,13 @@ function normalizeManifestShape(input, blockingIssues, warnings) {
   const spec = String(source.spec || source.schema || '').trim();
   if (spec !== PLUGIN_SPEC) blockingIssues.push(issue('plugin-spec-invalid', `必须声明 spec: ${PLUGIN_SPEC}。`, 'spec'));
 
-  for (const field of EXECUTABLE_FIELDS) {
-    if (Object.hasOwn(source, field)) {
-      blockingIssues.push(issue('executable-plugin-unsupported', `本地引擎不执行第三方 ${field} 字段。`, field));
-    }
-  }
+  findExecutableManifestPaths(source).forEach((path) => {
+    blockingIssues.push(issue(
+      'executable-plugin-unsupported',
+      `本地引擎不执行第三方可执行字段或脚本内容：${path}。`,
+      path
+    ));
+  });
 
   const id = String(source.id || '').trim().toLowerCase();
   if (!PLUGIN_ID_PATTERN.test(id)) blockingIssues.push(issue('plugin-id-invalid', '插件 ID 需使用小写字母、数字、点和短横线。', 'id'));
@@ -143,6 +161,15 @@ function normalizeManifestShape(input, blockingIssues, warnings) {
   const dependencies = (Array.isArray(source.dependencies) ? source.dependencies : [])
     .map((dependency) => normalizeDependency(dependency, blockingIssues))
     .filter(Boolean);
+  const declaredCapabilities = uniqueStrings(source.capabilities);
+  const capabilities = declaredCapabilities.filter((capability) => DECLARATIVE_CAPABILITY_SET.has(capability));
+  declaredCapabilities
+    .filter((capability) => !DECLARATIVE_CAPABILITY_SET.has(capability))
+    .forEach((capability) => warnings.push(issue(
+      'plugin-capability-unsupported',
+      `受控运行时暂不支持能力 ${capability}，安装后不会启用该部分。`,
+      `capabilities.${capability}`
+    )));
 
   return {
     spec: PLUGIN_SPEC,
@@ -155,6 +182,8 @@ function normalizeManifestShape(input, blockingIssues, warnings) {
     license: String(source.license || '未声明').trim().slice(0, 80),
     engine,
     dependencies,
+    runtime: 'declarative',
+    capabilities,
     adapters
   };
 }
@@ -184,7 +213,7 @@ function normalizeAdapter(adapter, index, pluginVersion, blockingIssues, warning
     kinds,
     formats,
     priority: clampInteger(adapter.priority, 0, 1000, 10),
-    capabilities: uniqueStrings(adapter.capabilities),
+    capabilities: normalizeAdapterCapabilities(adapter.capabilities, index, warnings),
     match: {
       previewKinds: uniqueStrings(match.previewKinds),
       sourceIncludes: uniqueStrings(match.sourceIncludes).map((item) => item.toLowerCase()),
@@ -206,6 +235,44 @@ function normalizeDependency(input, blockingIssues) {
     range: String(input.range || '*').trim(),
     optional: input.optional === true
   };
+}
+
+function normalizeAdapterCapabilities(values, index, warnings) {
+  const declared = uniqueStrings(values);
+  declared
+    .filter((capability) => !DECLARATIVE_CAPABILITY_SET.has(capability))
+    .forEach((capability) => warnings.push(issue(
+      'adapter-capability-unsupported',
+      `适配器能力 ${capability} 不在声明式白名单中，安装后不会启用。`,
+      `adapters.${index}.capabilities.${capability}`
+    )));
+  return declared.filter((capability) => DECLARATIVE_CAPABILITY_SET.has(capability));
+}
+
+function findExecutableManifestPaths(input) {
+  const paths = new Set();
+  const queue = [{ value: input, path: '' }];
+  const seen = new Set();
+  while (queue.length && seen.size < 500) {
+    const { value, path } = queue.shift();
+    if (Array.isArray(value)) {
+      value.slice(0, 160).forEach((child, index) => queue.push({ value: child, path: `${path}.${index}` }));
+      continue;
+    }
+    if (!isPlainObject(value) || seen.has(value)) continue;
+    seen.add(value);
+    for (const [key, child] of Object.entries(value).slice(0, 400)) {
+      const childPath = path ? `${path}.${key}` : key;
+      if (EXECUTABLE_FIELDS.includes(key.toLowerCase()) || /^on[a-z]+$/i.test(key)) paths.add(childPath);
+      if (typeof child === 'string' && (
+        /<script(?:\s|>)/i.test(child)
+        || /javascript\s*:/i.test(child)
+        || /\son[a-z]+\s*=/i.test(child)
+      )) paths.add(childPath);
+      if (isPlainObject(child) || Array.isArray(child)) queue.push({ value: child, path: childPath });
+    }
+  }
+  return [...paths].slice(0, 30);
 }
 
 function pluginIdOf(item) {

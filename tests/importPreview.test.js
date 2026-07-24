@@ -16,6 +16,9 @@ test('previews Character Card V2 with embedded character book', () => {
   assert.deepEqual(preview.summary.tags, ['武侠']);
   assert.equal(preview.summary.worldBookCount, 1);
   assert.deepEqual(preview.summary.keywordSamples, ['镇武司']);
+  assert.deepEqual(preview.summary.declaredContentPacks, ['yingxiongzhi']);
+  assert.equal(preview.summary.declaredGenre, '武侠群像 · 武侠');
+  assert.equal(preview.summary.selfContained, true);
   assert.equal(preview.importData.characterCard.name, '沈观澜');
   assert.equal(preview.importData.worldBook[0].title, '镇武司暗线');
 });
@@ -171,6 +174,106 @@ test('previews lra content pack and declarative plugin manifests before generic 
   assert.equal(plugin.summary.adapterCount, 1);
 });
 
+test('previews Tavern Helper normalized prompt presets without executing extensions', () => {
+  const preview = previewImportPayload({
+    fileName: 'story-preset.json',
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      name: '长篇叙事预设',
+      settings: {
+        max_context: 32000,
+        max_completion_tokens: 4096,
+        should_stream: true,
+        temperature: 0.8
+      },
+      prompts: [
+        {
+          id: 'main',
+          name: '主提示',
+          enabled: true,
+          role: 'system',
+          content: '保持角色身份与世界边界。',
+          position: { type: 'relative' }
+        },
+        {
+          id: 'worldInfoBefore',
+          name: '世界书前置锚点',
+          enabled: true,
+          role: 'system',
+          content: '',
+          position: { type: 'relative' }
+        },
+        {
+          id: 'after-history',
+          name: '历史后约束',
+          enabled: true,
+          role: 'user',
+          content: '延续当前场景，不跳出角色。',
+          position: { type: 'in_chat', depth: 2, order: 7 }
+        }
+      ],
+      extensions: {
+        regex_scripts: [{ scriptName: '隐藏状态标签' }],
+        tavern_helper: {
+          scripts: [{ id: 'unsafe-runtime-hook' }],
+          variables: { affection: 0 }
+        }
+      }
+    })
+  });
+
+  assert.equal(preview.kind, 'prompt-preset');
+  assert.equal(preview.title, '长篇叙事预设');
+  assert.equal(preview.summary.sourceFormat, 'tavern-helper-preset');
+  assert.equal(preview.summary.promptModuleCount, 2);
+  assert.equal(preview.summary.placeholderCount, 1);
+  assert.equal(preview.summary.regexScriptCount, 1);
+  assert.equal(preview.summary.tavernHelperScriptCount, 1);
+  assert.equal(preview.summary.generationSettings.maxContext, 32000);
+  assert.equal(preview.summary.generationSettings.stream, true);
+  assert.equal(preview.importData.promptModules[1].position, 'in_chat');
+  assert.equal(preview.importData.promptModules[1].depth, 2);
+  assert.equal(preview.importData.promptModules[1].role, 'user');
+  assert.equal(
+    preview.importData.promptModules[0].extensions.sillyTavernPreset.dependencySignals.tavern_helper.execution,
+    'disabled'
+  );
+});
+
+test('previews native SillyTavern presets using prompt_order as the canonical order', () => {
+  const preview = previewImportPayload({
+    fileName: 'native-st.json',
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      openai_max_context: 65536,
+      openai_max_tokens: 3000,
+      stream_openai: false,
+      temperature: 0.72,
+      prompts: [
+        { identifier: 'main', name: '主提示', role: 'system', content: '主提示内容' },
+        { identifier: 'nsfw', name: '题材约束', role: 'system', content: '题材约束内容' },
+        { identifier: 'chatHistory', name: '聊天历史', role: 'system', content: '' }
+      ],
+      prompt_order: [{
+        character_id: 100001,
+        order: [
+          { identifier: 'nsfw', enabled: true },
+          { identifier: 'main', enabled: true },
+          { identifier: 'chatHistory', enabled: true }
+        ]
+      }]
+    })
+  });
+
+  assert.equal(preview.kind, 'prompt-preset');
+  assert.equal(preview.summary.sourceFormat, 'sillytavern-preset');
+  assert.deepEqual(preview.importData.promptModules.map((item) => item.title), ['题材约束', '主提示']);
+  assert.equal(preview.summary.generationSettings.maxContext, 65536);
+  assert.equal(preview.summary.generationSettings.maxCompletionTokens, 3000);
+  assert.equal(preview.summary.generationSettings.stream, false);
+  assert.equal(preview.importData.promptPreset.promptLayout.at(-1).id, 'chatHistory');
+});
+
 function createV2CardPayload() {
   return {
     spec: 'chara_card_v2',
@@ -184,6 +287,10 @@ function createV2CardPayload() {
       alternate_greetings: ['雨还没停。'],
       tags: ['武侠'],
       system_prompt: '保持武侠叙事。',
+      extensions: {
+        contentPack: 'yingxiongzhi',
+        genre: '武侠群像'
+      },
       character_book: {
         scan_depth: 6,
         entries: [{

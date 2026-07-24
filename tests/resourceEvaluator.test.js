@@ -28,6 +28,7 @@ test('resource evaluator produces a readable five-dimension character assessment
   assert.equal(diagnostics.canImport, true);
   assert.ok(diagnostics.estimatedTokens > 0);
   assert.ok(diagnostics.dimensions.find((item) => item.id === 'activation'));
+  assert.equal(diagnostics.communityCompatibility.level, 'native');
 });
 
 test('resource evaluator identifies inert lore, overlapping triggers and invalid regex', () => {
@@ -66,5 +67,25 @@ test('resource evaluator blocks empty prompt resources and aggregates the decisi
   assert.equal(evaluation.verdict, 'blocked');
   assert.equal(evaluation.canImport, false);
   assert.equal(evaluation.blockingCount, 1);
+  assert.equal(evaluation.communityCompatibility.level, 'native');
   assert.equal(estimateResourceTokens({ content: '一段用于测试的中文提示词。' }) > 0, true);
+});
+
+test('resource evaluator lowers runtime usability when a card requires external extensions', () => {
+  const diagnostics = evaluateResourceCandidate({
+    kind: 'character',
+    payload: {
+      name: '扩展卡',
+      description: '角色描述完整。',
+      personality: '谨慎。',
+      scenario: '等待测试。',
+      firstMessage: '开始。',
+      systemPrompt: '需要酒馆助手，并通过 {{getvar::mood}} 读取状态。'
+    }
+  });
+
+  assert.equal(diagnostics.communityCompatibility.level, 'external-runtime');
+  assert.ok(diagnostics.communityCompatibility.counts.missing >= 1);
+  assert.ok(diagnostics.dimensions.find((item) => item.id === 'activation').score < 80);
+  assert.equal(diagnostics.canImport, true);
 });

@@ -28,6 +28,7 @@ import { WorldSimulationService } from './services/worldSimulationService.js';
 import { StoryProjectService, summarizeStoryProject } from './services/storyProjectService.js';
 import { AuthoringService } from './services/authoringService.js';
 import { listAgentProfiles, normalizeAgentProfileId } from './authoring/agentProfiles.js';
+import { applyMvuPatch, normalizeLightFrontendRuntime } from './compat/lightFrontendRuntime.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -365,6 +366,33 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
+  const resourceReevaluationRoute = matchResourceLibraryResourceReevaluationRoute(url.pathname);
+  if (resourceReevaluationRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const result = await resourceLibraryService.reevaluateResource(resourceReevaluationRoute.resourceId);
+    if (!result) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
+    writeJson(res, 200, result);
+    return;
+  }
+
+  const resourceContentRoute = matchResourceLibraryResourceContentRoute(url.pathname);
+  if (resourceContentRoute && req.method === 'PATCH') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new ApiError(400, 'RESOURCE_CONTENT_INVALID');
+    }
+    try {
+      const resource = await resourceLibraryService.updateResourcePayload(resourceContentRoute.resourceId, body);
+      if (!resource) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
+      writeJson(res, 200, { resource });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(400, error.message || 'RESOURCE_CONTENT_INVALID');
+    }
+    return;
+  }
+
   const resourceRoute = matchResourceLibraryResourceRoute(url.pathname);
   if (resourceRoute && req.method === 'PATCH') {
     validateMutatingRequest(req);
@@ -424,10 +452,19 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
-  const customPackDeleteRoute = matchCustomPackDeleteRoute(url.pathname);
-  if (customPackDeleteRoute && req.method === 'DELETE') {
+  const resourceLibraryPackRoute = matchResourceLibraryPackRoute(url.pathname);
+  if (resourceLibraryPackRoute && req.method === 'PATCH') {
     validateMutatingRequest(req);
-    const removed = await resourceLibraryService.removePack(customPackDeleteRoute.packId);
+    const body = await readRequestJson(req);
+    const pack = await resourceLibraryService.updatePackMetadata(resourceLibraryPackRoute.packId, body);
+    if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    writeJson(res, 200, { pack, summary: summarizeResolvedPack(pack) });
+    return;
+  }
+
+  if (resourceLibraryPackRoute && req.method === 'DELETE') {
+    validateMutatingRequest(req);
+    const removed = await resourceLibraryService.removePack(resourceLibraryPackRoute.packId);
     if (!removed) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
     writeJson(res, 200, { ok: true });
     return;
@@ -480,6 +517,32 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
+  if (storyProjectRoute && req.method === 'PUT') {
+    validateMutatingRequest(req);
+    const projectId = decodeURIComponent(storyProjectRoute[1]);
+    const current = await storyProjectService.getProject(projectId);
+    if (!current) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+    const body = await readRequestJson(req);
+    const project = await storyProjectService.saveProject({
+      ...current,
+      title: body.title === undefined ? current.title : body.title,
+      description: body.description === undefined ? current.description : body.description
+    });
+    writeJson(res, 200, { project, summary: summarizeStoryProject(project) });
+    return;
+  }
+
+  if (storyProjectRoute && req.method === 'DELETE') {
+    validateMutatingRequest(req);
+    const project = await storyProjectService.deleteProject(decodeURIComponent(storyProjectRoute[1]));
+    if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+    writeJson(res, 200, {
+      ok: true,
+      preservedSessionIds: project.sessionIds
+    });
+    return;
+  }
+
   const storyProjectSessionRoute = url.pathname.match(/^\/api\/story-projects\/([^/]+)\/sessions$/);
   if (storyProjectSessionRoute && req.method === 'POST') {
     validateMutatingRequest(req);
@@ -528,6 +591,29 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
       snapshot: await worldSimulationService.getSnapshot(sessionId, { director })
     });
     return;
+  }
+
+  const lightFrontendMvuRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/light-frontend\/mvu$/);
+  if (lightFrontendMvuRoute && req.method === 'PATCH') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    const session = await getApiSession(sessionService, decodeURIComponent(lightFrontendMvuRoute[1]));
+    try {
+      const current = session.memory?.lightFrontendState || session.config?.lightFrontend?.mvu || {};
+      const next = applyMvuPatch(current, body.patch ?? body.operations, {
+        expectedRevision: body.expectedRevision
+      });
+      session.memory = { ...(session.memory || {}), lightFrontendState: next };
+      session.updatedAt = new Date().toISOString();
+      await sessionService.saveSession(session);
+      writeJson(res, 200, { mvu: next, session: withRuleSystem(session) });
+      return;
+    } catch (error) {
+      if (error.code === 'MVU_REVISION_CONFLICT' || error.message === 'MVU_REVISION_CONFLICT') {
+        throw new ApiError(409, 'MVU_REVISION_CONFLICT', String(error.currentRevision ?? ''));
+      }
+      throw new ApiError(400, error.message || 'INVALID_MVU_PATCH');
+    }
   }
 
   const eventLedgerRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/events$/);
@@ -1577,6 +1663,17 @@ async function commitImport({ assetService, configService, sessionService, resou
   }
   const libraryResult = await resourceLibraryService.savePreview(preview, source, { inspection });
   preview.inspection = libraryResult.inspection;
+  if (preview.kind === 'prompt-preset' || preview.kind === 'prompt-module') {
+    return {
+      preview,
+      applyMode: 'prompt-library',
+      importedWorldBookCount: 0,
+      parsedWorldBookCount: 0,
+      promptModuleCount: libraryResult.resources.length,
+      generationSettings: preview.importData?.promptPreset?.generationSettings || {},
+      libraryResources: libraryResult.resources
+    };
+  }
   const applyToActiveConfig = body.applyToActiveConfig !== false;
   if (!applyToActiveConfig) {
     return {
@@ -1659,6 +1756,7 @@ async function streamChat({ agentService, body, res }) {
       sessionId: body.sessionId || 'main',
       content: body.content,
       targetSpeaker: body.targetSpeaker,
+      hideUserMessage: body.hideUserMessage === true,
       onToken: async (content) => writeSse(res, 'token', { content })
     });
     writeSse(res, 'done', result);
@@ -1695,6 +1793,9 @@ function resolveProviderErrorCode(error) {
   const message = String(error?.message || '');
   if (message.startsWith('PROVIDER_REASONING_ONLY_RESPONSE')) return 'PROVIDER_REASONING_ONLY_RESPONSE';
   if (message === 'PROVIDER_EMPTY_RESPONSE') return 'PROVIDER_EMPTY_RESPONSE';
+  if (/insufficient_user_quota|quota[^\n]*exhaust|额度不足|剩余额度/i.test(message)) {
+    return 'PROVIDER_QUOTA_EXHAUSTED';
+  }
   return 'PROVIDER_ERROR';
 }
 
@@ -1814,9 +1915,10 @@ async function applyContentPack({ configService, sessionService, body, packId, r
       promptModules,
       worldBook,
       characterCard,
+      lightFrontend: structuredClone(pack.lightFrontend || {}),
       characterPresets: Array.isArray(pack.characterPresets) ? structuredClone(pack.characterPresets) : []
     },
-    memory: withPackRuleSystem(pack.memory, pack.ruleSystem),
+    memory: withLightFrontendMemory(withPackRuleSystem(pack.memory, pack.ruleSystem), pack.lightFrontend),
     messages: Array.isArray(session.messages) ? session.messages : [],
     settings: session.settings || {
       recentPairs: 8,
@@ -1862,7 +1964,8 @@ async function createSessionFromContentPack({ sessionService, worldSimulationSer
   const config = {
     characterCard: structuredClone(pack.characterCard || {}),
     worldBook: structuredClone(pack.worldBook || []),
-    promptModules: structuredClone(pack.promptModules || [])
+    promptModules: structuredClone(pack.promptModules || []),
+    lightFrontend: structuredClone(pack.lightFrontend || {})
   };
   const visualPackId = String(
     project?.visualPackId
@@ -1874,7 +1977,7 @@ async function createSessionFromContentPack({ sessionService, worldSimulationSer
     id: body.id,
     title: body.title || pack.sessionTitle || pack.title || '新的故事',
     config,
-    memory: withPackRuleSystem(pack.memory, pack.ruleSystem),
+    memory: withLightFrontendMemory(withPackRuleSystem(pack.memory, pack.ruleSystem), pack.lightFrontend),
     storyProjectId: project?.id || '',
     basePackId: pack.id
   });
@@ -1935,6 +2038,16 @@ function withPackRuleSystem(memory, ruleSystem) {
   return {
     ...structuredClone(memory || {}),
     ruleSystem: structuredClone(ruleSystem)
+  };
+}
+
+function withLightFrontendMemory(memory, lightFrontend) {
+  const runtime = normalizeLightFrontendRuntime(lightFrontend || {});
+  if (!runtime.mvu.enabled) return memory;
+  return {
+    ...memory,
+    lightFrontendBaseline: structuredClone(runtime.mvu),
+    lightFrontendState: structuredClone(runtime.mvu)
   };
 }
 
@@ -2142,7 +2255,19 @@ function matchResourceLibraryResourceRoute(pathname) {
   return { resourceId: decodeURIComponent(match[1]) };
 }
 
-function matchCustomPackDeleteRoute(pathname) {
+function matchResourceLibraryResourceReevaluationRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/reevaluate$/);
+  if (!match) return null;
+  return { resourceId: decodeURIComponent(match[1]) };
+}
+
+function matchResourceLibraryResourceContentRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/content$/);
+  if (!match) return null;
+  return { resourceId: decodeURIComponent(match[1]) };
+}
+
+function matchResourceLibraryPackRoute(pathname) {
   const match = pathname.match(/^\/api\/resource-library\/packs\/([^/]+)$/);
   if (!match) return null;
   return { packId: decodeURIComponent(match[1]) };

@@ -10,10 +10,16 @@
 
 ## 一键启动
 
-双击项目根目录中的 `启动本地角色扮演.command`，或运行：
+双击项目根目录中的 `start-local.command`，或运行：
 
 ```bash
-npm run start:local
+npm start
+```
+
+停止服务可双击 `stop-local.command`，或运行：
+
+```bash
+npm stop
 ```
 
 启动脚本固定使用 `5178`，会识别已运行实例，记录 PID 与日志，并自动打开浏览器：
@@ -60,7 +66,7 @@ npm run release:check
 3. 创建备份后可以恢复，损坏快照会被拒绝。
 4. `/api/health` 返回应用版本和数据版本，且 `ok: true`。
 5. Provider 测试连接成功，失败时响应不泄露 API Key。
-6. `启动本地角色扮演.command` 可以启动或复用 `5178` 实例。
+6. `start-local.command` 可以启动或复用 `5178` 实例，`stop-local.command` 可以停止本项目实例。
 
 ## 自用版边界
 

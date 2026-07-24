@@ -73,6 +73,14 @@ export class StoryProjectService {
     return structuredClone(next);
   }
 
+  async deleteProject(projectId) {
+    const id = validateProjectId(projectId);
+    const current = await this.getProject(id);
+    if (!current) return null;
+    await this.store.remove(projectPath(id));
+    return structuredClone(current);
+  }
+
   async attachSession(projectId, sessionId) {
     const project = await this.getProject(projectId);
     if (!project) throw new Error('STORY_PROJECT_NOT_FOUND');

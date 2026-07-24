@@ -8,10 +8,13 @@
  *   骰子：{{roll:d6}}  {{roll:3d20+5}}  {{roll:d%}}
  *   时间：{{time}} {{date}} {{datetime}} {{timestamp}}
  *   状态：{{message_count}} {{word_count}} {{last_user_message}}
+ *   轻前端状态：{{getvar::relationships.shen}} {{globalvar::clues}}
  *   引用：{{get_worldbook:title:落雁夜市}}
  *   数组随机：{{pick:array_name}}
  *   模板：{{template:name}}
  */
+
+import { renderSafeTemplate } from '../compat/lightFrontendRuntime.js';
 
 const MACRO_REGEX = /\{\{([^{}]+)\}\}/g;
 
@@ -26,7 +29,8 @@ export function expandMacros(text, context = {}) {
   // 防止模板递归死循环
   const depth = Number(context._depth || 0);
   if (depth > 5) return text;
-  return text.replace(MACRO_REGEX, (full, rawBody) => {
+  const safelyRendered = renderSafeTemplate(text, context, { unsupported: 'strip' });
+  return safelyRendered.replace(MACRO_REGEX, (full, rawBody) => {
     const body = String(rawBody || '').trim();
     if (!body) return full;
     try {
@@ -99,6 +103,12 @@ function resolveMacro(body, context) {
     return last?.content || '';
   }
 
+  // —— 社区轻前端只读变量 ——
+  if (lower.startsWith('getvar::') || lower.startsWith('globalvar::')) {
+    const separator = body.indexOf('::');
+    return resolveLightFrontendState(body.slice(separator + 2), context);
+  }
+
   // —— 引用世界书 ——
   if (lower.startsWith('get_worldbook:')) {
     return resolveGetWorldbook(body.slice('get_worldbook:'.length), context);
@@ -115,6 +125,20 @@ function resolveMacro(body, context) {
   }
 
   return null;
+}
+
+function resolveLightFrontendState(path, context) {
+  const source = context.lightFrontendState ?? context.mvu ?? {};
+  const values = isPlainObject(source?.values) ? source.values : isPlainObject(source) ? source : {};
+  const parts = String(path || '').replace(/^\//, '').split(/[./]/).map((part) => part.trim()).filter(Boolean);
+  if (!parts.length || parts.length > 8 || parts.some((part) => ['__proto__', 'prototype', 'constructor'].includes(part))) return '';
+  let current = values;
+  for (const part of parts) {
+    if ((!isPlainObject(current) && !Array.isArray(current)) || !Object.hasOwn(current, part)) return '';
+    current = current[part];
+  }
+  if (current === null || current === undefined) return '';
+  return typeof current === 'object' ? JSON.stringify(current) : String(current);
 }
 
 function resolveRandom(arg) {

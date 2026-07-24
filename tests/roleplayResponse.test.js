@@ -58,6 +58,9 @@ test('partial protocol prefixes and hidden analysis do not leak during streaming
     parseRoleplayResponse('<descriptive_analysis>内部推演</descriptive_analysis><plot>城门').content,
     '城门'
   );
+  assert.equal(parseRoleplayResponse('城门外雨声渐急。\n```lra-mvu-patch\n{"operations":').content, '城门外雨声渐急。');
+  assert.equal(parseRoleplayResponse('城门外雨声渐急。\n```lra-mvu').content, '城门外雨声渐急。');
+  assert.equal(parseRoleplayResponse('<lra-mvu').content, '');
 });
 
 test('frontend legacy parser recovers panels from saved raw messages', () => {

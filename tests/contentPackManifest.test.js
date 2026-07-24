@@ -16,6 +16,14 @@ test('content pack v1 bundle is self-contained and preserves story systems', () 
   assert.equal(restored.characterCard.name, '沈观澜');
   assert.equal(restored.worldBook.length, 1);
   assert.equal(restored.ruleSystem.id, 'rain-night-rules');
+  assert.equal(restored.lightFrontend.quickReplies[0].label, '查看雨势');
+  assert.equal(restored.lightFrontend.panels[0].title, '线索档案');
+  assert.equal(restored.lightFrontend.mvu.values.clueCount, 0);
+  assert.ok(bundle.manifest.capabilities.includes('quick-replies'));
+  assert.ok(bundle.manifest.capabilities.includes('sidebar-panels'));
+  assert.ok(bundle.manifest.capabilities.includes('mvu-state'));
+  assert.ok(bundle.manifest.capabilities.includes('safe-ejs-template'));
+  assert.ok(bundle.manifest.capabilities.includes('community-light-adapters'));
   assert.ok(bundle.manifest.capabilities.includes('world-simulation'));
 });
 
@@ -60,6 +68,17 @@ function createPack() {
     }],
     worldBook: [{ id: 'rain-lore', title: '听雨楼', keywords: ['听雨楼'], content: '听雨楼不问来路。' }],
     promptModules: [{ id: 'rain-prompt', title: '雨夜文风', content: '克制叙事。', enabled: true }],
+    lightFrontend: {
+      quickReplies: [{ id: 'inspect-rain', label: '查看雨势', content: '<%= char %>抬头查看雨势' }],
+      panels: [{ title: '线索档案', fields: [{ label: '数量', path: 'clueCount' }] }],
+      adapters: [{
+        id: 'tavern-helper',
+        mode: 'declarative-partial',
+        mappedCapabilities: ['quick-replies'],
+        unsupportedCapabilities: []
+      }],
+      mvu: { values: { clueCount: 0 } }
+    },
     memory: { memoryCards: [] },
     ruleSystem: { id: 'rain-night-rules', title: '听雨规则', boundary: '仙侠悬案', panels: [] }
   };

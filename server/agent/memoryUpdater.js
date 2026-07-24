@@ -1,6 +1,7 @@
 import { appendLedgerEvent, createTurnLedgerEvent } from '../simulation/eventLedger.js';
 import { createSimulationState } from '../simulation/npcSimulation.js';
 import { replayActionHistory } from '../simulation/worldStateArbiter.js';
+import { replayMvuHistory } from '../compat/mvuProtocol.js';
 
 export function createDefaultMemory() {
   const worldState = {
@@ -55,6 +56,7 @@ export function rebuildMemoryFromMessages({ memory, messages }) {
   const previous = memory || createDefaultMemory();
   const safeMessages = Array.isArray(messages) ? messages.filter((message) => !message.excluded) : [];
   const replayed = replayActionHistory({ memory: previous, messages: safeMessages });
+  const mvuReplay = replayMvuHistory({ memory: previous, messages: safeMessages });
   const persistentEvents = (Array.isArray(previous.eventLedger) ? previous.eventLedger : [])
     .filter((event) => event?.kind && event.kind !== 'turn');
   const next = {
@@ -73,7 +75,12 @@ export function rebuildMemoryFromMessages({ memory, messages }) {
       : structuredClone(createDefaultMemory().narrativeState),
     consecutiveSummaryFailures: Number(previous.consecutiveSummaryFailures || 0),
     lastSummaryError: String(previous.lastSummaryError || ''),
-    lastFactExtractionError: String(previous.lastFactExtractionError || '')
+    lastFactExtractionError: String(previous.lastFactExtractionError || ''),
+    ...(mvuReplay ? {
+      lightFrontendBaseline: structuredClone(mvuReplay.baseline),
+      lightFrontendState: structuredClone(mvuReplay.state),
+      lightFrontendReplayErrors: structuredClone(mvuReplay.errors)
+    } : {})
   };
 
   for (let index = 0; index < safeMessages.length - 1; index += 1) {

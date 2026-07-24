@@ -24,26 +24,40 @@ const requiredFiles = [
   'server/simulation/worldStateArbiter.js',
   'server/resources/resourceAdapters.js',
   'server/resources/resourceEvaluator.js',
+  'server/compat/lightFrontendRuntime.js',
+  'server/compat/mvuProtocol.js',
   'server/content/contentPackManifest.js',
   'server/plugins/pluginManifest.js',
   'server/services/pluginRegistryService.js',
   'scripts/start-local.sh',
-  '启动本地角色扮演.command',
+  'scripts/stop-local.sh',
+  'start-local.command',
+  'stop-local.command',
   'docs/release-v0.2.md',
   'docs/release-v0.2.1.md',
   'docs/release-v0.2.2.md',
   'docs/release-v0.4.md',
   'docs/release-v0.4.1-rc.1.md',
+  'docs/release-v0.5.0-rc.1.md',
   'docs/action-protocol-v1.md',
   'docs/content-pack-spec-v1.md',
-  'docs/plugin-manifest-spec-v1.md'
+  'docs/plugin-manifest-spec-v1.md',
+  'docs/light-frontend-runtime-v1.md'
 ];
 
 assert(nodeMajor >= MIN_NODE_MAJOR, `Node.js ${MIN_NODE_MAJOR}+ required; current ${process.versions.node}`);
 assert(packageJson.version === APP_VERSION, `package version ${packageJson.version} does not match ${APP_VERSION}`);
+assert(packageJson.scripts?.start === 'zsh scripts/start-local.sh', 'npm start must use the managed start script');
+assert(packageJson.scripts?.stop === 'zsh scripts/stop-local.sh', 'npm stop must use the managed stop script');
+assert(packageJson.scripts?.restart === 'zsh scripts/stop-local.sh && zsh scripts/start-local.sh', 'npm restart must use the managed lifecycle scripts');
 for (const relativePath of requiredFiles) await access(path.join(rootDir, relativePath));
 
-for (const relativePath of ['scripts/start-local.sh', '启动本地角色扮演.command']) {
+for (const relativePath of [
+  'scripts/start-local.sh',
+  'scripts/stop-local.sh',
+  'start-local.command',
+  'stop-local.command'
+]) {
   const info = await stat(path.join(rootDir, relativePath));
   assert((info.mode & 0o111) !== 0, `${relativePath} is not executable`);
 }

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>本地角色扮演 Agent</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/styles.css?v=20260720-2">
+    <link rel="stylesheet" href="/styles.css?v=20260722-2">
   </head>
   <body>
     <div class="app-shell">
@@ -58,9 +58,8 @@
       <section id="story-launcher" class="story-launcher is-hidden" aria-labelledby="story-launcher-title" aria-hidden="true">
         <header class="story-launcher-header">
           <div class="story-launcher-brand">
-            <span>LOCAL STORY ENGINE</span>
             <h2 id="story-launcher-title">剧本书架</h2>
-            <p>先选定世界与规则，再塑造主角、挑选天命并进入第一幕。</p>
+            <p>选择世界与规则，或回到已经开始的故事。</p>
           </div>
           <div class="story-launcher-header-actions">
             <button id="close-story-launcher" class="icon-button" type="button" aria-label="返回当前工作台" title="返回当前工作台">×</button>
@@ -70,8 +69,6 @@
         <div class="story-launcher-layout">
           <aside class="story-library-rail" aria-label="最近故事">
             <section id="story-continue-panel" class="story-continue-panel" hidden>
-              <span class="story-section-kicker">CONTINUE</span>
-              <h3>继续上次故事</h3>
               <strong id="story-continue-title">最近会话</strong>
               <p id="story-continue-meta">正在读取进度...</p>
               <button id="continue-last-story" class="primary-button" type="button">回到故事</button>
@@ -79,10 +76,7 @@
 
             <section class="story-projects-section">
               <div class="story-section-heading">
-                <div>
-                  <span class="story-section-kicker">MY STORIES</span>
-                  <h3>我的故事</h3>
-                </div>
+                <h3>我的故事</h3>
                 <span id="story-project-count">0</span>
               </div>
               <div id="story-project-list" class="story-project-list">
@@ -94,9 +88,8 @@
           <main class="story-script-catalog">
             <header class="story-catalog-header">
               <div>
-                <span class="story-section-kicker">NEW STORY</span>
-                <h3>选择基础剧本</h3>
-                <p>内容包决定世界规则、角色边界与叙事主航道；舞台背景会随剧本联动。</p>
+                <h3>选择剧本</h3>
+                <p>剧本决定世界规则、角色边界与叙事主航道。</p>
               </div>
               <div class="story-catalog-tools">
                 <label class="story-search">
@@ -128,9 +121,8 @@
             <div id="story-pack-grid" class="story-pack-grid" aria-live="polite"></div>
             <section class="story-custom-entry" aria-labelledby="story-custom-entry-title">
               <div>
-                <span class="story-section-kicker">CUSTOM WORLD</span>
-                <h4 id="story-custom-entry-title">没有合适的剧本？</h4>
-                <p>从题材基线、角色卡和世界书组装一个独立的新剧本。</p>
+                <h4 id="story-custom-entry-title">创建自定义剧本</h4>
+                <p>没有合适的剧本时，从题材基线、角色卡和世界书开始组装。</p>
               </div>
               <button id="open-story-custom-dialog" class="story-custom-entry-action" type="button">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -157,12 +149,19 @@
             <p>统一管理角色卡、世界书、预设与内容包；原始素材与故事存档彼此独立。</p>
           </div>
           <div class="asset-center-header-actions">
-            <button id="asset-center-import" class="asset-secondary-button" type="button">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M12 3v12"></path><path d="m7 8 5-5 5 5"></path><path d="M5 21h14"></path>
-              </svg>
-              导入素材
-            </button>
+            <details id="asset-center-import" class="asset-import-menu">
+              <summary class="asset-secondary-button">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M12 3v12"></path><path d="m7 8 5-5 5 5"></path><path d="M5 21h14"></path>
+                </svg>
+                导入
+              </summary>
+              <div class="asset-import-popover" role="menu" aria-label="选择导入的素材类型">
+                <button type="button" role="menuitem" data-asset-import-kind="character"><strong>角色卡</strong><span>PNG / JSON</span></button>
+                <button type="button" role="menuitem" data-asset-import-kind="worldbook"><strong>世界书</strong><span>JSON / YAML / TXT</span></button>
+                <button type="button" role="menuitem" data-asset-import-kind="prompt"><strong>预设 / Prompt</strong><span>JSON / YAML / TXT</span></button>
+              </div>
+            </details>
             <button id="asset-center-refresh" class="asset-secondary-button" type="button" aria-label="刷新素材索引" title="刷新素材索引">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"></path><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"></path>
@@ -263,9 +262,9 @@
         <div class="story-custom-dialog-shell">
           <header class="story-custom-dialog-header">
             <div class="story-custom-copy">
-              <span class="story-section-kicker">CUSTOM WORLD</span>
               <h2 id="story-custom-dialog-title">创建自定义剧本</h2>
               <p>可以继承完整内容包，也可以从原创空白基线开始，再加入角色卡与世界书。</p>
+              <div id="story-custom-library-summary" class="story-custom-library-summary" aria-live="polite">正在读取素材库...</div>
             </div>
             <div class="story-custom-dialog-header-actions">
               <button id="story-import-trigger" class="story-import-trigger" type="button">
@@ -275,85 +274,72 @@
                   <path d="M5 21h14a2 2 0 0 0 2-2v-4"></path>
                   <path d="M3 15v4a2 2 0 0 0 2 2"></path>
                 </svg>
-                <span>导入新素材</span>
+                <span>素材库没有？导入</span>
               </button>
               <input id="story-import-file" type="file" accept=".json,.png,.yaml,.yml,.txt,application/json,image/png,text/yaml,text/plain" hidden>
               <button id="close-story-custom-dialog" class="icon-button" type="button" aria-label="关闭自定义剧本创建" title="关闭">×</button>
             </div>
           </header>
           <div class="story-custom-dialog-body">
+            <nav id="story-custom-steps" class="story-custom-steps" aria-label="剧本创建步骤">
+              <button type="button" data-story-custom-step="baseline" aria-current="step"><b>1</b><span>世界基线</span></button>
+              <button type="button" data-story-custom-step="character"><b>2</b><span>角色卡</span></button>
+              <button type="button" data-story-custom-step="worldbook"><b>3</b><span>世界书</span></button>
+              <button type="button" data-story-custom-step="prompt"><b>4</b><span>预设</span></button>
+              <button type="button" data-story-custom-step="review"><b>5</b><span>校验确认</span></button>
+            </nav>
             <div class="story-custom-builder">
               <div class="story-custom-form">
-                <label class="story-custom-field">
-                  <span>基线来源 <small>可选完整内容包或原创</small></span>
-                  <select id="story-import-base" aria-label="自定义剧本题材基线"></select>
-                </label>
-                <label class="story-custom-field">
-                  <span>故事名称</span>
-                  <input id="story-custom-title" type="text" maxlength="80" autocomplete="off" placeholder="例如：大乾风华录 · 江湖卷">
-                </label>
-                <label class="story-custom-field">
-                  <span>主角 / 角色卡 <small>可沿用基线</small></span>
-                  <select id="story-custom-character" aria-label="自定义剧本角色卡"></select>
-                </label>
-                <label id="story-custom-character-background-option" class="story-character-background-option" hidden>
-                  <input id="story-custom-character-background" type="checkbox" checked>
-                  <img id="story-custom-character-background-preview" alt="所选角色立绘预览">
-                  <span>
-                    <strong>使用角色立绘作为舞台背景</strong>
-                    <small>竖版图片会采用人物聚焦构图；进入剧本后仍可切换系统背景。</small>
-                  </span>
-                </label>
-                <label class="story-custom-field">
-                  <span>世界书合并 <small>创建前会检查冲突</small></span>
-                  <select id="story-custom-worldbook-mode" aria-label="世界书合并策略">
-                    <option value="smart">智能合并（推荐）</option>
-                    <option value="base-first">基线优先</option>
-                    <option value="resources-only">仅使用所选素材</option>
-                  </select>
-                </label>
-                <section id="story-custom-baseline-fields" class="story-custom-baseline-fields" aria-labelledby="story-custom-baseline-title" hidden>
-                  <header>
-                    <div>
-                      <span class="story-section-kicker">ORIGINAL BASELINE</span>
-                      <h5 id="story-custom-baseline-title">原创世界基线</h5>
-                    </div>
-                    <label class="story-custom-field story-custom-template-field">
-                      <span>起草模板</span>
-                      <select id="story-custom-baseline-template" aria-label="原创世界起草模板"></select>
-                    </label>
+                <section class="story-custom-step-panel" data-story-custom-panel="baseline">
+                  <header class="story-custom-step-heading">
+                    <div><h4>确定世界与故事边界</h4></div>
+                    <p>继承完整内容包，或从空白世界开始。基线决定力量体系、时代与叙事底线。</p>
                   </header>
-                  <div class="story-custom-baseline-grid">
+                  <div class="story-custom-panel-grid">
                     <label class="story-custom-field">
-                      <span>世界名称</span>
-                      <input id="story-custom-world-name" type="text" maxlength="80" autocomplete="off" placeholder="例如：九州残卷">
-                    </label>
-                    <label class="story-custom-field">
-                      <span>类型与时代</span>
-                      <input id="story-custom-genre" type="text" maxlength="100" autocomplete="off" placeholder="例如：低魔武侠、架空王朝末年">
+                      <span>基线来源 <small>可选完整内容包或原创</small></span>
+                      <select id="story-import-base" aria-label="自定义剧本题材基线"></select>
                     </label>
                     <label class="story-custom-field">
-                      <span>舞台氛围</span>
-                      <select id="story-custom-visual-pack" aria-label="原创剧本舞台氛围"></select>
+                      <span>故事名称</span>
+                      <input id="story-custom-title" type="text" maxlength="80" autocomplete="off" placeholder="例如：大乾风华录 · 江湖卷">
                     </label>
-                    <label class="story-custom-field story-custom-baseline-wide">
-                      <span>世界总纲 <small>世界如何运行、主要矛盾是什么</small></span>
-                      <textarea id="story-custom-premise" rows="4" maxlength="5000" placeholder="写下时代、地理、力量边界、社会结构与核心冲突。"></textarea>
-                    </label>
-                    <label class="story-custom-field">
-                      <span>叙事风格</span>
-                      <textarea id="story-custom-prose-style" rows="4" maxlength="2500" placeholder="视角、节奏、对白和描写偏好。"></textarea>
-                    </label>
-                    <label class="story-custom-field">
-                      <span>不可违背规则</span>
-                      <textarea id="story-custom-hard-rules" rows="4" maxlength="2500" placeholder="列出力量上限、禁用设定和必须保持的因果规则。"></textarea>
-                    </label>
+                    <section id="story-custom-baseline-fields" class="story-custom-baseline-fields" aria-labelledby="story-custom-baseline-title" hidden>
+                      <header>
+                        <div><h5 id="story-custom-baseline-title">原创世界基线</h5></div>
+                        <label class="story-custom-field story-custom-template-field"><span>起草模板</span><select id="story-custom-baseline-template" aria-label="原创世界起草模板"></select></label>
+                      </header>
+                      <div class="story-custom-baseline-grid">
+                        <label class="story-custom-field"><span>世界名称</span><input id="story-custom-world-name" type="text" maxlength="80" autocomplete="off" placeholder="例如：九州残卷"></label>
+                        <label class="story-custom-field"><span>类型与时代</span><input id="story-custom-genre" type="text" maxlength="100" autocomplete="off" placeholder="例如：低魔武侠、架空王朝末年"></label>
+                        <label class="story-custom-field"><span>舞台氛围</span><select id="story-custom-visual-pack" aria-label="原创剧本舞台氛围"></select></label>
+                        <label class="story-custom-field story-custom-baseline-wide"><span>世界总纲 <small>世界如何运行、主要矛盾是什么</small></span><textarea id="story-custom-premise" rows="4" maxlength="5000" placeholder="写下时代、地理、力量边界、社会结构与核心冲突。"></textarea></label>
+                        <label class="story-custom-field"><span>叙事风格</span><textarea id="story-custom-prose-style" rows="4" maxlength="2500" placeholder="视角、节奏、对白和描写偏好。"></textarea></label>
+                        <label class="story-custom-field"><span>不可违背规则</span><textarea id="story-custom-hard-rules" rows="4" maxlength="2500" placeholder="列出力量上限、禁用设定和必须保持的因果规则。"></textarea></label>
+                      </div>
+                    </section>
                   </div>
                 </section>
-                <fieldset class="story-custom-worldbooks">
-                  <legend>补充世界书 <small>角色卡附带设定会自动勾选，仍可取消</small></legend>
-                  <div id="story-custom-worldbook-list" class="story-custom-resource-list"></div>
-                </fieldset>
+                <section class="story-custom-step-panel" data-story-custom-panel="character" hidden>
+                  <header class="story-custom-step-heading"><div><h4>选择主角与立绘</h4></div><p>可沿用剧本角色，也可加载素材库角色卡。随卡世界书会在下一步自动标记。</p></header>
+                  <div class="story-custom-panel-grid">
+                    <label class="story-custom-field story-custom-panel-wide"><span>主角 / 角色卡 <small>可沿用基线或进入开局时创建</small></span><select id="story-custom-character" aria-label="自定义剧本角色卡"></select></label>
+                    <label id="story-custom-character-background-option" class="story-character-background-option story-custom-panel-wide" hidden><input id="story-custom-character-background" type="checkbox" checked><img id="story-custom-character-background-preview" alt="所选角色立绘预览"><span><strong>使用角色立绘作为舞台背景</strong><small>竖版图片会采用人物聚焦构图；进入剧本后仍可切换系统背景。</small></span></label>
+                  </div>
+                </section>
+                <section class="story-custom-step-panel" data-story-custom-panel="worldbook" hidden>
+                  <header class="story-custom-step-heading"><div><h4>装配世界书</h4></div><p>决定继承、替换和补充关系。系统会检查同名、常驻规则与触发词重叠。</p></header>
+                  <label class="story-custom-field"><span>世界书合并 <small>创建前会检查冲突</small></span><select id="story-custom-worldbook-mode" aria-label="世界书合并策略"><option value="smart">智能合并（推荐）</option><option value="base-first">基线优先</option><option value="resources-only">仅使用所选素材</option></select></label>
+                  <fieldset class="story-custom-worldbooks"><legend>补充世界书 <small>角色卡附带设定会自动勾选，仍可取消</small></legend><div id="story-custom-worldbook-list" class="story-custom-resource-list"></div></fieldset>
+                </section>
+                <section class="story-custom-step-panel" data-story-custom-panel="prompt" hidden>
+                  <header class="story-custom-step-heading"><div><h4>选择叙事预设</h4></div><p>预设控制行文、节奏和角色约束。基线规则始终先于补充预设，避免静默覆盖世界边界。</p></header>
+                  <fieldset class="story-custom-worldbooks"><legend>补充 Prompt / 预设 <small>不选择时沿用题材基线</small></legend><div id="story-custom-prompt-list" class="story-custom-resource-list"></div></fieldset>
+                </section>
+                <section class="story-custom-step-panel" data-story-custom-panel="review" hidden>
+                  <header class="story-custom-step-heading"><div><h4>核对最终创作栈</h4></div><p>确认实际生效的角色、世界书、预设、扩展依赖与上下文预算后再创建。</p></header>
+                  <div id="story-custom-stack-preview" class="story-custom-stack-preview"></div>
+                </section>
               </div>
               <aside class="story-custom-readiness" aria-labelledby="story-custom-readiness-title">
                 <div class="story-readiness-heading">
@@ -373,10 +359,34 @@
             <output id="story-custom-status" class="status-text" aria-live="polite">当前选择会生成新的剧本工程，不改动已有故事。</output>
             <div class="story-custom-dialog-actions">
               <button id="cancel-story-custom-dialog" class="ghost-button" type="button">取消</button>
+              <button id="story-custom-prev" class="ghost-button" type="button" hidden>上一步</button>
+              <button id="story-custom-next" class="primary-button" type="button">下一步</button>
               <button id="story-custom-create" class="story-custom-create" type="button">创建剧本并进入</button>
             </div>
           </footer>
         </div>
+      </dialog>
+
+      <dialog id="story-edit-dialog" class="dialog story-edit-dialog" aria-labelledby="story-edit-dialog-title">
+        <form id="story-edit-form" class="form-grid">
+          <header class="story-edit-header">
+            <h2 id="story-edit-dialog-title">编辑故事</h2>
+            <button id="close-story-edit-dialog" class="icon-button" type="button" aria-label="关闭编辑" title="关闭">×</button>
+          </header>
+          <label>
+            <span>名称</span>
+            <input id="story-edit-title" type="text" maxlength="100" required autocomplete="off">
+          </label>
+          <label>
+            <span>说明</span>
+            <textarea id="story-edit-description" rows="4" maxlength="500" placeholder="简要说明这一剧本或故事的方向"></textarea>
+          </label>
+          <output id="story-edit-status" class="status-text" aria-live="polite"></output>
+          <div class="dialog-actions story-edit-actions">
+            <button id="cancel-story-edit" class="ghost-button" type="button">取消</button>
+            <button class="primary-button" type="submit">保存修改</button>
+          </div>
+        </form>
       </dialog>
 
       <button id="exit-immersive-mode" class="exit-immersive-button" type="button" aria-label="退出沉浸模式">退出沉浸</button>
@@ -1361,6 +1371,7 @@
                 <div><b>{{time}}</b> / <b>{{date}}</b> / <b>{{datetime}}</b> / <b>{{timestamp}}</b></div>
                 <div><b>{{message_count}}</b> / <b>{{word_count}}</b> / <b>{{last_user_message}}</b></div>
                 <div><b>{{get_worldbook:title:落雁夜市}}</b> — 按字段引用世界书条目</div>
+                <div><b>{{getvar::relationships.shen}}</b> — 只读引用当前会话的轻前端 / MVU 状态</div>
                 <div><b>{{pick:数组名}}</b> — 从自定义数组随机选（在测试器中配置）</div>
                 <div><b>{{template:模板名}}</b> — 调用下方保存的模板（可嵌套）</div>
               </div>
@@ -1472,6 +1483,6 @@
         </footer>
       </div>
     </dialog>
-    <script type="module" src="/app.js?v=20260720-2"></script>
+    <script type="module" src="/app.js?v=20260722-3"></script>
   </body>
 </html>

@@ -1,3 +1,8 @@
+import {
+  aggregateCommunityCompatibility,
+  scanCommunityDependencies
+} from './communityDependencyScanner.js';
+
 const DIMENSION_DEFINITIONS = [
   { id: 'structure', label: '结构完整', weight: 30 },
   { id: 'activation', label: '运行可用', weight: 30 },
@@ -15,6 +20,7 @@ export function evaluateResourceCandidate(candidate, {
   const missingFields = [];
   const blockingIssues = [];
   const riskFlags = detectExecutionRisks(candidate?.payload);
+  const communityCompatibility = scanCommunityDependencies(candidate?.payload, { kind: candidate?.kind });
   const estimatedTokens = estimateResourceTokens(candidate?.payload);
   const context = {
     candidate,
@@ -55,6 +61,11 @@ export function evaluateResourceCandidate(candidate, {
     warnings.push({ code: 'SAME_TITLE_DIFFERENT_CONTENT', message: '素材库中存在同名不同内容，将作为独立版本保留。' });
   }
 
+  scores.activation = clampScore(
+    Number(scores.activation || 0)
+      - Math.min(48, communityCompatibility.counts.missing * 18)
+      - Math.min(24, communityCompatibility.counts.degraded * 8)
+  );
   scores.consistency = clampScore(
     Number(scores.consistency || 0)
       - Math.min(36, sameTitles * 18)
@@ -85,12 +96,14 @@ export function evaluateResourceCandidate(candidate, {
     missingFields,
     blockingIssues,
     conflicts,
-    riskFlags
+    riskFlags,
+    communityCompatibility
   };
 }
 
 export function aggregateResourceEvaluations(evaluations = []) {
   const items = evaluations.filter(Boolean);
+  const communityCompatibility = aggregateCommunityCompatibility(items.map((item) => item.communityCompatibility));
   const dimensions = DIMENSION_DEFINITIONS.map((definition) => {
     const matching = items
       .flatMap((item) => item.dimensions || [])
@@ -117,7 +130,8 @@ export function aggregateResourceEvaluations(evaluations = []) {
     blockingCount,
     warningCount: items.reduce((sum, item) => sum + (item.warnings?.length || 0), 0),
     conflictCount: items.reduce((sum, item) => sum + (item.conflicts?.length || 0), 0),
-    riskCount: items.reduce((sum, item) => sum + (item.riskFlags?.length || 0), 0)
+    riskCount: items.reduce((sum, item) => sum + (item.riskFlags?.length || 0), 0),
+    communityCompatibility
   };
 }
 

@@ -174,6 +174,8 @@ test('story bookshelf starts new projects before entering the guided opening', a
   assert.match(html, /id="story-import-trigger"/);
   assert.match(html, /id="story-import-file"/);
   assert.match(html, /id="story-custom-title"/);
+  assert.match(html, /id="story-custom-library-summary"/);
+  assert.match(html, /素材库没有？导入/);
   assert.match(html, /id="story-custom-character"/);
   assert.match(html, /id="story-custom-character-background"/);
   assert.match(html, /id="story-custom-character-background-preview"/);
@@ -182,12 +184,21 @@ test('story bookshelf starts new projects before entering the guided opening', a
   assert.match(html, /id="story-custom-baseline-template"/);
   assert.match(html, /id="story-custom-premise"/);
   assert.match(html, /id="story-custom-worldbook-list"/);
+  assert.match(html, /id="story-custom-prompt-list"/);
+  assert.match(html, /id="story-custom-steps"/);
+  assert.match(html, /data-story-custom-step="review"/);
+  assert.match(html, /id="story-custom-stack-preview"/);
+  assert.match(html, /id="story-custom-next"/);
+  assert.match(html, /id="story-custom-prev"/);
   assert.match(html, /id="story-custom-checklist"/);
   assert.match(html, /id="story-custom-conflicts"/);
   assert.match(html, /id="story-custom-create"/);
+  assert.match(html, /id="story-edit-dialog"/);
+  assert.match(html, /id="story-edit-form"/);
   assert.match(html, /创建自定义剧本/);
   assert.match(html, /id="open-advanced-session"/);
-  assert.match(html, /先选定世界与规则，再塑造主角、挑选天命并进入第一幕/);
+  assert.match(html, /选择世界与规则，或回到已经开始的故事/);
+  assert.doesNotMatch(html, /LOCAL STORY ENGINE|NEW STORY|STEP 01/);
   assert.ok(
     html.indexOf('id="story-pack-grid"') < html.indexOf('id="open-story-custom-dialog"'),
     'the installed script catalog should appear before the custom story entry'
@@ -204,6 +215,8 @@ test('story bookshelf starts new projects before entering the guided opening', a
   assert.match(app, /function renderStoryProjects/);
   assert.match(app, /function renderStoryImportBaseOptions/);
   assert.match(app, /function renderCustomStoryBuilder/);
+  assert.match(app, /function setCustomStoryStep/);
+  assert.match(app, /function renderCustomStoryStackPreview/);
   assert.match(app, /function renderCustomBaselineEditor/);
   assert.match(app, /function getCompanionWorldBooks/);
   assert.match(app, /function scheduleCustomStoryInspection/);
@@ -216,17 +229,32 @@ test('story bookshelf starts new projects before entering the guided opening', a
   assert.match(app, /function stageStoryResourcesFromCommittedImport/);
   assert.match(app, /async function createStoryFromCommittedImport/);
   assert.match(app, /worldBookResourceIds: worldBooks\.map/);
-  assert.match(app, /includeBaseContent: true/);
+  assert.match(app, /promptResourceIds: prompts\.map/);
+  assert.match(app, /includeBaseContent: draft\.creationMode !== STORY_IMPORT_MODES\.INDEPENDENT/);
+  assert.match(app, /function createStoryImportRouteSection/);
+  assert.match(css, /\.import-story-route-choices\s*\{/);
   assert.match(app, /async function startStoryFromPack/);
   assert.match(app, /\/api\/story-projects\/\$\{encodeURIComponent\(projectPayload\.project\.id\)\}\/sessions/);
   assert.match(app, /async function continueStoryProject/);
+  assert.match(app, /function openStoryEditDialog/);
+  assert.match(app, /async function saveStoryEdit/);
+  assert.match(app, /async function deleteStoryProject/);
+  assert.match(app, /async function deleteStoryPack/);
+  assert.match(app, /dataset\.editStoryProject/);
+  assert.match(app, /dataset\.deleteStoryPack/);
   assert.match(app, /initializeStoryLauncherVisibility/);
   assert.match(app, /backgroundImage: stageBackground\?\.url/);
+  assert.match(app, /boundPack\?\.custom === true[\s\S]*boundPack\.openingTemplate/);
+  assert.match(app, /Array\.isArray\(field\?\.values\)[\s\S]*return randomFrom\(scopedValues\)/);
+  assert.match(app, /const fieldDefault = String\(field\?\.defaultValue \|\| ''\)\.trim\(\)/);
 
   assert.match(css, /\.story-launcher\s*\{/);
   assert.match(css, /\.story-launcher-layout\s*\{[\s\S]*grid-template-columns:/);
   assert.match(css, /\.story-pack-grid\s*\{[\s\S]*overflow-y:\s*auto/);
   assert.match(css, /\.story-custom-builder\s*\{[\s\S]*grid-template-columns:/);
+  assert.match(css, /\.story-custom-steps\s*\{[\s\S]*grid-template-columns:/);
+  assert.match(css, /\.story-custom-step-panel\[hidden\]\s*\{[\s\S]*display:\s*none/);
+  assert.match(css, /\.story-custom-stack-preview\s*\{/);
   assert.match(css, /\.story-custom-entry\s*\{/);
   assert.match(css, /\.story-custom-dialog\s*\{/);
   assert.match(css, /\.story-custom-dialog::backdrop\s*\{/);
@@ -235,10 +263,14 @@ test('story bookshelf starts new projects before entering the guided opening', a
   assert.match(css, /\.story-custom-baseline-fields\s*\{/);
   assert.match(css, /\.story-character-background-option\s*\{/);
   assert.match(css, /\.story-custom-conflicts\s*\{/);
+  assert.match(css, /\.story-custom-library-summary\s*\{/);
   assert.match(css, /\.story-category-filter\s*\{/);
   assert.match(css, /\.story-pack-grid\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(css, /\.story-pack-grid\.is-list-view\s*\{[\s\S]*grid-template-columns:\s*1fr/);
   assert.match(css, /\.story-script-card\s*\{[\s\S]*background-image:\s*var\(--story-card-image\)/);
+  assert.match(css, /\.story-project-actions\s*\{/);
+  assert.match(css, /\.story-card-manage\s*\{/);
+  assert.match(css, /\.story-edit-dialog\s*\{/);
   assert.match(css, /@media \(max-width: 820px\)[\s\S]*\.story-launcher\s*\{[\s\S]*overflow-y:\s*auto/);
   assert.match(css, /@media \(max-width: 820px\)[\s\S]*\.story-pack-grid\s*\{[\s\S]*overflow:\s*visible/);
   assert.match(css, /@media \(max-width: 620px\)[\s\S]*\.story-pack-grid\s*\{[\s\S]*grid-template-columns:\s*1fr/);
@@ -405,12 +437,16 @@ test('v0.2.2 exposes versioned content packs and declarative plugin adapters in 
   assert.match(app, /安装内容包/);
   assert.match(app, /importApplyOption\.hidden = isPackageImport/);
   assert.match(app, /className = 'import-dependency-list'/);
+  assert.match(app, /createCommunityCompatibilitySection/);
+  assert.match(app, /communityCompatibility\.label/);
 
   assert.match(css, /\.resource-view-switch\s*\{[\s\S]*grid-template-columns:\s*repeat\(4,/);
   assert.match(css, /\.resource-extensions\s*\{/);
   assert.match(css, /\.plugin-registry-item\s*\{/);
   assert.match(css, /\.adapter-registry-row\s*\{/);
   assert.match(css, /\.import-dependency-list\s*\{/);
+  assert.match(css, /\.import-community-compatibility\s*\{/);
+  assert.match(css, /\.import-community-item\s*\{/);
   assert.match(css, /\.import-apply-option\[hidden\]\s*\{[\s\S]*display:\s*none;/);
 });
 
@@ -519,6 +555,7 @@ test('inspector controls stay usable in narrow drawers', async () => {
 test('modern workbench composer keeps tools in compact editor flow', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
+  const chat = await readFile('public/modules/chat.js', 'utf8');
   const css = await readFile('public/styles.css', 'utf8');
 
   assert.match(html, /<div class="composer">/);
@@ -535,6 +572,19 @@ test('modern workbench composer keeps tools in compact editor flow', async () =>
   assert.match(app, /state\.chatStreaming = streaming/);
   assert.match(app, /els\.sendMessageButton\.disabled = streaming/);
   assert.match(app, /els\.chatInput\.disabled = false/);
+  assert.match(app, /els\.chatInput\?\.addEventListener\('keydown'/);
+  assert.match(app, /function shouldSubmitChatInput/);
+  assert.match(app, /!event\.shiftKey/);
+  assert.match(app, /!event\.isComposing/);
+  assert.match(app, /event\.keyCode !== 229/);
+  assert.match(app, /els\.chatForm\.requestSubmit\(\)/);
+  assert.match(app, /function isSilentQuickReply/);
+  assert.match(app, /hideUserMessage/);
+  assert.match(chat, /!message\?\.hiddenFromChat/);
+  assert.match(chat, /function captureScrollState/);
+  assert.match(chat, /function restoreScrollState/);
+  assert.match(chat, /autoFollowLatest = isNearBottom\(\)/);
+  assert.match(css, /\.messages\s*\{[\s\S]*overflow-anchor:\s*none;/);
 });
 
 test('empty session cover guides opening flow through content packs', async () => {
@@ -550,6 +600,11 @@ test('empty session cover guides opening flow through content packs', async () =
   assert.match(app, /classList\.add\('has-cover-page'\)/);
   assert.match(app, /className = 'epic-cover-actions'/);
   assert.match(app, /className = 'epic-current-script'/);
+  assert.match(app, /className = 'epic-opening-error'/);
+  assert.match(app, /function createOpeningErrorPanel/);
+  assert.match(app, /function renderJourneyDraft\(draft\)[\s\S]*createOpeningErrorPanel\(\)/);
+  assert.match(app, /PROVIDER_QUOTA_EXHAUSTED/);
+  assert.match(css, /\.epic-opening-error\s*\{/);
   assert.match(app, /function getBoundStoryPackId/);
   assert.match(app, /await applyContentPack\(\)/);
   assert.match(app, /renderSetupPanel\(resolvePrologueTemplate\(\)\.tpl\)/);
@@ -631,6 +686,8 @@ test('immersive sidebar shell is wired and hidden by default', async () => {
   assert.match(html, /id="immersive-sidebar-body"/);
   assert.match(app, /immersiveRightSidebar/);
   assert.match(app, /function renderImmersiveSidebar/);
+  assert.match(app, /getLightFrontendPanels/);
+  assert.match(app, /function renderImmersiveCommunityPanel/);
   assert.match(app, /function renderImmersiveCharacterCards/);
   assert.match(app, /function resolveImmersiveCharacterPortrait/);
   assert.match(app, /createCharacterPortraitImage\(portraitSource, 'immersive-character-portrait'/);
@@ -644,6 +701,7 @@ test('immersive sidebar shell is wired and hidden by default', async () => {
   assert.match(css, /\.immersive-sidebar-tab\.active\s*\{/);
   assert.match(css, /\.immersive-character-card\s*\{[\s\S]*grid-template-columns:\s*76px minmax\(0,\s*1fr\);/);
   assert.match(css, /\.immersive-character-portrait,[\s\S]*\.immersive-character-monogram\s*\{/);
+  assert.match(css, /\.immersive-community-prose\s*\{/);
 });
 
 test('layout polish keeps the narrative stage dominant and composer compact', async () => {
@@ -938,6 +996,13 @@ test('frontend exposes the full-screen narrative asset center', async () => {
   assert.match(assetCenter, /function applyBatchMetadata/);
   assert.match(assetCenter, /function createCharacterProfilePanel/);
   assert.match(assetCenter, /function createVersionPanel/);
+  assert.match(assetCenter, /function createWorldbookManagementPanel/);
+  assert.match(assetCenter, /function createPromptManagementPanel/);
+  assert.match(assetCenter, /action === 'worldbook-add'/);
+  assert.match(assetCenter, /action === 'prompt-edit'/);
+  assert.match(html, /data-asset-import-kind="character"/);
+  assert.match(html, /data-asset-import-kind="worldbook"/);
+  assert.match(html, /data-asset-import-kind="prompt"/);
 
   assert.match(css, /\.asset-center\s*\{/);
   assert.match(css, /\.asset-center-layout\s*\{/);

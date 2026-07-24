@@ -7,7 +7,16 @@ const ROLEPLAY_BLOCKS = [
   'NextCharacterPanel'
 ];
 
-const CONTROL_BLOCK_START = /<(?:recommended_actions|lra-actions)\b|```lra-actions\b/i;
+const CONTROL_BLOCK_START = /<(?:recommended_actions|lra-actions|lra-mvu-patch|mvu_patch)\b|```(?:lra-actions|lra-mvu-patch)\b/i;
+const CONTROL_PREFIXES = [
+  ...ROLEPLAY_BLOCKS.map((tag) => `<${String(tag).toLowerCase()}`),
+  '<recommended_actions',
+  '<lra-actions',
+  '<lra-mvu-patch',
+  '<mvu_patch',
+  '```lra-actions',
+  '```lra-mvu-patch'
+];
 
 export function parseRoleplayResponse(rawContent) {
   const source = String(rawContent || '');
@@ -72,7 +81,18 @@ function stripProtocolBlocks(source) {
 function truncateControlBlocks(source) {
   const text = String(source || '');
   const match = text.match(CONTROL_BLOCK_START);
-  return match ? text.slice(0, match.index) : text;
+  let cutIndex = match ? Number(match.index) : text.length;
+  const lower = text.toLowerCase();
+  for (const prefix of CONTROL_PREFIXES) {
+    for (let length = 1; length < prefix.length; length += 1) {
+      const partial = prefix.slice(0, length);
+      if (!lower.endsWith(partial)) continue;
+      const index = text.length - partial.length;
+      const previous = index > 0 ? text[index - 1] : '';
+      if (index === 0 || /\s/.test(previous)) cutIndex = Math.min(cutIndex, index);
+    }
+  }
+  return text.slice(0, cutIndex);
 }
 
 function cleanVisibleText(value) {
@@ -104,8 +124,6 @@ function compactPanels(panels) {
 
 function looksLikePartialProtocolPrefix(source) {
   const value = String(source || '').trimStart().toLowerCase();
-  if (!value.startsWith('<')) return false;
-  const starts = [...ROLEPLAY_BLOCKS, 'recommended_actions', 'lra-actions']
-    .map((tag) => `<${String(tag).toLowerCase()}`);
-  return starts.some((start) => start.startsWith(value));
+  if (!value) return false;
+  return CONTROL_PREFIXES.some((start) => start.startsWith(value));
 }

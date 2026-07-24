@@ -1,5 +1,9 @@
 import { normalizeSemver, satisfiesSemver } from '../lib/semver.js';
 import { APP_VERSION } from '../releaseInfo.js';
+import {
+  inspectSafeTemplate,
+  normalizeLightFrontendRuntime
+} from '../compat/lightFrontendRuntime.js';
 
 export const CONTENT_PACK_SPEC = 'lra.content-pack/v1';
 export const DEFAULT_CONTENT_PACK_ENGINE_RANGE = '>=0.2.2 <1.0.0';
@@ -53,6 +57,7 @@ export function createContentPackBundle(pack = {}, options = {}) {
       stageBackground: normalizeStageBackground(pack.stageBackground, pack.characterCard),
       worldBook: structuredClone(Array.isArray(pack.worldBook) ? pack.worldBook : []),
       promptModules: structuredClone(Array.isArray(pack.promptModules) ? pack.promptModules : []),
+      lightFrontend: normalizeLightFrontendRuntime(pack.lightFrontend || {}),
       memory: structuredClone(pack.memory || {}),
       ruleSystem: structuredClone(pack.ruleSystem || {}),
       characterPresets: structuredClone(Array.isArray(pack.characterPresets) ? pack.characterPresets : [])
@@ -197,6 +202,7 @@ export function contentPackFromBundle(bundle, internalId, { importedAt = new Dat
     stageBackground: normalizeStageBackground(content.stageBackground, content.characterCard),
     worldBook: structuredClone(Array.isArray(content.worldBook) ? content.worldBook : []),
     promptModules: structuredClone(Array.isArray(content.promptModules) ? content.promptModules : []),
+    lightFrontend: normalizeLightFrontendRuntime(content.lightFrontend || {}),
     memory: structuredClone(content.memory || {}),
     ruleSystem: structuredClone(content.ruleSystem || {}),
     characterPresets: structuredClone(Array.isArray(content.characterPresets) ? content.characterPresets : []),
@@ -210,6 +216,7 @@ export function contentPackFromBundle(bundle, internalId, { importedAt = new Dat
       importedAt
     },
     resourceManifest: {
+      creationMode: 'independent-copy',
       basePackId: manifest.dependencies.find((item) => item.kind === 'content-pack')?.id || '',
       includeBaseContent: true,
       importedBundle: true
@@ -276,8 +283,17 @@ function buildResourceRefs(resourceManifest = {}) {
 
 function inferCapabilities(pack) {
   const capabilities = ['character'];
+  const lightFrontend = normalizeLightFrontendRuntime(pack.lightFrontend || {});
   if (pack.worldBook?.length) capabilities.push('worldbook');
   if (pack.promptModules?.length) capabilities.push('prompt');
+  if (lightFrontend.regexTransforms.length) capabilities.push('safe-regex-display');
+  if (lightFrontend.quickReplies.length) capabilities.push('quick-replies');
+  if (lightFrontend.panels.length) capabilities.push('sidebar-panels');
+  if (lightFrontend.mvu.enabled) capabilities.push('mvu-state');
+  if (lightFrontend.adapters.some((adapter) => adapter.mode === 'declarative-partial')) {
+    capabilities.push('community-light-adapters');
+  }
+  if (hasSafeTemplateContent(pack)) capabilities.push('safe-ejs-template');
   if (pack.ruleSystem) capabilities.push('rule-system');
   if (pack.memory) capabilities.push('memory-seed');
   if ((pack.characterPresets || []).some((preset) => {
@@ -288,6 +304,44 @@ function inferCapabilities(pack) {
       || extensions.agenda?.length;
   })) capabilities.push('world-simulation');
   return capabilities;
+}
+
+function hasSafeTemplateContent(pack) {
+  const values = [
+    pack.characterCard,
+    ...(Array.isArray(pack.worldBook) ? pack.worldBook : []),
+    ...(Array.isArray(pack.promptModules) ? pack.promptModules : []),
+    ...(Array.isArray(pack.lightFrontend?.quickReplies) ? pack.lightFrontend.quickReplies : []),
+    ...(Array.isArray(pack.lightFrontend?.panels) ? pack.lightFrontend.panels : [])
+  ];
+  let detected = false;
+  for (const value of values) {
+    for (const text of collectTemplateStrings(value)) {
+      const report = inspectSafeTemplate(text);
+      if (!report.hasTemplate) continue;
+      detected = true;
+      if (!report.supported) return false;
+    }
+  }
+  return detected;
+}
+
+function collectTemplateStrings(value) {
+  const strings = [];
+  const queue = [value];
+  const seen = new Set();
+  while (queue.length && strings.length < 500) {
+    const current = queue.shift();
+    if (typeof current === 'string') {
+      strings.push(current);
+      continue;
+    }
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) queue.push(...current.slice(0, 200));
+    else queue.push(...Object.values(current).slice(0, 200));
+  }
+  return strings;
 }
 
 function identityOf(item) {

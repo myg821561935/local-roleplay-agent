@@ -12,8 +12,11 @@ function parseImmersiveOptions(text) {
   return text.replace(optionRegex, (match, title, optionsBlock) => {
     const optionsHtml = optionsBlock.split('\n').map(line => {
       const trimmed = line.trim();
-      if (trimmed.startsWith('- ')) {
-        return `<div class="immersive-option-item">${trimmed.substring(2)}</div>`;
+      const optionMatch = trimmed.match(/^(?:[-*·•]\s+|\d+[.)、]\s*|选项\s*\d+[：:]\s*)(.+)$/);
+      if (optionMatch) {
+        const optionText = optionMatch[1].trim();
+        if (!optionText) return '';
+        return `<button type="button" class="immersive-option-item" data-immersive-option-action="${encodeURIComponent(optionText)}">${optionText}</button>`;
       }
       return line;
     }).join('');

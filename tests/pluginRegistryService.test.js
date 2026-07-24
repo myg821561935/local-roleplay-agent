@@ -23,11 +23,41 @@ test('plugin registry installs declarative adapters and blocks executable fields
 
   assert.equal(result.installStatus, 'created');
   assert.equal(result.plugin.origin, 'local');
+  assert.equal(result.plugin.runtime, 'declarative');
+  assert.deepEqual(result.plugin.capabilities, ['safe-macros', 'sidebar-panels']);
+  assert.equal(result.plugin.capabilityCount, 2);
   assert.ok((await service.listAdapters()).find((item) => item.id === 'rain-night-lore'));
 
   const blocked = await service.inspectManifest({ ...manifest, id: 'community.unsafe', script: 'run-me.js' });
   assert.equal(blocked.canInstall, false);
   assert.ok(blocked.blockingIssues.find((item) => item.code === 'executable-plugin-unsupported'));
+
+  const nestedExecutable = await service.inspectManifest({
+    ...manifest,
+    id: 'community.nested-unsafe',
+    adapters: [{
+      ...manifest.adapters[0],
+      id: 'nested-unsafe-lore',
+      match: {
+        ...manifest.adapters[0].match,
+        hooks: { onLoad: 'run-me' }
+      },
+      capabilities: ['sidebar-panels', 'arbitrary-javascript']
+    }]
+  });
+  assert.equal(nestedExecutable.canInstall, false);
+  assert.ok(nestedExecutable.blockingIssues.some((item) => item.path.includes('hooks')));
+  assert.ok(nestedExecutable.warnings.some((item) => item.code === 'adapter-capability-unsupported'));
+
+  const partiallySupported = await service.inspectManifest({
+    ...manifest,
+    id: 'community.future-runtime',
+    capabilities: ['safe-macros', 'arbitrary-javascript'],
+    adapters: [{ ...manifest.adapters[0], id: 'future-runtime-lore' }]
+  });
+  assert.equal(partiallySupported.canInstall, true);
+  assert.deepEqual(partiallySupported.manifest.capabilities, ['safe-macros']);
+  assert.ok(partiallySupported.warnings.find((item) => item.code === 'plugin-capability-unsupported'));
 });
 
 test('plugin registry prevents silent downgrade and allows removal of local plugins', async () => {
@@ -56,6 +86,7 @@ function createPluginManifest() {
     version: '1.0.0',
     name: '雨夜世界书适配',
     engine: '>=0.2.2 <1.0.0',
+    capabilities: ['safe-macros', 'sidebar-panels'],
     adapters: [{
       id: 'rain-night-lore',
       label: '雨夜世界书',

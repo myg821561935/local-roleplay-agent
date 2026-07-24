@@ -1,12 +1,24 @@
 node_modules/
 .DS_Store
-data/config/providers.local.json
+
+# Local configuration. Defaults live in server/config/defaults.js; every file
+# written here may contain API credentials, imported cards, lore or presets.
+data/config/
+
+# Personal stories and third-party/community resources stay on this machine.
 data/sessions/
 data/exports/
 data/assets/
 data/library/
 data/projects/
+data/imports/
+data/community/
+data/private-content/
+data/content-packs-local/
+private-content/
+local-content/
 .superpowers/
+.qoder/
 work/
 backups/
 .runtime/

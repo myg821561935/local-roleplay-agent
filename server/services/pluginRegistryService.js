@@ -40,7 +40,10 @@ export class PluginRegistryService {
         blockingIssues: inspection.blockingIssues,
         warnings: inspection.warnings,
         dependencies: inspection.dependencies,
-        adapterCount: inspection.manifest.adapters.length
+        adapterCount: inspection.manifest.adapters.length,
+        capabilities: inspection.manifest.capabilities,
+        capabilityCount: inspection.manifest.capabilities.length,
+        runtime: inspection.manifest.runtime
       };
     }).sort(comparePluginRecords);
   }

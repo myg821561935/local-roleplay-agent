@@ -44,6 +44,8 @@ export class WorldSimulationService {
     swipeMetadata[swipeIndex] = {
       actionEnvelope: assistantMessage.actionEnvelope ? structuredClone(assistantMessage.actionEnvelope) : null,
       actionError: assistantMessage.actionError ? structuredClone(assistantMessage.actionError) : null,
+      mvuPatches: Array.isArray(assistantMessage.mvuPatches) ? structuredClone(assistantMessage.mvuPatches) : [],
+      mvuError: assistantMessage.mvuError ? structuredClone(assistantMessage.mvuError) : null,
       adjudication: assistantMessage.adjudication ? structuredClone(assistantMessage.adjudication) : null,
       recommendedActions: Array.isArray(assistantMessage.recommendedActions) ? structuredClone(assistantMessage.recommendedActions) : [],
       roleplayPanels: assistantMessage.roleplayPanels ? structuredClone(assistantMessage.roleplayPanels) : null,
