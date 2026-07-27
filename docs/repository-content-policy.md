@@ -1,6 +1,6 @@
 # 仓库内容边界
 
-本仓库用于发布 `local-roleplay-agent` 的技术框架，不承担第三方角色卡、世界书、Prompt、图片或完整内容包的再分发。
+本仓库用于发布 Local Story Engine（仓库技术标识：`local-roleplay-agent`）的技术框架，不承担第三方角色卡、世界书、Prompt、图片或完整内容包的再分发。
 
 ## 可以进入 GitHub
 

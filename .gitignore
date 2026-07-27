@@ -1,5 +1,6 @@
 node_modules/
 .DS_Store
+.idea/
 
 # Local configuration. Defaults live in server/config/defaults.js; every file
 # written here may contain API credentials, imported cards, lore or presets.
