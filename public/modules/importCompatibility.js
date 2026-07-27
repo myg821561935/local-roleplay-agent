@@ -4,6 +4,12 @@ const STATUS_LABELS = {
   missing: '运行时缺失'
 };
 
+const ACCEPTANCE_LABELS = {
+  'full-mapping': '完整映射',
+  'safe-degradation': '安全降级',
+  blocked: '阻断运行'
+};
+
 export function createCommunityCompatibilitySection(report = {}, { storyImport = false } = {}) {
   const requirements = Array.isArray(report.requirements) ? report.requirements : [];
   if (!requirements.length) return null;
@@ -21,9 +27,17 @@ export function createCommunityCompatibilitySection(report = {}, { storyImport =
   heading.append(title, label);
 
   const playability = document.createElement('span');
-  const readyToPlay = report.readyToPlay !== false && !Number(report.counts?.missing || 0);
-  playability.className = `import-community-playability ${readyToPlay ? 'is-ready' : 'is-store-only'}`;
-  playability.textContent = readyToPlay ? '可进入运行流程' : '安全保存，不代表完整可玩';
+  const outcome = report.acceptance?.outcome || '';
+  const readyToPlay = report.acceptance
+    ? report.acceptance.canRun === true
+    : report.readyToPlay !== false && !Number(report.counts?.missing || 0);
+  playability.className = [
+    'import-community-playability',
+    readyToPlay ? 'is-ready' : 'is-store-only',
+    outcome ? `is-${outcome}` : ''
+  ].filter(Boolean).join(' ');
+  playability.textContent = ACCEPTANCE_LABELS[outcome]
+    || (readyToPlay ? '可进入运行流程' : '安全保存，不代表完整可玩');
 
   const summary = document.createElement('p');
   summary.className = 'import-community-summary';
@@ -48,9 +62,17 @@ export function createCommunityCompatibilitySection(report = {}, { storyImport =
 
   const safety = document.createElement('p');
   safety.className = 'import-community-safety';
-  safety.textContent = report.counts?.missing
-    ? `${storyImport ? '可以保存并创建待完善副本，但' : '可以安全保存原件，但'}缺失能力不会因此恢复；未知 JavaScript 始终保持禁用。`
-    : '导入只保存数据，不执行第三方 JavaScript。';
+  if (outcome === 'blocked') {
+    const reason = report.acceptance?.blockers?.[0]?.label || '资源依赖不受控运行时';
+    safety.textContent = `已阻断运行：${reason}。原件可保存审阅，但不会执行第三方 JavaScript、DOM 或 iframe。`;
+  } else if (outcome === 'safe-degradation') {
+    const differenceCount = Number(report.acceptance?.differences?.length || 0);
+    safety.textContent = `已保留静态内容并禁用不安全部分，共 ${differenceCount} 项差异；导入后请按差异清单审阅。`;
+  } else {
+    safety.textContent = report.counts?.missing
+      ? `${storyImport ? '可以保存并创建待完善副本，但' : '可以安全保存原件，但'}缺失能力不会因此恢复；未知 JavaScript 始终保持禁用。`
+      : '主要交互语义已映射；导入仍只保存数据，不执行第三方 JavaScript。';
+  }
 
   section.append(heading, playability, summary, counters, list, safety);
   return section;

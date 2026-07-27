@@ -6,13 +6,16 @@
 
 - **安全显示正则**：导入 `regex_scripts` 等常见字段，对助手或用户消息的渲染副本执行替换。原始消息、记忆、事件账本和导出内容保持不变。
 - **文本 Quick Reply**：识别普通文本以及 `/send 文本`、`/say 文本`，映射到现有输入栏；点击后仍可编辑。
+- **白名单变量命令**：`/setvar` 与 `/incvar` 会转换为 `set` / `increment` MVU 补丁；其他 STscript 命令保持禁用。
 - **MVU 状态**：导入 JSON 初始值；模型可输出隐藏的 `lra.mvu-patch/v1` 补丁，服务端验证 revision、路径、操作数和状态体积后再提交。手工调试仍可使用 `PATCH /api/sessions/:id/light-frontend/mvu`。
 - **安全 EJS 子集**：支持 `<%= mvu.favor %>`、`<%= getvar('favor') %>`、只读 `if/else` 和简单比较；模板可用于角色卡、世界书、Prompt 与快捷回复。
 - **声明式侧栏面板**：识别 `panels`、`status_panels`、`sidebar_panels` 等字段，将状态字段、条目列表和 Markdown 说明映射到沉浸侧栏。
 - **社区命名空间适配**：识别酒馆助手和小白 X 扩展中的变量、显示正则、文本按钮和声明式面板，并转换为内置数据。
 - **SillyTavern Prompt 预设**：识别原生及 Tavern Helper 导出的预设 JSON，按 `prompt_order` 保存模块顺序，并在模型消息中应用 `system/user/assistant` 角色、相对位置及 `in_chat` 的 Depth/Order。
 - **分支重放**：Edit、重生成和 Swipe 选择会从导入基线重放当前消息分支的已提交补丁。
-- **兼容报告**：导入预览区分原生支持、需要转换和缺少外部运行时，并分别标注“可安全保存”与“可直接游玩”。
+- **受限生命周期**：声明式 `onImport`、`onUser`、`onAssistant` 在白名单状态路径和补丁操作内执行；任一步失败时整次事件回滚。
+- **世界书逻辑**：支持 SillyTavern `selectiveLogic` 的 `AND ANY`、`NOT ALL`、`NOT ANY`、`AND ALL` 四种二级关键词过滤。
+- **兼容报告**：导入预览固定输出“完整映射”“安全降级”或“阻断运行”，并显式列出差异与阻断原因。
 
 ## 安全模板示例
 
@@ -82,14 +85,25 @@
 
 状态限制深度、体积和路径，拒绝原型链键；revision 不一致时返回 `409 MVU_REVISION_CONFLICT`。
 
+## 生命周期统一预算
+
+受限生命周期不会执行原始脚本，只接受声明式状态操作：
+
+- 单事件最多执行 8 次。
+- 只允许写入 `variables`、`world`、`character(s)`、`relationships`、`quests`、`inventory`、`flags`、`scene`、`story`、`status`、`stats` 根路径。
+- 只允许 `set`、`increment`、`delete`。
+- 嵌套步骤最大深度为 4。
+- 单轮最大变更数量为 32。
+- 解析、路径或补丁应用任一步失败时，整次事件回滚，不保留部分状态。
+
 ## 明确不支持
 
-- 任意 JavaScript、`<script>`、事件 Hook、动态网络请求。
-- 除 `/send`、`/say` 之外的 STscript 或斜杠命令链。
+- 任意 JavaScript、`<script>`、原始事件 Hook、动态网络请求。
+- 除 `/send`、`/say`、`/setvar`、`/incvar` 之外的 STscript 或斜杠命令链。
 - EJS 赋值、循环、任意函数调用、DOM 注入、iframe、自定义 CSS 和面板事件回调。
-- 酒馆助手或小白 X 的事件生命周期、网络能力和隐式全局对象。
+- 酒馆助手或小白 X 的可执行事件生命周期、网络能力和隐式全局对象。
 
-这些能力后续只能通过声明式适配器或隔离的重前端沙盒接入，不会扩大当前运行时权限。
+这些能力后续只能通过声明式适配器接入；本项目不提供第三方代码运行环境。
 
 ## Prompt 预设兼容边界
 

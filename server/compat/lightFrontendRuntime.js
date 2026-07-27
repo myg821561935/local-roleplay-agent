@@ -1,3 +1,9 @@
+import {
+  normalizeDeclarativeLifecycle,
+  normalizeLifecycleOperation,
+  parseAllowlistedSlashCommand
+} from './lifecyclePolicy.js';
+
 const MAX_REGEX_RULES = 32;
 const MAX_QUICK_REPLIES = 24;
 const MAX_PANELS = 8;
@@ -72,12 +78,24 @@ function collectRuntimeInput(containers, { adapter = false } = {}) {
     'variable_state',
     ...(adapter ? ['initialVariables', 'initial_variables', 'state'] : [])
   ]);
+  const lifecycleCandidates = collectNamedValues(containers, [
+    'lifecycle',
+    'lifecycle_events',
+    'lifecycleEvents',
+    'events'
+  ]);
+  const lifecycle = mergeLifecycleSources(lifecycleCandidates);
+  for (const event of ['onImport', 'onUser', 'onAssistant']) {
+    const steps = collectNamedValues(containers, [event]).flatMap(asArrayOrSingle);
+    if (steps.length) lifecycle[event] = [...(lifecycle[event] || []), ...steps];
+  }
 
   return {
     regexTransforms: regexCandidates,
     quickReplies: quickReplyCandidates,
     panels: panelCandidates,
-    mvu: mergeMvuSeeds(mvuCandidates)
+    mvu: mergeMvuSeeds(mvuCandidates),
+    lifecycle
   };
 }
 
@@ -88,6 +106,12 @@ export function mergeLightFrontendRuntimes(runtimes = []) {
   const quickReplies = dedupeById(normalized.flatMap((item) => item.quickReplies));
   const panels = dedupeById(normalized.flatMap((item) => item.panels || []));
   const adapters = dedupeAdapters(normalized.flatMap((item) => item.adapters || []));
+  const lifecycleEvents = {};
+  for (const runtime of normalized) {
+    for (const [event, steps] of Object.entries(runtime.lifecycle?.events || {})) {
+      lifecycleEvents[event] = [...(lifecycleEvents[event] || []), ...steps];
+    }
+  }
   const mvuValues = {};
   for (const runtime of normalized) {
     if (runtime.mvu.enabled) safeMerge(mvuValues, runtime.mvu.values);
@@ -97,6 +121,7 @@ export function mergeLightFrontendRuntimes(runtimes = []) {
     quickReplies,
     panels,
     adapters,
+    lifecycle: lifecycleEvents,
     diagnostics: normalized.flatMap((item) => item.diagnostics || []),
     mvu: {
       enabled: normalized.some((item) => item.mvu.enabled),
@@ -133,6 +158,7 @@ export function normalizeLightFrontendRuntime(input = {}) {
   }
 
   const mvu = normalizeMvuState(input.mvu, diagnostics);
+  const lifecycle = normalizeDeclarativeLifecycle(input.lifecycle, diagnostics);
   return {
     schemaVersion: 1,
     mode: 'declarative-safe',
@@ -142,6 +168,7 @@ export function normalizeLightFrontendRuntime(input = {}) {
     panels,
     adapters: normalizeAdapters(input.adapters),
     mvu,
+    lifecycle,
     diagnostics
   };
 }
@@ -153,7 +180,10 @@ export function applyDisplayTransforms(text, rules = [], { role = 'assistant', c
     if (!normalized || normalized.enabled === false) continue;
     if (normalized.scope !== 'all' && normalized.scope !== role) continue;
     try {
-      const replacement = renderSafeTemplate(normalized.replacement, context, { unsupported: 'strip' });
+      const replacement = expandDisplayMacros(
+        renderSafeTemplate(normalized.replacement, context, { unsupported: 'strip' }),
+        context
+      );
       output = output.replace(new RegExp(normalized.pattern, normalized.flags), replacement);
     } catch {
       // Invalid rules are ignored at display time and remain visible in diagnostics.
@@ -411,20 +441,37 @@ function normalizeRegexTransform(value, index, diagnostics) {
 function normalizeQuickReply(value, index, diagnostics) {
   if (typeof value === 'string') value = { label: value.slice(0, 24), content: value };
   if (!isPlainObject(value)) return null;
+  if (value.actionType === 'mvu-patch' && Array.isArray(value.patch?.operations)) {
+    const operations = value.patch.operations.map(normalizeLifecycleOperation).filter(Boolean);
+    if (!operations.length || operations.length !== value.patch.operations.length) {
+      diagnostics.push({ code: 'command-quick-reply-disabled', index, label: String(value.label || value.name || '') });
+      return null;
+    }
+    return {
+      id: cleanId(value.id || value.label || value.name || `quick-reply-${index + 1}`),
+      label: String(value.label || value.name || operations[0].path).trim().slice(0, 40),
+      template: '',
+      actionType: 'mvu-patch',
+      patch: { operations },
+      enabled: value.disabled !== true && value.enabled !== false
+    };
+  }
   const raw = String(
     value.template ?? value.content ?? value.message ?? value.command ?? value.text ?? value.value ?? value.prompt ?? ''
   ).trim();
   if (!raw) return null;
-  const template = normalizeQuickReplyCommand(raw);
-  if (!template) {
+  const command = normalizeQuickReplyCommand(raw);
+  if (!command) {
     diagnostics.push({ code: 'command-quick-reply-disabled', index, label: String(value.label || value.name || '') });
     return null;
   }
+  const fallbackLabel = command.template || command.patch?.operations?.[0]?.path || `快捷动作 ${index + 1}`;
   return {
     id: cleanId(value.id || value.label || value.name || `quick-reply-${index + 1}`),
-    label: String(value.label || value.name || template).trim().slice(0, 40),
-    template: template.slice(0, MAX_TEMPLATE_LENGTH),
-    actionType: 'compose',
+    label: String(value.label || value.name || fallbackLabel).trim().slice(0, 40),
+    template: String(command.template || '').slice(0, MAX_TEMPLATE_LENGTH),
+    actionType: command.actionType,
+    ...(command.patch ? { patch: command.patch } : {}),
     enabled: value.disabled !== true && value.enabled !== false
   };
 }
@@ -674,11 +721,47 @@ function normalizeRegexScope(value) {
 
 function normalizeQuickReplyCommand(value) {
   const text = String(value || '').trim();
+  if (/<script(?:\s|>)/i.test(text) || /javascript\s*:/i.test(text)) return null;
   const send = text.match(/^\/(?:send|say)\s+([\s\S]+)$/i);
-  if (send) return send[1].trim();
-  if (text.startsWith('/')) return '';
-  if (/<script(?:\s|>)/i.test(text) || /javascript\s*:/i.test(text)) return '';
-  return text;
+  if (send) return { actionType: 'compose', template: send[1].trim() };
+  const operation = parseAllowlistedSlashCommand(text);
+  if (operation) {
+    return {
+      actionType: 'mvu-patch',
+      template: '',
+      patch: { operations: [operation] }
+    };
+  }
+  if (text.startsWith('/')) return null;
+  return { actionType: 'compose', template: text };
+}
+
+function expandDisplayMacros(text, context = {}) {
+  const values = {
+    user: context.user,
+    char: context.char
+  };
+  return String(text || '').replace(/\{\{\s*(user|char)\s*\}\}/gi, (_, key) => {
+    return String(values[String(key).toLowerCase()] || '');
+  });
+}
+
+function mergeLifecycleSources(values = []) {
+  const events = {};
+  for (const value of values) {
+    if (!isPlainObject(value)) continue;
+    for (const event of ['onImport', 'onUser', 'onAssistant']) {
+      const directValue = value[event];
+      if (directValue !== undefined) {
+        events[event] = [...(events[event] || []), ...asArrayOrSingle(directValue)];
+      }
+    }
+  }
+  return events;
+}
+
+function asArrayOrSingle(value) {
+  return Array.isArray(value) ? value : [value];
 }
 
 function collectExtensionContainers(payload) {

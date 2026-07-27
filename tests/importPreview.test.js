@@ -54,8 +54,33 @@ test('imports SillyTavern world book JSON object entries', () => {
   assert.equal(entries[0].content, '听雨楼贩卖秘密。');
   assert.equal(entries[0].depth, 5);
   assert.equal(entries[0].insertionOrder, 20);
-  assert.equal(entries[0].logic, 'all');
+  assert.equal(entries[0].logic, 'and_any');
   assert.equal(entries[0].source, 'sillytavern-worldbook');
+});
+
+test('imports all four SillyTavern selectiveLogic values without semantic drift', () => {
+  const entries = importWorldBookFromPayload({
+    fileName: 'selective-world.json',
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      entries: [0, 1, 2, 3].map((selectiveLogic) => ({
+        comment: `逻辑 ${selectiveLogic}`,
+        key: ['主词'],
+        keysecondary: ['甲', '乙'],
+        content: `逻辑 ${selectiveLogic} 内容`,
+        enabled: true,
+        selective: true,
+        selectiveLogic
+      }))
+    })
+  });
+
+  assert.deepEqual(entries.map((entry) => entry.matchMode), [
+    'selective', 'selective', 'selective', 'selective'
+  ]);
+  assert.deepEqual(entries.map((entry) => entry.logic), [
+    'and_any', 'not_all', 'not_any', 'and_all'
+  ]);
 });
 
 test('previews standalone world book imports', () => {

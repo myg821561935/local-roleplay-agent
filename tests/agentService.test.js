@@ -17,6 +17,43 @@ test('AgentService runs one chat turn and records memory metadata', async () => 
   assert.equal(result.debug.injectedCards.length, 1);
 });
 
+test('AgentService applies bounded onUser and onAssistant lifecycle updates in order', async () => {
+  const { service, configService, sessionService } = await createHarness();
+  const globalConfig = await configService.getAll();
+  const session = await sessionService.getSession('main');
+  session.config = {
+    characterCard: globalConfig.characterCard,
+    promptModules: globalConfig.promptModules,
+    worldBook: globalConfig.worldBook,
+    persona: globalConfig.persona,
+    lightFrontend: {
+      lifecycle: {
+        events: {
+          onUser: [{ op: 'increment', path: 'variables.turns', amount: 1 }],
+          onAssistant: [{ op: 'increment', path: 'variables.turns', amount: 10 }]
+        }
+      }
+    }
+  };
+  session.memory.lightFrontendState = {
+    enabled: true,
+    values: { variables: { turns: 0 } },
+    revision: 0
+  };
+  await sessionService.saveSession(session);
+
+  const result = await service.sendMessage({ sessionId: 'main', content: '推进一轮。' });
+  const readback = await sessionService.getSession('main');
+
+  assert.equal(result.session.memory.lightFrontendState.values.variables.turns, 11);
+  assert.equal(readback.memory.lightFrontendState.revision, 2);
+  assert.deepEqual(
+    readback.messages[1].lifecycleReports.map((item) => [item.event, item.status]),
+    [['onUser', 'applied'], ['onAssistant', 'applied']]
+  );
+  assert.equal(readback.messages[1].mvuPatches.length, 2);
+});
+
 test('AgentService can keep a director quick command in context without rendering it as player speech', async () => {
   const { service, sessionService } = await createHarness();
 

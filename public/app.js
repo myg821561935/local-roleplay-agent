@@ -6483,9 +6483,30 @@ function renderQuickRepliesBar() {
       ? expandLightFrontendQuickReply(reply, getLightFrontendContext())
       : reply.content;
     btn.textContent = reply.label || content.slice(0, 12);
-    btn.title = reply.source ? `${content}\n来自社区轻前端，点击后仍可编辑` : content;
-    btn.addEventListener('click', () => {
-      setChatInputFromQuickReply({ ...reply, content });
+    const isStateAction = reply.actionType === 'mvu-patch';
+    btn.title = isStateAction
+      ? '来自社区轻前端：点击后执行经过白名单校验的状态更新'
+      : reply.source ? `${content}\n来自社区轻前端，点击后仍可编辑` : content;
+    btn.addEventListener('click', async () => {
+      if (!isStateAction) {
+        setChatInputFromQuickReply({ ...reply, content });
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const payload = await apiRequest(
+          `/api/sessions/${encodeURIComponent(currentSessionId)}/light-frontend/mvu`,
+          { method: 'PATCH', body: { patch: reply.patch } }
+        );
+        state.session = payload.session || state.session;
+        renderInspector();
+        renderImmersiveSidebar();
+        setStatus(els.sessionStatus, `${reply.label || '状态动作'}已应用`, 'ok');
+      } catch (error) {
+        setStatus(els.sessionStatus, `状态动作失败：${humanizeApiError(error)}`, 'error');
+      } finally {
+        btn.disabled = false;
+      }
     });
     els.quickRepliesBar.append(btn);
   }

@@ -282,7 +282,9 @@ function normalizeCharacterBookEntry(entry, index, fallbackDepth, sourceSpec) {
     priority: normalizePositiveNumber(entry.priority ?? extensions.priority, 80),
     depth: normalizePositiveNumber(entry.depth ?? extensions.depth, fallbackDepth),
     insertionOrder: normalizePositiveNumber(entry.insertion_order ?? extensions.display_index, index),
-    logic: usesSecondary ? 'selective' : 'any',
+    logic: usesSecondary
+      ? normalizeSelectiveLogic(entry.selectiveLogic ?? entry.selective_logic)
+      : 'any',
     constant: entry.constant === true,
     caseSensitive: entry.case_sensitive === true || entry.caseSensitive === true || extensions.case_sensitive === true,
     position: normalizeCharacterBookPosition(entry.position ?? extensions.position),
@@ -291,6 +293,10 @@ function normalizeCharacterBookEntry(entry, index, fallbackDepth, sourceSpec) {
     extensions,
     updatedAt: new Date().toISOString()
   };
+}
+
+function normalizeSelectiveLogic(value) {
+  return ['and_any', 'not_all', 'not_any', 'and_all'][Number(value)] || 'and_any';
 }
 
 function normalizeCharacterBookPosition(position) {

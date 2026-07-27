@@ -50,13 +50,15 @@ export function retrieveCards(args = {}) {
  * matchMode:
  *   - 'keyword'  : 主关键词命中即触发（受 logic 修饰）
  *   - 'regex'    : 仅看 regex 字段
- *   - 'selective': 需主关键词和次关键词同时命中
+ *   - 'selective': 主关键词命中后，由 selectiveLogic 对次关键词做过滤
  *
  * logic（仅影响 keyword / selective 模式）:
  *   - 'any' / 'or'        : 任一主关键词命中即触发（默认）
  *   - 'all' / 'and'       : 所有主关键词都需命中
  *   - 'not' / 'not any'   : 任一命中则不触发，未命中才触发
  *   - 'not all'           : 全部命中才不触发，否则触发
+ *   - 'and_any' / 'not_all' / 'not_any' / 'and_all':
+ *     SillyTavern selectiveLogic 0 / 1 / 2 / 3
  */
 function scoreCard(card, query) {
   if (card.constant === true) return 10000 + priorityScore(card);
@@ -110,7 +112,11 @@ function scoreCard(card, query) {
       });
       secondaryHits = secondary.hitCount;
       secondaryTotal = secondary.total;
-      triggered = primaryHits > 0 && secondaryHits > 0;
+      triggered = primaryHits > 0 && applySelectiveLogic({
+        logic: card.logic,
+        hitCount: secondaryHits,
+        total: secondaryTotal
+      });
     } else {
       triggered = applyLogic({ logic: card.logic, hitCount: primaryHits, total: primaryTotal });
     }
@@ -119,6 +125,15 @@ function scoreCard(card, query) {
   if (!triggered) return 0;
   const hitCount = primaryHits + secondaryHits;
   return hitCount * 100 + priorityScore(card);
+}
+
+function applySelectiveLogic({ logic, hitCount, total }) {
+  if (total === 0) return true;
+  const value = String(logic || 'and_any').toLowerCase().trim().replace(/[\s-]+/g, '_');
+  if (value === 'and_all' || value === 'all' || value === 'andall') return hitCount === total;
+  if (value === 'not_any' || value === 'not' || value === 'notany') return hitCount === 0;
+  if (value === 'not_all' || value === 'notall') return hitCount < total;
+  return hitCount > 0;
 }
 
 function applyLogic({ logic, hitCount, total }) {

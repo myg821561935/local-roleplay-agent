@@ -13,7 +13,10 @@ export function applyLightFrontendDisplayTransforms(text, runtime = {}, { role =
     if (!pattern || pattern.length > 500 || !isSafePattern(pattern)) continue;
     const flags = normalizeFlags(rule.flags);
     try {
-      const replacement = renderSafeLightFrontendTemplate(String(rule.replacement || '').slice(0, 4000), context);
+      const replacement = expandDisplayMacros(
+        renderSafeLightFrontendTemplate(String(rule.replacement || '').slice(0, 4000), context),
+        context
+      );
       output = output.replace(new RegExp(pattern, flags), replacement);
     } catch {
       // Imported display rules are best-effort and never break the chat renderer.
@@ -24,14 +27,26 @@ export function applyLightFrontendDisplayTransforms(text, runtime = {}, { role =
 
 export function getLightFrontendQuickReplies(runtime = {}) {
   return (Array.isArray(runtime?.quickReplies) ? runtime.quickReplies : [])
-    .filter((reply) => reply?.enabled !== false && reply?.actionType === 'compose' && reply?.template)
+    .filter((reply) => reply?.enabled !== false && (
+      (reply?.actionType === 'compose' && reply?.template)
+      || (reply?.actionType === 'mvu-patch' && Array.isArray(reply?.patch?.operations))
+    ))
     .slice(0, 24)
     .map((reply) => ({
       id: String(reply.id || ''),
-      label: String(reply.label || reply.template).slice(0, 40),
-      template: String(reply.template).slice(0, 4000),
+      label: String(reply.label || reply.template || reply.patch?.operations?.[0]?.path || '状态动作').slice(0, 40),
+      template: String(reply.template || '').slice(0, 4000),
+      actionType: reply.actionType,
+      ...(reply.patch ? { patch: structuredClone(reply.patch) } : {}),
       source: 'community-light-frontend'
     }));
+}
+
+function expandDisplayMacros(text, context = {}) {
+  const values = { user: context.user, char: context.char };
+  return String(text || '').replace(/\{\{\s*(user|char)\s*\}\}/gi, (_, key) => {
+    return String(values[String(key).toLowerCase()] || '');
+  });
 }
 
 export function getLightFrontendPanels(runtime = {}) {

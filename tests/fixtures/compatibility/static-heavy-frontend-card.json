@@ -1,0 +1,12 @@
+{
+  "name": "脱敏静态面板角色",
+  "extensions": {
+    "regex_scripts": [
+      {
+        "name": "人物状态",
+        "pattern": "<status/>",
+        "replacement": "<section><h2>主角信息</h2><table><tr><th>体力</th><td>80</td></tr></table></section>"
+      }
+    ]
+  }
+}

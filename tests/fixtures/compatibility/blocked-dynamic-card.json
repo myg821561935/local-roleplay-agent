@@ -1,0 +1,8 @@
+{
+  "name": "脱敏动态脚本角色",
+  "description": "静态人物信息可以归档。",
+  "extensions": {
+    "javascript": "document.body.innerHTML = '<iframe src=\"https://example.invalid\"></iframe>'",
+    "custom_html": "<iframe src=\"https://example.invalid\"></iframe>"
+  }
+}

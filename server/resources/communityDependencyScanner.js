@@ -2,6 +2,7 @@ import {
   extractLightFrontendRuntime,
   inspectSafeTemplate
 } from '../compat/lightFrontendRuntime.js';
+import { buildCompatibilityAcceptance } from '../compat/compatibilityPolicy.js';
 
 const STATUS_PRIORITY = {
   supported: 0,
@@ -116,6 +117,16 @@ const RUNTIME_RULES = [
     textPatterns: [/提示词预设顺序/u, /prompt\s*(?:manager|order|preset)/i],
     impact: '普通系统提示和历史后指令可以使用，但酒馆预设的精确插入锚点与排序不会完全复现。',
     recommendation: '导入后在 Prompt 检查器中核对系统层、角色层和历史后指令的顺序。'
+  },
+  {
+    id: 'declarative-lifecycle',
+    label: '声明式生命周期',
+    category: 'state',
+    status: 'degraded',
+    pathPatterns: [/(?:^|\.)(?:onImport|onUser|onAssistant|lifecycle_events?)(?:\.|$)/i],
+    textPatterns: [],
+    impact: '事件只允许在统一预算内执行白名单状态补丁，不执行原始脚本。',
+    recommendation: '复核事件次数、状态路径、操作数量和失败回滚报告。'
   },
   {
     id: 'custom-html-ui',
@@ -300,6 +311,7 @@ function summarizeRequirements(requirements) {
     : level === 'degraded'
       ? `检测到 ${counts.degraded} 项需要转换的社区能力；核心内容可以游玩，降级项需要复核。`
       : '未发现必须依赖酒馆助手、小白 X 或第三方脚本的能力。';
+  const acceptance = buildCompatibilityAcceptance(normalized);
   return {
     schemaVersion: 1,
     level,
@@ -311,6 +323,7 @@ function summarizeRequirements(requirements) {
     requiresReview: counts.missing > 0 || counts.degraded > 0,
     safeToImport: true,
     executesThirdPartyCode: false,
+    acceptance,
     counts,
     requirements: normalized
   };
@@ -341,12 +354,13 @@ function resolveLightFrontendRule(rule, runtime, evidence, templateReport) {
     };
   }
   if (rule.id === 'quick-replies' && runtime.quickReplies.length) {
+    const stateActions = runtime.quickReplies.filter((item) => item.actionType === 'mvu-patch').length;
     return {
       ...rule,
       status: 'supported',
       evidence,
-      impact: `已识别 ${runtime.quickReplies.length} 个文本型快捷回复，并映射到原生输入栏。`,
-      recommendation: '斜杠命令链仍保持禁用；需要动作协议时单独转换。'
+      impact: `已识别 ${runtime.quickReplies.length} 个快捷回复，其中 ${stateActions} 个白名单变量命令转换为 MVU 补丁。`,
+      recommendation: '未知斜杠命令仍保持禁用，并会出现在兼容差异中。'
     };
   }
   if (rule.id === 'sidebar-panels' && runtime.panels.length) {
@@ -365,6 +379,45 @@ function resolveLightFrontendRule(rule, runtime, evidence, templateReport) {
       evidence,
       impact: '已识别安全 JSON 初始状态；状态更新使用带 revision 的声明式补丁。',
       recommendation: '第三方 JavaScript、EJS 与事件钩子仍保持禁用。'
+    };
+  }
+  if (rule.id === 'stscript') {
+    const stateActions = runtime.quickReplies.filter((item) => item.actionType === 'mvu-patch').length;
+    if (stateActions) {
+      return {
+        ...rule,
+        status: 'degraded',
+        evidence,
+        impact: `已将 ${stateActions} 个 /setvar 或 /incvar 命令转换为白名单 MVU 补丁；其他脚本命令不执行。`,
+        recommendation: '逐项复核被禁用命令；不要把存在函数、循环或外部调用的脚本视为已兼容。'
+      };
+    }
+  }
+  if (rule.id === 'declarative-lifecycle') {
+    const events = Object.keys(runtime.lifecycle?.events || {});
+    if (events.length) {
+      const lifecycleDiagnostics = (runtime.diagnostics || [])
+        .filter((item) => String(item?.code || '').startsWith('lifecycle-'));
+      return {
+        ...rule,
+        status: lifecycleDiagnostics.length ? 'degraded' : 'supported',
+        evidence,
+        impact: lifecycleDiagnostics.length
+          ? `已映射 ${events.join('、')}，但有 ${lifecycleDiagnostics.length} 项步骤因预算或白名单限制被禁用。`
+          : `已映射 ${events.join('、')}；统一限制执行次数、状态路径、补丁类型、递归深度和单轮变更数。`,
+        recommendation: lifecycleDiagnostics.length
+          ? '按兼容差异修正被禁用步骤；运行时不会静默执行超预算内容。'
+          : '任一步失败时整次事件回滚，原始 JavaScript 不会执行。'
+      };
+    }
+  }
+  if (rule.id === 'custom-html-ui' && runtime.panels.length && !evidence.some((item) => /iframe/i.test(item))) {
+    return {
+      ...rule,
+      status: 'degraded',
+      evidence,
+      impact: `静态内容已转换为 ${runtime.panels.length} 个原生侧栏面板；原 CSS、DOM 事件和表单行为被禁用。`,
+      recommendation: '对照原卡复核信息层级；需要交互的部分改写为声明式快捷动作。'
     };
   }
   if (rule.id === 'prompt-preset-order' && evidence.some((item) => /sillyTavernPreset|promptLayout/.test(item))) {

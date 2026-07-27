@@ -50,15 +50,30 @@ function normalizeWorldBookEntry(entry, index, fallbackDepth) {
 function normalizeMatchMode(entry) {
   const mode = stringValue(entry.matchMode || entry.match_mode);
   if (mode) return mode;
+  if (entry.selective === true) return 'selective';
   return normalizeStringArray(entry.regex ?? entry.regexes ?? entry.patterns).length ? 'regex' : 'keyword';
 }
 
 function normalizeLogic(entry) {
-  if (entry.logic) return stringValue(entry.logic);
-  if (entry.selective === true) {
-    return Number(entry.selectiveLogic ?? entry.selective_logic) === 0 ? 'all' : 'selective';
-  }
+  if (entry.logic) return normalizeLogicValue(entry.logic);
+  if (entry.selective === true) return normalizeSelectiveLogic(entry.selectiveLogic ?? entry.selective_logic);
   return 'any';
+}
+
+function normalizeSelectiveLogic(value) {
+  return ['and_any', 'not_all', 'not_any', 'and_all'][Number(value)] || 'and_any';
+}
+
+function normalizeLogicValue(value) {
+  const normalized = stringValue(value).toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = {
+    selective: 'and_any',
+    andany: 'and_any',
+    notall: 'not_all',
+    notany: 'not_any',
+    andall: 'and_all'
+  };
+  return aliases[normalized] || normalized || 'any';
 }
 
 function normalizePosition(position) {

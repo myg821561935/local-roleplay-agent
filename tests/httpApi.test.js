@@ -1593,8 +1593,8 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.5.0-rc.1',
-    releaseChannel: 'release-candidate-local',
+    version: '0.5.0',
+    releaseChannel: 'stable-local',
     dataSchemaVersion: 3,
     targetDataSchemaVersion: 3
   });

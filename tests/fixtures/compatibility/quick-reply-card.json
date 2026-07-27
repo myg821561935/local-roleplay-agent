@@ -1,0 +1,15 @@
+{
+  "name": "脱敏快捷动作角色",
+  "extensions": {
+    "quick_replies": [
+      {
+        "label": "记录信任",
+        "command": "/setvar key=trust value=1"
+      },
+      {
+        "label": "未知命令链",
+        "command": "/if trust gt 0"
+      }
+    ]
+  }
+}

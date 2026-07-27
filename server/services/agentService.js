@@ -13,6 +13,7 @@ import {
   extractMvuPatchEnvelope,
   normalizeMvuSnapshot
 } from '../compat/mvuProtocol.js';
+import { executeDeclarativeLifecycle } from '../compat/declarativeLifecycle.js';
 import { WorldSimulationService } from './worldSimulationService.js';
 
 const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
@@ -57,7 +58,8 @@ export class AgentService {
       characterCard: globalConfig.characterCard,
       promptModules: globalConfig.promptModules,
       worldBook: globalConfig.worldBook,
-      persona: globalConfig.persona
+      persona: globalConfig.persona,
+      lightFrontend: globalConfig.lightFrontend || {}
     };
     await this.sessionService.saveSession(session);
     return session.config;
@@ -79,6 +81,7 @@ export class AgentService {
     const userMessage = createMessage('user', content, {
       kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat'
     });
+    const userLifecycle = applySessionLifecycle(session, activeConfig.lightFrontend, 'onUser');
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: userMessage.content
@@ -93,7 +96,9 @@ export class AgentService {
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       fallbackChain,
-      vectorHits
+      vectorHits,
+      lifecyclePatches: userLifecycle.envelopes,
+      lifecycleReports: [userLifecycle.report]
     });
 
     session.messages.push(userMessage, assistantMessage);
@@ -132,6 +137,7 @@ export class AgentService {
       kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat',
       hiddenFromChat: hideUserMessage
     });
+    const userLifecycle = applySessionLifecycle(session, activeConfig.lightFrontend, 'onUser');
     const { vectorHits } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: userMessage.content
@@ -164,6 +170,7 @@ export class AgentService {
     await streamFilter.end();
     const parsedOutput = parseAssistantOutput(assistantResult.content);
     const mvuUpdate = applyAssistantMvuUpdate(session, parsedOutput);
+    const assistantLifecycle = applySessionLifecycle(session, activeConfig.lightFrontend, 'onAssistant');
     const speaker = parsedOutput.speaker;
     const parsedReply = parsedOutput.reply;
     const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
@@ -172,8 +179,9 @@ export class AgentService {
       usage,
       actionEnvelope: parsedOutput.actionEnvelope,
       actionError: parsedOutput.actionError,
-      mvuPatches: mvuUpdate.patches,
+      mvuPatches: [...userLifecycle.envelopes, ...mvuUpdate.patches, ...assistantLifecycle.envelopes],
       mvuError: mvuUpdate.error,
+      lifecycleReports: [userLifecycle.report, assistantLifecycle.report],
       roleplayPanels: parsedOutput.roleplayPanels,
       speaker
     });
@@ -390,7 +398,20 @@ export class AgentService {
     return { session, reply: assistantMessage, debug: result.assembled };
   }
 
-  async generateAssistantMessage({ config, session, provider, userMessage, groupMembers, targetSpeaker, templates, customArrays, fallbackChain = [], vectorHits = [] }) {
+  async generateAssistantMessage({
+    config,
+    session,
+    provider,
+    userMessage,
+    groupMembers,
+    targetSpeaker,
+    templates,
+    customArrays,
+    fallbackChain = [],
+    vectorHits = [],
+    lifecyclePatches = [],
+    lifecycleReports = []
+  }) {
     const assembled = assemblePrompt({
       promptModules: config.promptModules,
       characterCard: config.characterCard,
@@ -416,6 +437,7 @@ export class AgentService {
     });
     const parsedOutput = parseAssistantOutput(assistantResult.content);
     const mvuUpdate = applyAssistantMvuUpdate(session, parsedOutput);
+    const assistantLifecycle = applySessionLifecycle(session, config.lightFrontend, 'onAssistant');
     const speaker = parsedOutput.speaker;
     const parsedReply = parsedOutput.reply;
     const usage = buildUsageSnapshot({ provider, assembled, content: parsedReply.content, providerResult: assistantResult });
@@ -424,8 +446,9 @@ export class AgentService {
       usage,
       actionEnvelope: parsedOutput.actionEnvelope,
       actionError: parsedOutput.actionError,
-      mvuPatches: mvuUpdate.patches,
+      mvuPatches: [...lifecyclePatches, ...mvuUpdate.patches, ...assistantLifecycle.envelopes],
       mvuError: mvuUpdate.error,
+      lifecycleReports: [...lifecycleReports, assistantLifecycle.report],
       roleplayPanels: parsedOutput.roleplayPanels,
       speaker
     });
@@ -864,6 +887,9 @@ function createMessage(role, content, extras = {}) {
       detail: String(extras.mvuError.detail || extras.mvuError.message || '')
     };
   }
+  if (Array.isArray(extras.lifecycleReports) && extras.lifecycleReports.length) {
+    message.lifecycleReports = structuredClone(extras.lifecycleReports);
+  }
   if (extras.kind) message.kind = String(extras.kind);
   if (extras.hiddenFromChat === true) message.hiddenFromChat = true;
   if (extras.speaker) message.speaker = String(extras.speaker).slice(0, 30);
@@ -1183,6 +1209,24 @@ function applyAssistantMvuUpdate(session, parsedOutput) {
   } catch (error) {
     return { patches: [], error: serializeMvuError(error) };
   }
+}
+
+function applySessionLifecycle(session, lightFrontend, event) {
+  const memory = session.memory || (session.memory = {});
+  const current = normalizeMvuSnapshot(memory.lightFrontendState);
+  const result = executeDeclarativeLifecycle({
+    runtime: lightFrontend || {},
+    event,
+    currentState: current
+  });
+  if (result.report.status === 'applied') {
+    memory.lightFrontendState = structuredClone(result.state);
+  }
+  memory.lightFrontendLifecycleReports = [
+    ...(Array.isArray(memory.lightFrontendLifecycleReports) ? memory.lightFrontendLifecycleReports : []),
+    result.report
+  ].slice(-50);
+  return result;
 }
 
 function serializeMvuError(error) {

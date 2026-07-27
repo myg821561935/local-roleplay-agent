@@ -1,0 +1,13 @@
+{
+  "name": "脱敏正则角色",
+  "description": "使用安全显示替换。",
+  "extensions": {
+    "regex_scripts": [
+      {
+        "scriptName": "隐藏状态块",
+        "findRegex": "/<state>[\\s\\S]*?<\\/state>/g",
+        "replaceString": "{{char}}的状态已更新"
+      }
+    ]
+  }
+}

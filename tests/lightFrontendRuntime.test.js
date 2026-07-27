@@ -35,10 +35,14 @@ test('extracts safe regex, text quick replies and MVU seed from community extens
 
   assert.equal(runtime.executesThirdPartyCode, false);
   assert.equal(runtime.regexTransforms.length, 1);
-  assert.equal(runtime.quickReplies.length, 1);
+  assert.equal(runtime.quickReplies.length, 2);
   assert.equal(runtime.quickReplies[0].template, '{{char}}继续观察');
+  assert.equal(runtime.quickReplies[1].actionType, 'mvu-patch');
+  assert.deepEqual(runtime.quickReplies[1].patch.operations, [
+    { op: 'set', path: 'variables.mood', value: 'angry' }
+  ]);
   assert.deepEqual(runtime.mvu.values, { favor: 10, flags: { met: true } });
-  assert.ok(runtime.diagnostics.some((item) => item.code === 'command-quick-reply-disabled'));
+  assert.equal(runtime.diagnostics.some((item) => item.code === 'command-quick-reply-disabled'), false);
 });
 
 test('display transforms affect presentation without mutating the raw message', () => {
@@ -60,6 +64,16 @@ test('display transform replacements can read MVU state without executing code',
 
   assert.equal(applyDisplayTransforms('状态：<favor/>', runtime.regexTransforms, { context }), '状态：好感 18');
   assert.equal(applyLightFrontendDisplayTransforms('状态：<favor/>', runtime, { context }), '状态：好感 18');
+});
+
+test('display transform replacements expand user and char macros on server and browser', () => {
+  const runtime = normalizeLightFrontendRuntime({
+    regexTransforms: [{ pattern: '<speaker/>', replacement: '{{char}}回应{{user}}', flags: 'g' }]
+  });
+  const context = { char: '闻雪照', user: '旅人' };
+
+  assert.equal(applyDisplayTransforms('<speaker/>', runtime.regexTransforms, { context }), '闻雪照回应旅人');
+  assert.equal(applyLightFrontendDisplayTransforms('<speaker/>', runtime, { context }), '闻雪照回应旅人');
 });
 
 test('unsafe regex patterns and executable quick replies remain disabled', () => {

@@ -158,7 +158,9 @@ function toV2CharacterBook(worldBook) {
       priority: entry.priority ?? 80,
       scan_depth: entry.depth ?? 4,
       insertion_order: entry.insertionOrder ?? index,
-      selective: entry.logic === 'selective',
+      selective: entry.matchMode === 'selective'
+        || ['and_any', 'not_all', 'not_any', 'and_all', 'selective'].includes(String(entry.logic || '')),
+      selectiveLogic: toSelectiveLogicNumber(entry.logic),
       constant: entry.constant === true,
       case_sensitive: entry.caseSensitive === true,
       position: entry.position || 'after_character',
@@ -166,4 +168,10 @@ function toV2CharacterBook(worldBook) {
       extensions: entry.extensions || {}
     }))
   };
+}
+
+function toSelectiveLogicNumber(logic) {
+  const normalized = String(logic || '').toLowerCase().replace(/[\s-]+/g, '_');
+  const index = ['and_any', 'not_all', 'not_any', 'and_all'].indexOf(normalized);
+  return index >= 0 ? index : 0;
 }

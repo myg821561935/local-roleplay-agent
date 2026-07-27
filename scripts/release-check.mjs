@@ -24,6 +24,10 @@ const requiredFiles = [
   'server/simulation/worldStateArbiter.js',
   'server/resources/resourceAdapters.js',
   'server/resources/resourceEvaluator.js',
+  'server/resources/communityDependencyScanner.js',
+  'server/compat/compatibilityPolicy.js',
+  'server/compat/declarativeLifecycle.js',
+  'server/compat/lifecyclePolicy.js',
   'server/compat/lightFrontendRuntime.js',
   'server/compat/mvuProtocol.js',
   'server/content/contentPackManifest.js',
@@ -39,10 +43,14 @@ const requiredFiles = [
   'docs/release-v0.4.md',
   'docs/release-v0.4.1-rc.1.md',
   'docs/release-v0.5.0-rc.1.md',
+  'docs/release-v0.5.0.md',
   'docs/action-protocol-v1.md',
   'docs/content-pack-spec-v1.md',
   'docs/plugin-manifest-spec-v1.md',
-  'docs/light-frontend-runtime-v1.md'
+  'docs/light-frontend-runtime-v1.md',
+  'docs/tavern-compatibility-policy-v1.md',
+  'tests/tavernCompatibility.test.js',
+  'tests/fixtures/compatibility/README.md'
 ];
 
 assert(nodeMajor >= MIN_NODE_MAJOR, `Node.js ${MIN_NODE_MAJOR}+ required; current ${process.versions.node}`);

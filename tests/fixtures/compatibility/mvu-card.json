@@ -1,0 +1,23 @@
+{
+  "name": "脱敏 MVU 角色",
+  "extensions": {
+    "mvu": {
+      "values": {
+        "relationships": {
+          "guide": {
+            "trust": 1
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "onUser": [
+        {
+          "op": "increment",
+          "path": "relationships.guide.trust",
+          "amount": 1
+        }
+      ]
+    }
+  }
+}

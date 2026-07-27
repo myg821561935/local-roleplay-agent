@@ -26,6 +26,7 @@ import { StoryProjectService } from './services/storyProjectService.js';
 import { AuthoringService } from './services/authoringService.js';
 import { listAgentProfiles, normalizeAgentProfileId } from './authoring/agentProfiles.js';
 import { applyMvuPatch, normalizeLightFrontendRuntime } from './compat/lightFrontendRuntime.js';
+import { executeDeclarativeLifecycle } from './compat/declarativeLifecycle.js';
 import {
   ApiError,
   getHeader,
@@ -1559,11 +1560,21 @@ function withPackRuleSystem(memory, ruleSystem) {
 
 function withLightFrontendMemory(memory, lightFrontend) {
   const runtime = normalizeLightFrontendRuntime(lightFrontend || {});
-  if (!runtime.mvu.enabled) return memory;
+  const hasLifecycle = Object.keys(runtime.lifecycle?.events || {}).length > 0;
+  if (!runtime.mvu.enabled && !hasLifecycle) return memory;
+  const initialState = runtime.mvu.enabled
+    ? structuredClone(runtime.mvu)
+    : { enabled: true, values: {}, revision: 0 };
+  const imported = executeDeclarativeLifecycle({
+    runtime,
+    event: 'onImport',
+    currentState: initialState
+  });
   return {
     ...memory,
-    lightFrontendBaseline: structuredClone(runtime.mvu),
-    lightFrontendState: structuredClone(runtime.mvu)
+    lightFrontendBaseline: structuredClone(imported.state),
+    lightFrontendState: structuredClone(imported.state),
+    lightFrontendLifecycleReports: [imported.report]
   };
 }
 

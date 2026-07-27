@@ -433,6 +433,7 @@ test('v0.2 resource workbench keeps community imports, diagnostics and script co
 test('v0.2.2 exposes versioned content packs and declarative plugin adapters in the resource workbench', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
+  const compatibility = await readFile('public/modules/importCompatibility.js', 'utf8');
   const css = await readFrontendCss();
 
   assert.match(html, /data-resource-view="extensions"/);
@@ -460,6 +461,10 @@ test('v0.2.2 exposes versioned content packs and declarative plugin adapters in 
   assert.match(app, /className = 'import-dependency-list'/);
   assert.match(app, /createCommunityCompatibilitySection/);
   assert.match(app, /communityCompatibility\.label/);
+  assert.match(compatibility, /完整映射/);
+  assert.match(compatibility, /安全降级/);
+  assert.match(compatibility, /阻断运行/);
+  assert.match(compatibility, /acceptance\?\.blockers/);
 
   assert.match(css, /\.resource-view-switch\s*\{[\s\S]*grid-template-columns:\s*repeat\(4,/);
   assert.match(css, /\.resource-extensions\s*\{/);
@@ -468,6 +473,8 @@ test('v0.2.2 exposes versioned content packs and declarative plugin adapters in 
   assert.match(css, /\.import-dependency-list\s*\{/);
   assert.match(css, /\.import-community-compatibility\s*\{/);
   assert.match(css, /\.import-community-item\s*\{/);
+  assert.match(css, /\.import-community-playability\.is-safe-degradation\s*\{/);
+  assert.match(css, /\.import-community-playability\.is-blocked\s*\{/);
   assert.match(css, /\.import-apply-option\[hidden\]\s*\{[\s\S]*display:\s*none;/);
 });
 

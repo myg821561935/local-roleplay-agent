@@ -4907,6 +4907,18 @@ select:focus {
   color: #e29284;
 }
 
+.import-community-playability.is-safe-degradation {
+  border-color: rgba(214, 166, 74, 0.5);
+  background: rgba(214, 166, 74, 0.08);
+  color: #ddba68;
+}
+
+.import-community-playability.is-blocked {
+  border-color: rgba(194, 99, 86, 0.58);
+  background: rgba(194, 99, 86, 0.12);
+  color: #e29284;
+}
+
 .import-community-summary,
 .import-community-safety {
   margin: 0;

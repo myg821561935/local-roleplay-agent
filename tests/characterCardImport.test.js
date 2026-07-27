@@ -23,7 +23,7 @@ test('imports Character Card V2 JSON into local character card and world book en
   assert.equal(imported.worldBook[0].title, '镇武司暗线');
   assert.deepEqual(imported.worldBook[0].keywords, ['镇武司']);
   assert.deepEqual(imported.worldBook[0].secondaryKeywords, ['暗线']);
-  assert.equal(imported.worldBook[0].logic, 'selective');
+  assert.equal(imported.worldBook[0].logic, 'and_any');
   assert.equal(imported.worldBook[0].depth, 6);
 });
 
