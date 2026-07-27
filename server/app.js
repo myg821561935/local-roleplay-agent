@@ -2,16 +2,14 @@ import { readFile } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { JsonStore } from './lib/jsonStore.js';
-import { readJson, writeJson } from './lib/http.js';
+import { writeJson } from './lib/http.js';
 import { ConfigService } from './config/configService.js';
 import { SessionService } from './services/sessionService.js';
 import { AgentService } from './services/agentService.js';
 import { AssetService } from './services/assetService.js';
-import { ImportSourceError, ImportSourceService, listImportSources } from './services/importSourceService.js';
+import { ImportSourceError, ImportSourceService } from './services/importSourceService.js';
 import { summarizeAllUsage, summarizeSessionUsage } from './services/usageService.js';
 import { buildProviderClient } from './provider/providerRegistry.js';
-import { importCharacterCardFromPayload } from './character/characterCardImport.js';
-import { exportCharacterCardPng } from './character/characterCardExport.js';
 import { previewImportPayload } from './character/importPreview.js';
 import { createWorldBookEntryFromFact, normalizeFactCards, worldBookIdentity } from './agent/factCards.js';
 import { retrieveCards } from './agent/memoryRetriever.js';
@@ -22,13 +20,25 @@ import { StdioMcpClient } from './mcp/stdioTransport.js';
 import { BackupError, BackupService } from './services/backupService.js';
 import { readDataSchemaStatus } from './data/migrations.js';
 import { APP_NAME, APP_VERSION, DATA_SCHEMA_VERSION, RELEASE_CHANNEL } from './releaseInfo.js';
-import { sanitizeProviderTestError, testProviderConnection } from './services/providerTestService.js';
 import { ResourceLibraryService } from './services/resourceLibraryService.js';
 import { WorldSimulationService } from './services/worldSimulationService.js';
-import { StoryProjectService, summarizeStoryProject } from './services/storyProjectService.js';
+import { StoryProjectService } from './services/storyProjectService.js';
 import { AuthoringService } from './services/authoringService.js';
 import { listAgentProfiles, normalizeAgentProfileId } from './authoring/agentProfiles.js';
 import { applyMvuPatch, normalizeLightFrontendRuntime } from './compat/lightFrontendRuntime.js';
+import {
+  ApiError,
+  getHeader,
+  isAllowedOrigin,
+  readRequestJson,
+  validateMutatingRequest
+} from './routes/http.js';
+import { handleResourceLibraryRoutes } from './routes/resourceLibraryRoutes.js';
+import { handleProviderRoutes } from './routes/providerRoutes.js';
+import { handleMcpRoutes } from './routes/mcpRoutes.js';
+import { handleChatRoutes } from './routes/chatRoutes.js';
+import { handleStoryProjectRoutes } from './routes/storyProjectRoutes.js';
+import { handleImportRoutes } from './routes/importRoutes.js';
 
 const contentTypes = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -40,7 +50,6 @@ const contentTypes = new Map([
 
 const MASKED_SECRET = '********';
 const PROVIDER_TASK_KEYS = new Set(['chat', 'rewrite', 'fact', 'summary']);
-const LOCAL_ORIGIN_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const SENSITIVE_HEADER_PATTERNS = [
   'authorization',
   'api-key',
@@ -50,15 +59,6 @@ const SENSITIVE_HEADER_PATTERNS = [
   'credential',
   'auth'
 ];
-
-class ApiError extends Error {
-  constructor(statusCode, code, detail = '') {
-    super(code);
-    this.statusCode = statusCode;
-    this.code = code;
-    this.detail = String(detail || '');
-  }
-}
 
 export function createApp({ rootDir = process.cwd(), providerClient: providerClientOverride, fetchImpl } = {}) {
   const appRoot = path.resolve(rootDir);
@@ -248,227 +248,30 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/resource-library/adapters') {
-    writeJson(res, 200, { adapters: await resourceLibraryService.listAdapters() });
-    return;
-  }
+  if (await handleResourceLibraryRoutes({
+    req,
+    res,
+    url,
+    resourceLibraryService,
+    resolveContentPack,
+    summarizeResolvedPack
+  })) return;
 
-  if (req.method === 'GET' && url.pathname === '/api/plugins') {
-    const plugins = await resourceLibraryService.listPlugins();
-    writeJson(res, 200, {
-      plugins,
-      summary: {
-        total: plugins.length,
-        core: plugins.filter((item) => item.origin === 'core').length,
-        local: plugins.filter((item) => item.origin === 'local').length,
-        incompatible: plugins.filter((item) => !item.compatible).length
-      }
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/plugins/inspect') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    writeJson(res, 200, { inspection: await resourceLibraryService.pluginRegistry.inspectManifest(body.manifest || body) });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/plugins') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    try {
-      writeJson(res, 200, await resourceLibraryService.installPluginManifest(body.manifest || body));
-    } catch (error) {
-      throw new ApiError(422, 'PLUGIN_MANIFEST_INVALID', error.message);
+  if (await handleImportRoutes({
+    req,
+    res,
+    url,
+    assetService,
+    configService,
+    sessionService,
+    resourceLibraryService,
+    importSourceService,
+    operations: {
+      commitImport,
+      previewImport,
+      saveImportedCharacterPortrait
     }
-    return;
-  }
-
-  const pluginRoute = matchPluginRoute(url.pathname);
-  if (pluginRoute && req.method === 'PATCH') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    try {
-      const plugin = await resourceLibraryService.setPluginEnabled(pluginRoute.pluginId, body.enabled === true);
-      if (!plugin) throw new ApiError(404, 'PLUGIN_NOT_FOUND');
-      writeJson(res, 200, { plugin });
-    } catch (error) {
-      if (error instanceof ApiError) throw error;
-      if (error.message === 'CORE_PLUGIN_IMMUTABLE') throw new ApiError(409, 'CORE_PLUGIN_IMMUTABLE');
-      throw error;
-    }
-    return;
-  }
-
-  if (pluginRoute && req.method === 'DELETE') {
-    validateMutatingRequest(req);
-    const removed = await resourceLibraryService.removePlugin(pluginRoute.pluginId);
-    if (!removed) throw new ApiError(404, 'PLUGIN_NOT_FOUND');
-    writeJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/resource-library/resources') {
-    const resources = await resourceLibraryService.listResources({
-      kind: url.searchParams.get('kind') || '',
-      query: url.searchParams.get('q') || ''
-    });
-    writeJson(res, 200, { resources });
-    return;
-  }
-
-  if (req.method === 'PATCH' && url.pathname === '/api/resource-library/resources') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.resourceIds)) {
-      throw new ApiError(400, 'RESOURCE_BATCH_METADATA_INVALID');
-    }
-    const result = await resourceLibraryService.updateResourcesMetadata(body.resourceIds, body);
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/resource-library/resources/export') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.resourceIds)) {
-      throw new ApiError(400, 'RESOURCE_EXPORT_INVALID');
-    }
-    writeJson(res, 200, { bundle: await resourceLibraryService.exportResourceBundle(body.resourceIds) });
-    return;
-  }
-
-  if (req.method === 'DELETE' && url.pathname === '/api/resource-library/resources') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.resourceIds)) {
-      throw new ApiError(400, 'RESOURCE_BATCH_DELETE_INVALID');
-    }
-    writeJson(res, 200, await resourceLibraryService.removeResources(body.resourceIds));
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/resource-library/packs') {
-    writeJson(res, 200, { packs: await resourceLibraryService.listPacks() });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/resource-library/resources/prompt') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    try {
-      const result = await resourceLibraryService.savePromptResource(body);
-      writeJson(res, 200, result);
-    } catch (error) {
-      throw new ApiError(400, 'RESOURCE_PROMPT_INVALID', error.message);
-    }
-    return;
-  }
-
-  const resourceReevaluationRoute = matchResourceLibraryResourceReevaluationRoute(url.pathname);
-  if (resourceReevaluationRoute && req.method === 'POST') {
-    validateMutatingRequest(req);
-    const result = await resourceLibraryService.reevaluateResource(resourceReevaluationRoute.resourceId);
-    if (!result) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
-    writeJson(res, 200, result);
-    return;
-  }
-
-  const resourceContentRoute = matchResourceLibraryResourceContentRoute(url.pathname);
-  if (resourceContentRoute && req.method === 'PATCH') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new ApiError(400, 'RESOURCE_CONTENT_INVALID');
-    }
-    try {
-      const resource = await resourceLibraryService.updateResourcePayload(resourceContentRoute.resourceId, body);
-      if (!resource) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
-      writeJson(res, 200, { resource });
-    } catch (error) {
-      if (error instanceof ApiError) throw error;
-      throw new ApiError(400, error.message || 'RESOURCE_CONTENT_INVALID');
-    }
-    return;
-  }
-
-  const resourceRoute = matchResourceLibraryResourceRoute(url.pathname);
-  if (resourceRoute && req.method === 'PATCH') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new ApiError(400, 'RESOURCE_METADATA_INVALID');
-    }
-    const resource = await resourceLibraryService.updateResourceMetadata(resourceRoute.resourceId, body);
-    if (!resource) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
-    writeJson(res, 200, { resource });
-    return;
-  }
-
-  if (resourceRoute && req.method === 'DELETE') {
-    validateMutatingRequest(req);
-    const removed = await resourceLibraryService.removeResource(resourceRoute.resourceId);
-    if (!removed) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
-    writeJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/resource-library/packs/inspect') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const basePack = body.basePackId
-      ? await resolveContentPack(resourceLibraryService, body.basePackId)
-      : null;
-    if (body.basePackId && !basePack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
-    try {
-      const composition = await resourceLibraryService.inspectPackComposition(body, { basePack });
-      writeJson(res, 200, { composition });
-    } catch (error) {
-      if (String(error.message || '').startsWith('RESOURCE_NOT_FOUND:')) {
-        throw new ApiError(404, 'RESOURCE_NOT_FOUND', error.message.split(':').slice(1).join(':'));
-      }
-      throw new ApiError(400, 'RESOURCE_PACK_INVALID', error.message);
-    }
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/resource-library/packs') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const basePack = body.basePackId
-      ? await resolveContentPack(resourceLibraryService, body.basePackId)
-      : null;
-    if (body.basePackId && !basePack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
-    try {
-      const pack = await resourceLibraryService.createPack(body, { basePack });
-      writeJson(res, 200, { pack, summary: summarizeResolvedPack(pack) });
-    } catch (error) {
-      if (String(error.message || '').startsWith('RESOURCE_NOT_FOUND:')) {
-        throw new ApiError(404, 'RESOURCE_NOT_FOUND', error.message.split(':').slice(1).join(':'));
-      }
-      throw new ApiError(400, 'RESOURCE_PACK_INVALID', error.message);
-    }
-    return;
-  }
-
-  const resourceLibraryPackRoute = matchResourceLibraryPackRoute(url.pathname);
-  if (resourceLibraryPackRoute && req.method === 'PATCH') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const pack = await resourceLibraryService.updatePackMetadata(resourceLibraryPackRoute.packId, body);
-    if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
-    writeJson(res, 200, { pack, summary: summarizeResolvedPack(pack) });
-    return;
-  }
-
-  if (resourceLibraryPackRoute && req.method === 'DELETE') {
-    validateMutatingRequest(req);
-    const removed = await resourceLibraryService.removePack(resourceLibraryPackRoute.packId);
-    if (!removed) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
-    writeJson(res, 200, { ok: true });
-    return;
-  }
+  })) return;
 
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
     const [sessions, sessionSummaries] = await Promise.all([
@@ -484,89 +287,20 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/story-projects') {
-    const projects = await storyProjectService.listProjects();
-    writeJson(res, 200, { projects: projects.map(summarizeStoryProject) });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/story-projects') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const pack = await resolveContentPack(resourceLibraryService, body.basePackId);
-    if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
-    const project = await storyProjectService.createProject({
-      title: body.title || pack.sessionTitle || pack.title,
-      description: body.description || pack.description,
-      basePackId: pack.id,
-      basePackTitle: pack.title,
-      basePackVersion: pack.manifest?.version || pack.version || '1.0.0',
-      visualPackId: pack.visualPackId || pack.resourceManifest?.basePackId || pack.id,
-      bindings: buildStoryProjectBindings(pack),
-      runtimePolicy: body.runtimePolicy
-    });
-    writeJson(res, 200, { project, summary: summarizeStoryProject(project) });
-    return;
-  }
-
-  const storyProjectRoute = url.pathname.match(/^\/api\/story-projects\/([^/]+)$/);
-  if (storyProjectRoute && req.method === 'GET') {
-    const project = await storyProjectService.getProject(decodeURIComponent(storyProjectRoute[1]));
-    if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
-    writeJson(res, 200, { project });
-    return;
-  }
-
-  if (storyProjectRoute && req.method === 'PUT') {
-    validateMutatingRequest(req);
-    const projectId = decodeURIComponent(storyProjectRoute[1]);
-    const current = await storyProjectService.getProject(projectId);
-    if (!current) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
-    const body = await readRequestJson(req);
-    const project = await storyProjectService.saveProject({
-      ...current,
-      title: body.title === undefined ? current.title : body.title,
-      description: body.description === undefined ? current.description : body.description
-    });
-    writeJson(res, 200, { project, summary: summarizeStoryProject(project) });
-    return;
-  }
-
-  if (storyProjectRoute && req.method === 'DELETE') {
-    validateMutatingRequest(req);
-    const project = await storyProjectService.deleteProject(decodeURIComponent(storyProjectRoute[1]));
-    if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
-    writeJson(res, 200, {
-      ok: true,
-      preservedSessionIds: project.sessionIds
-    });
-    return;
-  }
-
-  const storyProjectSessionRoute = url.pathname.match(/^\/api\/story-projects\/([^/]+)\/sessions$/);
-  if (storyProjectSessionRoute && req.method === 'POST') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const projectId = decodeURIComponent(storyProjectSessionRoute[1]);
-    const project = await storyProjectService.getProject(projectId);
-    if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
-    const pack = await resolveContentPack(resourceLibraryService, project.basePackId);
-    if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
-    const session = await createSessionFromContentPack({
-      sessionService,
-      worldSimulationService,
-      pack,
-      body,
-      project
-    });
-    const updatedProject = await storyProjectService.attachSession(project.id, session.id);
-    writeJson(res, 200, {
-      session,
-      project: updatedProject,
-      visualPackId: project.visualPackId || pack.visualPackId || pack.id
-    });
-    return;
-  }
+  if (await handleStoryProjectRoutes({
+    req,
+    res,
+    url,
+    storyProjectService,
+    resourceLibraryService,
+    sessionService,
+    worldSimulationService,
+    operations: {
+      buildStoryProjectBindings,
+      createSessionFromContentPack,
+      resolveContentPack
+    }
+  })) return;
 
   const authoringRoute = url.pathname.match(/^\/api\/sessions\/([^/]+)\/authoring$/);
   if (authoringRoute && req.method === 'GET') {
@@ -819,22 +553,6 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/import-sources') {
-    writeJson(res, 200, { sources: listImportSources() });
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/import-sources/search') {
-    const result = await importSourceService.search({
-      source: url.searchParams.get('source') || 'chub',
-      query: url.searchParams.get('q') || url.searchParams.get('query') || '',
-      kind: url.searchParams.get('kind') || 'characters',
-      limit: url.searchParams.get('limit') || undefined
-    });
-    writeJson(res, 200, result);
-    return;
-  }
-
   const contentPackApplyRoute = matchContentPackApplyRoute(url.pathname);
   if (contentPackApplyRoute && req.method === 'POST') {
     validateMutatingRequest(req);
@@ -851,34 +569,16 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
-  if (req.method === 'PUT' && url.pathname === '/api/providers') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const providers = await resolveProviderSecrets({ configService, incoming: body });
-    await configService.saveProviders(providers);
-    writeJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/providers/test') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    if (!isPlainObject(body.provider)) throw new ApiError(400, 'PROVIDER_TEST_INVALID_CONFIG');
-    const resolved = await resolveProviderSecrets({
-      configService,
-      incoming: { activeProviderId: body.provider.id || '', providers: [body.provider] }
-    });
-    const provider = resolved.providers?.[0];
-    try {
-      const result = await testProviderConnection({ provider, providerClient, fetchImpl });
-      writeJson(res, 200, { result });
-    } catch (error) {
-      const detail = sanitizeProviderTestError(error, provider);
-      const statusCode = error.message === 'PROVIDER_TEST_TIMEOUT' ? 504 : 502;
-      throw new ApiError(statusCode, 'PROVIDER_TEST_FAILED', detail);
-    }
-    return;
-  }
+  if (await handleProviderRoutes({
+    req,
+    res,
+    url,
+    configService,
+    providerClient,
+    fetchImpl,
+    resolveProviderSecrets,
+    isPlainObject
+  })) return;
 
   if (req.method === 'PUT' && url.pathname === '/api/session/settings') {
     validateMutatingRequest(req);
@@ -1228,210 +928,26 @@ async function handleApi({ req, res, url, appRoot, configService, sessionService
     return;
   }
 
-  // MCP: 列出已注册 server
-  if (req.method === 'GET' && url.pathname === '/api/mcp/servers') {
-    const servers = mcpRegistry.listServers();
-    writeJson(res, 200, { servers });
-    return;
-  }
+  if (await handleMcpRoutes({ req, res, url, configService, mcpRegistry })) return;
 
-  // MCP: 保存 server 配置列表
-  if (req.method === 'PUT' && url.pathname === '/api/mcp/servers') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const saved = await configService.saveMcpServers(body.servers || []);
-    // 重建 registry 中的配置（保留已连接的会话）
-    const existingIds = new Set(saved.map((s) => s.id));
-    Array.from(mcpRegistry.connections.keys()).forEach((id) => {
-      if (!existingIds.has(id)) mcpRegistry.removeServer(id);
-    });
-    saved.forEach((s) => mcpRegistry.upsertConfig(s));
-    writeJson(res, 200, { servers: saved });
-    return;
-  }
-
-  // MCP: 连接某个 server
-  const connectMatch = url.pathname.match(/^\/api\/mcp\/servers\/([^/]+)\/connect$/);
-  if (connectMatch && req.method === 'POST') {
-    validateMutatingRequest(req);
-    const id = decodeURIComponent(connectMatch[1]);
-    const tools = await mcpRegistry.connect(id);
-    writeJson(res, 200, { tools });
-    return;
-  }
-
-  // MCP: 断开某个 server
-  const disconnectMatch = url.pathname.match(/^\/api\/mcp\/servers\/([^/]+)\/disconnect$/);
-  if (disconnectMatch && req.method === 'POST') {
-    validateMutatingRequest(req);
-    const id = decodeURIComponent(disconnectMatch[1]);
-    const entry = mcpRegistry.connections.get(id);
-    if (entry?.client?.close) {
-      try { entry.client.close(); } catch {}
-      entry.client = null;
-      entry.tools = [];
+  if (await handleChatRoutes({
+    req,
+    res,
+    url,
+    agentService,
+    operations: {
+      rewriteText,
+      sendChat,
+      streamChat,
+      matchMessageRoute,
+      editMessage,
+      regenerateMessage,
+      toggleMessageVisibility,
+      switchMessageSwipe,
+      toggleMessageBookmark,
+      streamContinue
     }
-    writeJson(res, 200, { ok: true });
-    return;
-  }
-
-  // MCP: 列出所有已连接工具
-  if (req.method === 'GET' && url.pathname === '/api/mcp/tools') {
-    const tools = mcpRegistry.listAllTools();
-    writeJson(res, 200, { tools });
-    return;
-  }
-
-  // MCP: 调用工具
-  if (req.method === 'POST' && url.pathname === '/api/mcp/tools/call') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await mcpRegistry.callTool({
-      serverId: String(body.serverId || '').trim(),
-      toolName: String(body.toolName || '').trim(),
-      arguments: body.arguments || {}
-    });
-    writeJson(res, 200, { result });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/import/preview') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const preview = previewImport(body.payload ?? body);
-    preview.inspection = await resourceLibraryService.inspectPreview(preview, body.source || {});
-    writeJson(res, 200, { preview });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/import/commit') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await commitImport({
-      assetService,
-      configService,
-      sessionService,
-      resourceLibraryService,
-      body
-    });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/import-sources/download') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await importSourceService.download(body);
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/character-card/import') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const imported = importCharacterCardFromPayload(body);
-    const portrait = await saveImportedCharacterPortrait(assetService, body);
-    if (portrait) imported.characterCard.portrait = portrait;
-    const characterCard = await assetService.saveCharacter(imported.characterCard);
-    let worldBook = [];
-    if (imported.worldBook?.length) {
-       const wbAsset = await assetService.saveWorldBook(
-         null,
-         characterCard.name + '的设定集',
-         imported.worldBook
-       );
-       worldBook = wbAsset.entries;
-    }
-    writeJson(res, 200, { characterCard, worldBook });
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/character-card/export') {
-    const config = await configService.getAll();
-    const characterCard = config.characterCard;
-    const worldBook = config.worldBook;
-    const basePortrait = await assetService.readCharacterPortrait(characterCard?.portrait?.assetId);
-    const png = exportCharacterCardPng(characterCard, worldBook, basePortrait);
-    const filename = `${encodeURIComponent(characterCard?.name || 'character')}.png`;
-    res.writeHead(200, {
-      'content-type': 'image/png',
-      'content-disposition': `attachment; filename="${filename}"`,
-      'content-length': png.length
-    });
-    res.end(png);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/rewrite') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await rewriteText({ agentService, body });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/chat') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await sendChat({ agentService, body });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/chat/stream') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    await streamChat({ agentService, body, res });
-    return;
-  }
-
-  const messageRoute = matchMessageRoute(url.pathname);
-  if (messageRoute && req.method === 'PATCH' && messageRoute.action === 'edit') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await editMessage({ agentService, body, messageId: messageRoute.messageId });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (messageRoute && req.method === 'POST' && messageRoute.action === 'regenerate') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await regenerateMessage({ agentService, body, messageId: messageRoute.messageId });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (messageRoute && req.method === 'POST' && messageRoute.action === 'visibility') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await toggleMessageVisibility({ agentService, body, messageId: messageRoute.messageId });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (messageRoute && req.method === 'POST' && messageRoute.action === 'swipe') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    const result = await switchMessageSwipe({ agentService, body, messageId: messageRoute.messageId });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (messageRoute && (req.method === 'POST' || req.method === 'DELETE') && messageRoute.action === 'bookmark') {
-    validateMutatingRequest(req);
-    const body = req.method === 'DELETE' ? {} : await readRequestJson(req);
-    const result = await toggleMessageBookmark({ agentService, body, messageId: messageRoute.messageId });
-    writeJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/chat/continue') {
-    validateMutatingRequest(req);
-    const body = await readRequestJson(req);
-    await streamContinue({ agentService, body, res });
-    return;
-  }
+  })) return;
 
   writeJson(res, 404, { error: 'NOT_FOUND' });
 }
@@ -2249,47 +1765,6 @@ function matchContentPackCharactersRoute(pathname) {
   return { packId: decodeURIComponent(match[1]) };
 }
 
-function matchResourceLibraryResourceRoute(pathname) {
-  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)$/);
-  if (!match) return null;
-  return { resourceId: decodeURIComponent(match[1]) };
-}
-
-function matchResourceLibraryResourceReevaluationRoute(pathname) {
-  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/reevaluate$/);
-  if (!match) return null;
-  return { resourceId: decodeURIComponent(match[1]) };
-}
-
-function matchResourceLibraryResourceContentRoute(pathname) {
-  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/content$/);
-  if (!match) return null;
-  return { resourceId: decodeURIComponent(match[1]) };
-}
-
-function matchResourceLibraryPackRoute(pathname) {
-  const match = pathname.match(/^\/api\/resource-library\/packs\/([^/]+)$/);
-  if (!match) return null;
-  return { packId: decodeURIComponent(match[1]) };
-}
-
-function matchPluginRoute(pathname) {
-  const match = pathname.match(/^\/api\/plugins\/([^/]+)$/);
-  if (!match) return null;
-  return { pluginId: decodeURIComponent(match[1]) };
-}
-
-async function readRequestJson(req) {
-  try {
-    return await readJson(req);
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new ApiError(400, 'INVALID_JSON');
-    }
-    throw error;
-  }
-}
-
 /**
  * 读取 multipart/form-data 中的音频文件和文本字段（providerId/language/filename/format）
  * 仅提取第一个文件和已知字段，避免引入复杂的多部分解析库
@@ -2367,32 +1842,6 @@ function inferAudioFormat(filename) {
   return 'wav';
 }
 
-function validateMutatingRequest(req) {
-  if (!isAllowedOrigin(req)) {
-    throw new ApiError(403, 'FORBIDDEN_ORIGIN');
-  }
-  if (!isJsonRequest(req)) {
-    throw new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE');
-  }
-}
-
-function isJsonRequest(req) {
-  const contentType = getHeader(req, 'content-type');
-  return contentType.split(';', 1)[0].trim().toLowerCase() === 'application/json';
-}
-
-function isAllowedOrigin(req) {
-  const origin = getHeader(req, 'origin');
-  if (!origin) return true;
-
-  try {
-    const { hostname } = new URL(origin);
-    return LOCAL_ORIGIN_HOSTS.has(hostname);
-  } catch {
-    return false;
-  }
-}
-
 const PROXY_IMAGE_ALLOWED_PROTOCOLS = new Set(['https:']);
 const PROXY_IMAGE_BLOCKED_HOSTNAMES = new Set([
   'localhost',
@@ -2435,17 +1884,6 @@ function parseProxyImageUrl(targetUrl) {
     throw new ApiError(400, 'INVALID_URL');
   }
   return parsed;
-}
-
-function getHeader(req, headerName) {
-  const headers = req.headers || {};
-  const lowerHeaderName = headerName.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === lowerHeaderName) {
-      return Array.isArray(value) ? String(value[0] || '') : String(value || '');
-    }
-  }
-  return '';
 }
 
 function writeApiError(res, error) {

@@ -2,9 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
+const FRONTEND_STYLE_FILES = [
+  'foundation.css',
+  'asset-center.css',
+  'themes.css',
+  'workbench-header.css',
+  'bookshelf.css',
+  'workbench-shell.css',
+  'immersive.css',
+  'workbench.css'
+];
+
+async function readFrontendCss() {
+  return (await Promise.all(
+    FRONTEND_STYLE_FILES.map((file) => readFile(`public/styles/${file}`, 'utf8'))
+  )).join('\n');
+}
+
 test('frontend exposes provider presets and import review controls', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
+  const providerSettings = await readFile('public/modules/providerSettings.js', 'utf8');
+  const visualStage = await readFile('public/modules/visualStage.js', 'utf8');
 
   assert.match(html, /id="provider-preset"/);
   assert.match(html, /href="\/styles\.css\?v=\d{8}-\d+"/);
@@ -54,16 +73,17 @@ test('frontend exposes provider presets and import review controls', async () =>
   assert.match(html, /id="source-search"/);
   assert.match(html, /id="source-results"/);
 
-  assert.match(app, /PROVIDER_PRESETS/);
-  assert.match(app, /models:/);
-  assert.match(app, /renderProviderModelOptions/);
-  assert.match(app, /resolveSelectedProviderModel/);
+  assert.match(app, /createProviderSettingsController/);
+  assert.match(providerSettings, /PROVIDER_PRESETS/);
+  assert.match(providerSettings, /models:/);
+  assert.match(providerSettings, /renderProviderModelOptions/);
+  assert.match(providerSettings, /resolveSelectedProviderModel/);
   assert.match(app, /testProviderConnectionAction/);
   assert.match(app, /\/api\/providers\/test/);
   assert.match(app, /createBackupAction/);
   assert.match(app, /restoreBackupAction/);
-  assert.match(app, /anthropic/);
-  assert.match(app, /gemini/);
+  assert.match(providerSettings, /anthropic/);
+  assert.match(providerSettings, /gemini/);
   assert.match(app, /\/api\/import\/preview/);
   assert.match(app, /\/api\/import\/commit/);
   assert.match(app, /adult-creative-mode/);
@@ -123,9 +143,9 @@ test('frontend exposes provider presets and import review controls', async () =>
   assert.match(html, /value="xianxia_wenxuezhao"/);
   assert.match(html, /闻雪照（断魂灯旧案线）/);
 
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
   assert.match(css, /xianxia-scroll/);
-  assert.match(app, /xianxia-stage\.png/);
+  assert.match(visualStage, /xianxia-stage\.png/);
   assert.match(css, /\.epic-destiny-grid/);
   assert.match(css, /\.epic-journey-row/);
   assert.match(css, /\.epic-journey-draft/);
@@ -133,7 +153,7 @@ test('frontend exposes provider presets and import review controls', async () =>
 
 test('imported Character Card portraits appear across preview, stories, opening and chat', async () => {
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(app, /function getCharacterPortraitUrl/);
   assert.match(app, /function createCharacterPortraitImage/);
@@ -155,7 +175,7 @@ test('imported Character Card portraits appear across preview, stories, opening 
 test('story bookshelf starts new projects before entering the guided opening', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="open-story-launcher"/);
   assert.match(html, /id="story-launcher"/);
@@ -278,7 +298,7 @@ test('story bookshelf starts new projects before entering the guided opening', a
 
 test('empty story sessions enter a focused opening stage before the first message', async () => {
   const app = await readFile('public/modules/chat.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(app, /const openingFocus = messages\.length === 0 && !state\.pendingJourneyDraft/);
   assert.match(app, /document\.body\.classList\.toggle\('story-opening-focus', openingFocus\)/);
@@ -323,32 +343,33 @@ test('prologue templates are genre-aware and include destiny cards', async () =>
 test('chat background customization is explicit and not owned by themes', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const visualStage = await readFile('public/modules/visualStage.js', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="background-mode"/);
   assert.match(html, /id="background-status"/);
   assert.match(html, /舞台背景：未设置/);
   assert.match(html, /界面皮肤只影响工作台，不覆盖会话内容/);
   assert.match(html, /清除背景/);
-  assert.match(app, /url:\s*'\/assets\/xuanhuan-luoyan-stage\.png'/);
-  assert.match(app, /url:\s*'\/assets\/lingyi-yongan-stage\.png'/);
-  assert.match(app, /url:\s*'\/assets\/mingmo-chongzhen-stage\.png'/);
-  assert.match(app, /url:\s*'\/assets\/wuxia-stage\.png'/);
-  assert.match(app, /url:\s*'\/assets\/xianxia-stage\.png'/);
-  assert.match(app, /CONTENT_PACK_VISUAL_PRESETS/);
-  assert.match(app, /xuanhuan:\s*\{[\s\S]*theme:\s*'wuxia-scroll'[\s\S]*backgroundImage:\s*'\/assets\/xuanhuan-luoyan-stage\.png'/);
-  assert.match(app, /lingyi:\s*\{[\s\S]*theme:\s*'default-dark'[\s\S]*backgroundImage:\s*'\/assets\/lingyi-yongan-stage\.png'/);
-  assert.match(app, /mingmo:\s*\{[\s\S]*theme:\s*'wuxia-scroll'[\s\S]*backgroundImage:\s*'\/assets\/mingmo-chongzhen-stage\.png'/);
-  assert.match(app, /xianxia:\s*\{[\s\S]*theme:\s*'xianxia-scroll'[\s\S]*backgroundImage:\s*'\/assets\/xianxia-stage\.png'/);
+  assert.match(visualStage, /url:\s*'\/assets\/xuanhuan-luoyan-stage\.png'/);
+  assert.match(visualStage, /url:\s*'\/assets\/lingyi-yongan-stage\.png'/);
+  assert.match(visualStage, /url:\s*'\/assets\/mingmo-chongzhen-stage\.png'/);
+  assert.match(visualStage, /url:\s*'\/assets\/wuxia-stage\.png'/);
+  assert.match(visualStage, /url:\s*'\/assets\/xianxia-stage\.png'/);
+  assert.match(visualStage, /CONTENT_PACK_VISUAL_PRESETS/);
+  assert.match(visualStage, /xuanhuan:\s*\{[\s\S]*theme:\s*'wuxia-scroll'[\s\S]*backgroundImage:\s*'\/assets\/xuanhuan-luoyan-stage\.png'/);
+  assert.match(visualStage, /lingyi:\s*\{[\s\S]*theme:\s*'default-dark'[\s\S]*backgroundImage:\s*'\/assets\/lingyi-yongan-stage\.png'/);
+  assert.match(visualStage, /mingmo:\s*\{[\s\S]*theme:\s*'wuxia-scroll'[\s\S]*backgroundImage:\s*'\/assets\/mingmo-chongzhen-stage\.png'/);
+  assert.match(visualStage, /xianxia:\s*\{[\s\S]*theme:\s*'xianxia-scroll'[\s\S]*backgroundImage:\s*'\/assets\/xianxia-stage\.png'/);
   assert.match(app, /function linkContentPackVisuals/);
   assert.match(app, /function handleContentPackSelectionChange/);
   assert.match(app, /正在同步规则、世界书、角色卡和视觉/);
   assert.match(app, /const payload = await applyContentPack\(\)/);
   assert.match(app, /contentPackControls\.hidden = Boolean\(state\.session\?\.storyProjectId\)/);
   assert.match(app, /visualContentPack/);
-  assert.match(app, /function normalizeBackgroundUrlForMatch/);
-  assert.match(app, /function backgroundUrlsMatch/);
-  assert.match(app, /getBackgroundLabelForUrl/);
+  assert.match(visualStage, /function normalizeBackgroundUrlForMatch/);
+  assert.match(visualStage, /function backgroundUrlsMatch/);
+  assert.match(visualStage, /getBackgroundLabelForUrl/);
   assert.match(app, /els\.contentPackSelect\?\.addEventListener\('change', \(\) => handleContentPackSelectionChange\(\)\)/);
   assert.match(app, /els\.themeSelect\.addEventListener\('change', \(\) => saveSessionTheme\(els\.themeSelect\.value\)\)/);
   assert.match(app, /function syncSessionVisualState/);
@@ -357,13 +378,13 @@ test('chat background customization is explicit and not owned by themes', async 
   assert.match(app, /const stageBackground = getStoryStageBackground\(payload\.appliedPack\)/);
   assert.match(app, /const visualPreset = await linkContentPackVisuals\(visualPackId, \{[\s\S]*backgroundImage: stageBackground\?\.url[\s\S]*backgroundFit: stageBackground\?\.fit[\s\S]*backgroundSource: stageBackground\?\.source/);
   assert.match(app, /已应用到会话：\$\{payload\.appliedPack\?\.title \|\| packId\} · 视觉：\$\{visualPreset\.label\}/);
-  assert.match(app, /preset\.url\s*\|\|/);
-  assert.match(app, /updateBackgroundModeUi/);
-  assert.match(app, /舞台背景：未设置/);
-  assert.match(app, /自定义舞台背景/);
-  assert.match(app, /舞台背景：\$\{label \|\| '自定义'\}/);
+  assert.match(visualStage, /preset\.url\s*\|\|/);
+  assert.match(visualStage, /updateBackgroundModeUi/);
+  assert.match(visualStage, /舞台背景：未设置/);
+  assert.match(visualStage, /自定义舞台背景/);
+  assert.match(visualStage, /舞台背景：\$\{label \|\| '自定义'\}/);
   assert.match(css, /var\(--chat-bg-image,\s*linear-gradient/);
-  assert.match(app, /classList\.toggle\('has-stage-background',\s*Boolean\(bg\)\)/);
+  assert.match(visualStage, /classList\.toggle\('has-stage-background',\s*Boolean\(bg\)\)/);
   assert.match(css, /\.chat-panel\.has-stage-background\s*\{[\s\S]*var\(--chat-bg-image\);/);
   assert.match(css, /\.chat-panel\.has-stage-background::after\s*\{[\s\S]*mix-blend-mode:\s*normal;/);
   assert.match(css, /\.chat-panel\.has-stage-background \.message\.assistant,[\s\S]*backdrop-filter:\s*none;/);
@@ -380,7 +401,7 @@ test('chat background customization is explicit and not owned by themes', async 
 test('v0.2 resource workbench keeps community imports, diagnostics and script composition in one adaptive panel', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /data-tab="sources"[^>]*>资源库</);
   assert.match(html, /data-resource-view="library"/);
@@ -412,7 +433,7 @@ test('v0.2 resource workbench keeps community imports, diagnostics and script co
 test('v0.2.2 exposes versioned content packs and declarative plugin adapters in the resource workbench', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /data-resource-view="extensions"/);
   assert.match(html, /data-resource-pane="extensions"/);
@@ -453,7 +474,8 @@ test('v0.2.2 exposes versioned content packs and declarative plugin adapters in 
 test('provider configuration uses an internal scroll body for expandable tools', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const workspace = await readFile('public/modules/workspace.js', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /<div class="provider-scroll">[\s\S]*<form id="provider-form" class="form-grid">/);
   assert.match(html, /<aside id="provider-panel" class="panel provider-panel collapsed"/);
@@ -465,7 +487,7 @@ test('provider configuration uses an internal scroll body for expandable tools',
   assert.match(html, /<details id="mcp-panel" class="worldbook-entries-panel"/);
   assert.match(html, /<\/details>\s*<\/div>\s*<\/aside>\s*<section class="panel chat-panel"/);
 
-  assert.match(app, /function setWorkspacePanelExpanded/);
+  assert.match(workspace, /function setWorkspacePanelExpanded/);
   assert.match(app, /setWorkspacePanelExpanded\('provider', true\)/);
   assert.match(app, /setWorkspacePanelExpanded\('provider', false\)/);
   assert.match(app, /setWorkspacePanelExpanded\('inspector', true\)/);
@@ -488,7 +510,7 @@ test('provider configuration uses an internal scroll body for expandable tools',
 
 test('world book inspector editor keeps long entry lists scrollable', async () => {
   const html = await readFile('public/index.html', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
   const app = await readFile('public/modules/inspector.js', 'utf8');
 
   assert.match(html, /<section class="tab-pane worldbook-pane" data-pane="worldbook"/);
@@ -508,7 +530,7 @@ test('world book browser groups large lore libraries with search and readable pr
   const html = await readFile('public/index.html', 'utf8');
   const entry = await readFile('public/app.js', 'utf8');
   const app = `${entry}\n${await readFile('public/modules/inspector.js', 'utf8')}`;
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="worldbook-search"/);
   assert.match(html, /id="worldbook-type-filter"/);
@@ -529,7 +551,7 @@ test('inspector controls stay usable in narrow drawers', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const entry = await readFile('public/app.js', 'utf8');
   const app = `${entry}\n${await readFile('public/modules/inspector.js', 'utf8')}`;
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /<details class="group-section inspector-subsection">/);
   assert.match(html, /id="inspector-tab-select"/);
@@ -556,7 +578,7 @@ test('modern workbench composer keeps tools in compact editor flow', async () =>
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
   const chat = await readFile('public/modules/chat.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /<div class="composer">/);
   assert.match(html, /class="composer-command-rail"[\s\S]*id="quick-replies-bar"[\s\S]*class="stage-actions"/);
@@ -590,7 +612,7 @@ test('modern workbench composer keeps tools in compact editor flow', async () =>
 test('empty session cover guides opening flow through content packs', async () => {
   const entry = await readFile('public/app.js', 'utf8');
   const app = `${entry}\n${await readFile('public/modules/chat.js', 'utf8')}`;
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(app, /OPENING_GENRE_OPTIONS/);
   assert.match(app, /function setOpeningGenre/);
@@ -626,7 +648,7 @@ test('empty session cover guides opening flow through content packs', async () =
 
 test('guided opening fuses a script dossier with protagonist and destiny creation', async () => {
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(app, /function appendDossierContent/);
   assert.match(app, /\{ key: 'dossier', label: '开局卷宗', step: '01' \}/);
@@ -650,7 +672,7 @@ test('guided opening fuses a script dossier with protagonist and destiny creatio
 
 test('desktop launch defaults to an immersive stage instead of a configuration workbench', async () => {
   const html = await readFile('public/index.html', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /<aside id="provider-panel" class="panel provider-panel collapsed"/);
   assert.match(html, /<aside id="inspector-panel" class="panel inspector-panel collapsed"/);
@@ -664,7 +686,7 @@ test('desktop launch defaults to an immersive stage instead of a configuration w
 
 test('module help popover is wired for subtle contextual guidance', async () => {
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(app, /const MODULE_HELP/);
   assert.match(app, /function showModuleHint/);
@@ -679,7 +701,7 @@ test('module help popover is wired for subtle contextual guidance', async () => 
 test('immersive sidebar shell is wired and hidden by default', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="immersive-right-sidebar"/);
   assert.match(html, /id="immersive-sidebar-tabs"/);
@@ -705,7 +727,7 @@ test('immersive sidebar shell is wired and hidden by default', async () => {
 });
 
 test('layout polish keeps the narrative stage dominant and composer compact', async () => {
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(css, /\.workspace\s*\{[\s\S]*gap:\s*12px;/);
   assert.match(css, /\.provider-panel\s*\{[\s\S]*width:\s*232px;/);
@@ -720,7 +742,7 @@ test('layout polish keeps the narrative stage dominant and composer compact', as
 });
 
 test('immersive visual direction makes the stage feel game-like instead of generic chat', async () => {
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(css, /\.chat-panel::before\s*\{[\s\S]*border:\s*1px solid rgba\(129,\s*212,\s*202,\s*0\.22\);/);
   assert.match(css, /\.chat-panel::after\s*\{[\s\S]*linear-gradient\(120deg,\s*transparent 0 38%,\s*rgba\(129,\s*212,\s*202,\s*0\.1\) 38% 39%,/);
@@ -733,8 +755,9 @@ test('immersive visual direction makes the stage feel game-like instead of gener
 });
 
 test('narrow workbench switches to single-stage mode before panels crush the chat', async () => {
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
   const app = await readFile('public/app.js', 'utf8');
+  const workspace = await readFile('public/modules/workspace.js', 'utf8');
 
   assert.match(css, /@media \(max-width:\s*900px\)\s*\{[\s\S]*\.workspace\s*\{[\s\S]*grid-template-columns:\s*1fr;/);
   assert.match(css, /@media \(max-width:\s*900px\)\s*\{[\s\S]*\.app-shell\s*\{[\s\S]*height:\s*100dvh;/);
@@ -744,7 +767,7 @@ test('narrow workbench switches to single-stage mode before panels crush the cha
   assert.match(css, /@media \(max-width:\s*900px\)\s*\{[\s\S]*\.workspace\[data-active-view="chat"\] \.chat-panel/);
   assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*\.messages\.has-cover-page\s*\{[\s\S]*align-items:\s*stretch;[\s\S]*justify-content:\s*flex-start;/);
   assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*\.messages\.has-cover-page\s+\.epic-cover-page\s*\{[\s\S]*height:\s*auto;[\s\S]*max-height:\s*none;[\s\S]*overflow:\s*visible;/);
-  assert.match(app, /matchMedia\('\(max-width:\s*900px\)'\)/);
+  assert.match(workspace, /matchMedia\('\(max-width:\s*900px\)'\)/);
   assert.doesNotMatch(css, /@media \(max-width:\s*760px\)/);
   assert.doesNotMatch(app, /max-width:\s*760px/);
 });
@@ -752,7 +775,7 @@ test('narrow workbench switches to single-stage mode before panels crush the cha
 test('memory inspector leads with a creator overview and keeps raw data optional', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="memory-overview"/);
   assert.match(html, /<details class="advanced-data-panel">[\s\S]*原始记忆数据[\s\S]*id="memory-view"/);
@@ -766,7 +789,7 @@ test('memory inspector leads with a creator overview and keeps raw data optional
 
 test('immersive option cards from markdown have dedicated styling', async () => {
   const markdown = await readFile('public/markdown.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(markdown, /parseImmersiveOptions/);
   assert.match(markdown, /immersive-options-card/);
@@ -842,7 +865,8 @@ test('character preset library covers more genre-matched roles', async () => {
 test('work modes separate creation, immersion, settings and debug while exposing the current content stack', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const workspace = await readFile('public/modules/workspace.js', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="work-mode-switch"/);
   assert.match(html, /data-work-mode="creative"/);
@@ -856,13 +880,13 @@ test('work modes separate creation, immersion, settings and debug while exposing
   assert.match(html, /id="content-stack-items"/);
   assert.match(html, /id="inspector-panel-title"/);
   assert.match(html, /应用到会话/);
-  assert.match(app, /const WORK_MODES =/);
+  assert.match(workspace, /const WORK_MODES =/);
   assert.match(app, /workModeButtons: Array\.from\(document\.querySelectorAll\('#work-mode-switch \.work-mode-button\[data-work-mode\]'\)\)/);
   assert.doesNotMatch(app, /workModeButtons: Array\.from\(document\.querySelectorAll\('\[data-work-mode\]'\)\)/);
-  assert.match(app, /function activateWorkMode/);
-  assert.match(app, /document\.documentElement\.dataset\.workMode = safeMode/);
-  assert.match(app, /inspectorPanelTitle\.textContent = config\.panelTitle/);
-  assert.match(app, /safeMode === 'creative' \|\| safeMode === 'immersive'/);
+  assert.match(workspace, /function activateWorkMode/);
+  assert.match(workspace, /document\.documentElement\.dataset\.workMode = safeMode/);
+  assert.match(workspace, /inspectorPanelTitle\.textContent = config\.panelTitle/);
+  assert.match(workspace, /safeMode === 'creative' \|\| safeMode === 'immersive'/);
   assert.match(app, /function renderContentStack/);
   assert.match(app, /function setContentPackPreviewStatus/);
   assert.match(app, /仅视觉预览/);
@@ -889,7 +913,7 @@ test('work modes separate creation, immersion, settings and debug while exposing
 test('chat header exposes persistent narrative route controls', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="narrative-mode-switch"/);
   assert.match(html, /aria-label="叙事约束"/);
@@ -905,7 +929,7 @@ test('chat header exposes persistent narrative route controls', async () => {
 test('character cards use a readable overview and warn before cross-genre loading', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="character-overview"/);
   assert.match(html, /class="advanced-data-panel character-advanced-panel"/);
@@ -923,7 +947,7 @@ test('character cards use a readable overview and warn before cross-genre loadin
 test('Hero script is wired through selectors, visuals, guided opening and dynamic character presets', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
   const template = JSON.parse(await readFile('public/prologue-template.json', 'utf8'));
 
   assert.match(html, /<option value="yingxiongzhi">英雄志群像内容包<\/option>/);
@@ -945,7 +969,7 @@ test('Hero script is wired through selectors, visuals, guided opening and dynami
 test('v0.4 status inspector exposes world clock, NPC projections and event ledger', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(html, /id="simulation-view-switch"/);
   assert.match(html, /data-simulation-view="director"/);
@@ -972,8 +996,9 @@ test('v0.4 status inspector exposes world clock, NPC projections and event ledge
 test('frontend exposes the full-screen narrative asset center', async () => {
   const html = await readFile('public/index.html', 'utf8');
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
   const assetCenter = await readFile('public/modules/assetCenter.js', 'utf8');
+  const assetLibrary = await readFile('public/modules/assetLibrary.js', 'utf8');
 
   assert.match(html, /id="open-asset-center"/);
   assert.match(html, /id="asset-center"/);
@@ -987,9 +1012,9 @@ test('frontend exposes the full-screen narrative asset center', async () => {
   assert.match(html, /预设 \/ Prompt/);
 
   assert.match(app, /createAssetCenterController/);
-  assert.match(app, /function openAssetCenter/);
-  assert.match(app, /function saveAssetMetadata/);
-  assert.match(app, /method: 'PATCH'/);
+  assert.match(assetLibrary, /function openAssetCenter/);
+  assert.match(assetLibrary, /function saveAssetMetadata/);
+  assert.match(assetLibrary, /method: 'PATCH'/);
   assert.match(assetCenter, /export function buildAssetCatalog/);
   assert.match(assetCenter, /export function filterAssetCatalog/);
   assert.match(assetCenter, /data-asset-action = 'favorite'|action === 'favorite'/);
@@ -1023,7 +1048,7 @@ test('guided opening keeps world book payload in system context instead of visib
 
 test('narrative workspace separates reading, choices and structured character dossiers', async () => {
   const app = await readFile('public/app.js', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const css = await readFrontendCss();
 
   assert.match(app, /function renderImmersiveProtagonistCard/);
   assert.match(app, /function renderImmersiveIntelligenceLedger/);

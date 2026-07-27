@@ -6,6 +6,21 @@ import path from 'node:path';
 import { JsonStore } from '../server/lib/jsonStore.js';
 import { previewImportPayload } from '../server/character/importPreview.js';
 import { ResourceLibraryService } from '../server/services/resourceLibraryService.js';
+import { ResourceRepository } from '../server/services/resourceLibrary/resourceRepository.js';
+import { ResourceConflictService } from '../server/services/resourceLibrary/resourceConflictService.js';
+import { ResourceEvaluationService } from '../server/services/resourceLibrary/resourceEvaluationService.js';
+import { ResourceImportService } from '../server/services/resourceLibrary/resourceImportService.js';
+import { StoryCompositionService } from '../server/services/resourceLibrary/storyCompositionService.js';
+
+test('resource library keeps a facade over five focused services', async () => {
+  const service = await createService();
+
+  assert.ok(service.repository instanceof ResourceRepository);
+  assert.ok(service.conflictService instanceof ResourceConflictService);
+  assert.ok(service.evaluationService instanceof ResourceEvaluationService);
+  assert.ok(service.importService instanceof ResourceImportService);
+  assert.ok(service.storyComposition instanceof StoryCompositionService);
+});
 
 test('resource library inspects provenance, completeness and execution-only risk markers', async () => {
   const service = await createService();

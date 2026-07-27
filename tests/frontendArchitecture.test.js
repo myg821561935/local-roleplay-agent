@@ -19,6 +19,12 @@ import {
   STORY_CATEGORY_LABELS,
   filterStoryPacks
 } from '../public/modules/storyLauncher.js';
+import { createWorkspaceController } from '../public/modules/workspace.js';
+import { createStoryOpeningController } from '../public/modules/storyOpening.js';
+import { createAssetLibraryController } from '../public/modules/assetLibrary.js';
+import { createProviderSettingsController } from '../public/modules/providerSettings.js';
+import { createVisualStageController } from '../public/modules/visualStage.js';
+import { createSessionController } from '../public/modules/session.js';
 
 test('provider onboarding distinguishes usable local and remote providers', () => {
   assert.equal(isProviderConfigured({ activeProviderId: '', providers: [] }), false);
@@ -71,13 +77,45 @@ test('feature modules expose real controllers and story filtering', () => {
   assert.deepEqual(filterStoryPacks(packs, { category: 'all', query: '调查' }).map((pack) => pack.id), ['lingyi']);
 });
 
+test('convergence controllers expose the six frontend ownership boundaries', () => {
+  assert.equal(typeof createWorkspaceController, 'function');
+  assert.equal(typeof createStoryOpeningController, 'function');
+  assert.equal(typeof createAssetLibraryController, 'function');
+  assert.equal(typeof createProviderSettingsController, 'function');
+  assert.equal(typeof createVisualStageController, 'function');
+  assert.equal(typeof createSessionController, 'function');
+});
+
 test('frontend entry imports feature modules and documents the three-step quick start', async () => {
   const app = await readFile('public/app.js', 'utf8');
   const html = await readFile('public/index.html', 'utf8');
-  const css = await readFile('public/styles.css', 'utf8');
+  const cssEntry = await readFile('public/styles.css', 'utf8');
+  const css = (await Promise.all([
+    'foundation.css',
+    'asset-center.css',
+    'themes.css',
+    'workbench-header.css',
+    'bookshelf.css',
+    'workbench-shell.css',
+    'immersive.css',
+    'workbench.css'
+  ].map((file) => readFile(`public/styles/${file}`, 'utf8')))).join('\n');
   const readme = await readFile('README.md', 'utf8');
 
-  for (const moduleName of ['chat', 'inspector', 'mcp', 'voice', 'storyLauncher', 'authoring']) {
+  for (const moduleName of [
+    'chat',
+    'inspector',
+    'mcp',
+    'voice',
+    'storyLauncher',
+    'authoring',
+    'workspace',
+    'storyOpening',
+    'assetLibrary',
+    'providerSettings',
+    'visualStage',
+    'session'
+  ]) {
     assert.match(app, new RegExp(`from './modules/${moduleName}\\.js'`));
   }
   assert.match(html, /data-inspector-group="core"/);
@@ -91,6 +129,10 @@ test('frontend entry imports feature modules and documents the three-step quick 
   assert.match(css, /\.inspector-panel \.tab-button\[hidden\]\s*\{[\s\S]*display:\s*none\s*!important;/);
   assert.match(css, /\.wb-editor-mode-switch\s*\{/);
   assert.match(css, /\.inspector-panel\.authoring-workbench-open \.content-stack-summary/);
+  assert.match(cssEntry, /@import url\('\.\/styles\/asset-center\.css'\);/);
+  assert.match(cssEntry, /@import url\('\.\/styles\/bookshelf\.css'\);/);
+  assert.match(cssEntry, /@import url\('\.\/styles\/immersive\.css'\);/);
+  assert.match(cssEntry, /@import url\('\.\/styles\/themes\.css'\);/);
   assert.match(readme, /## 快速开始（3 步）/);
   assert.match(readme, /1\. 启动本地服务/);
   assert.match(readme, /2\. 配置 Provider/);

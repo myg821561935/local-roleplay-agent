@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import {
   normalizeCharacterCard,
   normalizePromptModule,
@@ -31,12 +30,16 @@ import {
 } from '../compat/lightFrontendRuntime.js';
 import { enrichCharacterCard } from '../character/characterEnrichment.js';
 import { APP_VERSION } from '../releaseInfo.js';
+import { ResourceRepository } from './resourceLibrary/resourceRepository.js';
+import {
+  ResourceConflictService,
+  createFingerprint
+} from './resourceLibrary/resourceConflictService.js';
+import { ResourceEvaluationService } from './resourceLibrary/resourceEvaluationService.js';
+import { ResourceImportService } from './resourceLibrary/resourceImportService.js';
+import { StoryCompositionService } from './resourceLibrary/storyCompositionService.js';
 
-const RESOURCE_DIR = 'library/resources';
-const PACK_DIR = 'library/packs';
 const RESOURCE_KINDS = new Set(['character', 'worldbook', 'prompt']);
-const BASE_INHERITANCE_MODES = new Set(['full', 'genre', 'none']);
-const STORY_SPECIFIC_PROMPT_PATTERN = /(?:world[-_ ]?premise|core[-_ ]?route|main[-_ ]?line|opening|prologue|固定主线|开局|世界观基调|旧案主线)/i;
 
 export class ResourceLibraryService {
   constructor(store, {
@@ -44,7 +47,12 @@ export class ResourceLibraryService {
     appVersion = APP_VERSION,
     pluginRegistry = null,
     resolveBuiltInPack = () => null,
-    listBuiltInPacks = () => []
+    listBuiltInPacks = () => [],
+    repository = null,
+    conflictService = null,
+    evaluationService = null,
+    importService = null,
+    storyCompositionService = null
   } = {}) {
     this.store = store;
     this.now = now;
@@ -52,6 +60,17 @@ export class ResourceLibraryService {
     this.pluginRegistry = pluginRegistry || new PluginRegistryService(store, { appVersion, now });
     this.resolveBuiltInPack = resolveBuiltInPack;
     this.listBuiltInPacks = listBuiltInPacks;
+    this.repository = repository || new ResourceRepository(store);
+    this.conflictService = conflictService || new ResourceConflictService();
+    this.evaluationService = evaluationService || new ResourceEvaluationService();
+    this.importService = importService || new ResourceImportService({
+      conflictService: this.conflictService,
+      evaluationService: this.evaluationService,
+      now
+    });
+    this.storyComposition = storyCompositionService || new StoryCompositionService({
+      createEmptyPackSeed
+    });
   }
 
   async listAdapters() {
@@ -63,8 +82,7 @@ export class ResourceLibraryService {
   }
 
   async listResources({ kind = '', query = '' } = {}) {
-    const files = await this.store.list(RESOURCE_DIR);
-    const items = await loadJsonFiles(this.store, RESOURCE_DIR, files);
+    const items = await this.repository.listResources();
     const normalizedKind = String(kind || '').trim().toLowerCase();
     const needle = String(query || '').trim().toLowerCase();
     return items
@@ -80,7 +98,7 @@ export class ResourceLibraryService {
   async getResource(resourceId) {
     const id = normalizeId(resourceId);
     if (!id) return null;
-    return this.store.read(`${RESOURCE_DIR}/${id}.json`, null);
+    return this.repository.getResource(id);
   }
 
   async updateResourceMetadata(resourceId, input = {}) {
@@ -100,7 +118,7 @@ export class ResourceLibraryService {
       favorite: input.favorite === undefined ? current.favorite === true : input.favorite === true,
       updatedAt: timestamp
     };
-    await this.store.write(`${RESOURCE_DIR}/${id}.json`, next);
+    await this.repository.writeResource(id, next);
     return structuredClone(next);
   }
 
@@ -140,7 +158,7 @@ export class ResourceLibraryService {
       payload,
       updatedAt: timestamp
     };
-    await this.store.write(`${RESOURCE_DIR}/${id}.json`, next);
+    await this.repository.writeResource(id, next);
     const reevaluated = await this.reevaluateResource(id);
     return reevaluated?.resource || structuredClone(next);
   }
@@ -204,20 +222,14 @@ export class ResourceLibraryService {
       payload,
       version: current.source?.version || ''
     };
-    const fingerprint = createFingerprint(payload);
-    const conflicts = existing
-      .filter((item) => item.id !== id && item.kind === current.kind)
-      .filter((item) => item.fingerprint === fingerprint || normalizeTitle(item.title) === normalizeTitle(current.title))
-      .map((item) => ({
-        type: resolveResourceConflictType({ candidate, existing: item, fingerprint }),
-        resourceId: item.id,
-        title: item.title
-      }));
+    const { fingerprint, conflicts } = this.conflictService.findConflicts(candidate, existing, {
+      excludeId: id
+    });
     const adapters = await this.listAdapters();
     const adapter = adapters.find((item) => item.id === current.format) || {
       id: current.format || current.source?.adapterId || 'resource-library'
     };
-    const diagnostics = evaluateResourceCandidate(candidate, {
+    const diagnostics = this.evaluationService.evaluate(candidate, {
       conflicts,
       source: current.source || {},
       adapter
@@ -230,7 +242,7 @@ export class ResourceLibraryService {
       payload,
       updatedAt: timestamp
     };
-    await this.store.write(`${RESOURCE_DIR}/${id}.json`, next);
+    await this.repository.writeResource(id, next);
     return {
       resource: structuredClone(next),
       enrichment: enrichment.report
@@ -280,32 +292,13 @@ export class ResourceLibraryService {
     }
     const candidates = buildPreviewCandidates(preview, source);
     const existing = await this.listResources();
-    const resources = candidates.map((candidate) => {
-      const fingerprint = createFingerprint(candidate.payload);
-      const conflicts = existing
-        .filter((item) => item.kind === candidate.kind)
-        .filter((item) => item.fingerprint === fingerprint || normalizeTitle(item.title) === normalizeTitle(candidate.title))
-        .map((item) => ({
-          type: resolveResourceConflictType({ candidate, existing: item, fingerprint }),
-          resourceId: item.id,
-          title: item.title
-        }));
-      return {
-        kind: candidate.kind,
-        title: candidate.title,
-        fingerprint,
-        diagnostics: evaluateResourceCandidate(candidate, {
-          conflicts,
-          source,
-          adapter
-        })
-      };
+    const evaluation = this.importService.inspectCandidates(candidates, existing, {
+      source,
+      adapter
     });
-    const evaluation = aggregateResourceEvaluations(resources.map((item) => item.diagnostics));
     return {
       adapter,
       ...evaluation,
-      resources,
     };
   }
 
@@ -316,9 +309,7 @@ export class ResourceLibraryService {
     const inspection = suppliedInspection || await this.inspectPreview(preview, source);
     const candidates = buildPreviewCandidates(preview, source);
     const existing = await this.listResources();
-    const importedAt = this.now().toISOString();
-    const importBatchId = String(source.importBatchId || crypto.randomUUID());
-    const batchSource = { ...source, importBatchId };
+    const { importedAt, source: batchSource } = this.importService.createImportContext(source);
     const resources = [];
 
     for (let index = 0; index < candidates.length; index += 1) {
@@ -335,7 +326,7 @@ export class ResourceLibraryService {
             payload: structuredClone(candidate.payload),
             updatedAt: importedAt
           };
-          await this.store.write(`${RESOURCE_DIR}/${duplicate.id}.json`, updated);
+          await this.repository.writeResource(duplicate.id, updated);
           resources.push({ ...updated, importStatus: 'updated' });
           continue;
         }
@@ -343,24 +334,14 @@ export class ResourceLibraryService {
         continue;
       }
 
-      const id = crypto.randomUUID();
-      const resource = {
-        id,
-        kind: candidate.kind,
-        title: candidate.title,
-        summary: candidate.summary,
-        tags: uniqueStrings(candidate.tags),
-        collections: [],
-        favorite: false,
-        format: inspection.adapter.id,
-        fingerprint: inspected.fingerprint,
-        source: normalizeSource(batchSource, candidate, importedAt),
-        diagnostics: inspected.diagnostics,
-        payload: structuredClone(candidate.payload),
-        createdAt: importedAt,
-        updatedAt: importedAt
-      };
-      await this.store.write(`${RESOURCE_DIR}/${id}.json`, resource);
+      const resource = this.importService.createResourceRecord(
+        candidate,
+        inspected,
+        inspection.adapter,
+        batchSource,
+        importedAt
+      );
+      await this.repository.writeResource(resource.id, resource);
       resources.push({ ...resource, importStatus: 'created' });
     }
 
@@ -385,13 +366,7 @@ export class ResourceLibraryService {
   async removeResource(resourceId) {
     const id = normalizeId(resourceId);
     if (!id) return false;
-    try {
-      await rm(this.store.resolve(`${RESOURCE_DIR}/${id}.json`));
-      return true;
-    } catch (error) {
-      if (error.code === 'ENOENT') return false;
-      throw error;
-    }
+    return this.repository.removeResource(id);
   }
 
   async removeResources(resourceIds = []) {
@@ -427,7 +402,7 @@ export class ResourceLibraryService {
   async getPack(packId) {
     const id = normalizeId(packId);
     if (!id) return null;
-    const pack = await this.store.read(`${PACK_DIR}/${id}.json`, null);
+    const pack = await this.repository.getPack(id);
     if (!pack) return null;
     const openingTemplate = createCustomOpeningTemplate(pack);
     return {
@@ -458,7 +433,7 @@ export class ResourceLibraryService {
       updatedAt: this.now().toISOString()
     };
     next.openingTemplate = createCustomOpeningTemplate(next);
-    await this.store.write(`${PACK_DIR}/${id}.json`, next);
+    await this.repository.writePack(id, next);
     return structuredClone(next);
   }
 
@@ -466,19 +441,19 @@ export class ResourceLibraryService {
     const { character, worldBooks, prompts, selected } = await this.resolvePackResources(input);
     const includeBaseContent = input.includeBaseContent !== false;
     const baseInheritanceMode = basePack
-      ? normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
+      ? this.storyComposition.normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
       : includeBaseContent ? 'full' : 'none';
     const id = `custom-${crypto.randomUUID()}`;
     const timestamp = this.now().toISOString();
     const base = basePack
       ? structuredClone(basePack)
       : createCustomBaselineSeed(id, input.customBaseline, this.now);
-    const inheritedWorldBook = selectInheritedWorldBook(base.worldBook, baseInheritanceMode);
-    const inheritedPromptModules = selectInheritedPromptModules(base.promptModules, baseInheritanceMode);
+    const inheritedWorldBook = this.storyComposition.selectInheritedWorldBook(base.worldBook, baseInheritanceMode);
+    const inheritedPromptModules = this.storyComposition.selectInheritedPromptModules(base.promptModules, baseInheritanceMode);
     const worldBookMergeMode = baseInheritanceMode !== 'none'
-      ? normalizeWorldBookMergeMode(input.worldBookMergeMode)
+      ? this.storyComposition.normalizeWorldBookMergeMode(input.worldBookMergeMode)
       : 'resources-only';
-    const composition = composeWorldBookEntries({
+    const composition = this.storyComposition.composeWorldBookEntries({
       baseEntries: inheritedWorldBook,
       resourceGroups: worldBooks.map((item) => ({
         resourceId: item.id,
@@ -487,7 +462,7 @@ export class ResourceLibraryService {
       })),
       mode: worldBookMergeMode
     });
-    const promptComposition = composePromptModules({
+    const promptComposition = this.storyComposition.composePromptModules({
       baseModules: inheritedPromptModules,
       resources: prompts
     });
@@ -516,8 +491,8 @@ export class ResourceLibraryService {
       worldBook: composition.entries.map(normalizeWorldBookEntry),
       promptModules: promptModules.map(normalizePromptModule),
       lightFrontend,
-      memory: createComposedMemory(base, id, baseInheritanceMode),
-      ruleSystem: createComposedRuleSystem(base, id, baseInheritanceMode, basePack?.id || ''),
+      memory: this.storyComposition.createComposedMemory(base, id, baseInheritanceMode),
+      ruleSystem: this.storyComposition.createComposedRuleSystem(base, id, baseInheritanceMode, basePack?.id || ''),
       visualPackId: String(input.visualPackId || base.visualPackId || base.id || 'xuanhuan'),
       custom: true,
       resourceManifest: {
@@ -551,7 +526,7 @@ export class ResourceLibraryService {
         ...(Array.isArray(input.pluginDependencies) ? input.pluginDependencies : [])
       ]
     });
-    await this.store.write(`${PACK_DIR}/${id}.json`, pack);
+    await this.repository.writePack(id, pack);
     return structuredClone(pack);
   }
 
@@ -559,17 +534,17 @@ export class ResourceLibraryService {
     const { character, worldBooks, prompts } = await this.resolvePackResources(input);
     const includeBaseContent = input.includeBaseContent !== false;
     const baseInheritanceMode = basePack
-      ? normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
+      ? this.storyComposition.normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
       : includeBaseContent ? 'full' : 'none';
     const base = basePack
       ? structuredClone(basePack)
       : createCustomBaselineSeed('custom-preview', input.customBaseline, this.now);
-    const inheritedWorldBook = selectInheritedWorldBook(base.worldBook, baseInheritanceMode);
-    const inheritedPromptModules = selectInheritedPromptModules(base.promptModules, baseInheritanceMode);
+    const inheritedWorldBook = this.storyComposition.selectInheritedWorldBook(base.worldBook, baseInheritanceMode);
+    const inheritedPromptModules = this.storyComposition.selectInheritedPromptModules(base.promptModules, baseInheritanceMode);
     const mode = baseInheritanceMode !== 'none'
-      ? normalizeWorldBookMergeMode(input.worldBookMergeMode)
+      ? this.storyComposition.normalizeWorldBookMergeMode(input.worldBookMergeMode)
       : 'resources-only';
-    const composition = composeWorldBookEntries({
+    const composition = this.storyComposition.composeWorldBookEntries({
       baseEntries: inheritedWorldBook,
       resourceGroups: worldBooks.map((item) => ({
         resourceId: item.id,
@@ -578,7 +553,7 @@ export class ResourceLibraryService {
       })),
       mode
     });
-    const promptComposition = composePromptModules({
+    const promptComposition = this.storyComposition.composePromptModules({
       baseModules: inheritedPromptModules,
       resources: prompts
     });
@@ -710,7 +685,7 @@ export class ResourceLibraryService {
     const existing = inspection.existingPackId ? await this.getPack(inspection.existingPackId) : null;
     const pack = contentPackFromBundle(bundle, internalId, { importedAt: timestamp, source });
     if (existing?.createdAt) pack.createdAt = existing.createdAt;
-    await this.store.write(`${PACK_DIR}/${internalId}.json`, pack);
+    await this.repository.writePack(internalId, pack);
     return {
       pack: structuredClone(pack),
       installStatus: inspection.installAction === 'update' ? 'updated' : 'created',
@@ -738,26 +713,12 @@ export class ResourceLibraryService {
   async removePack(packId) {
     const id = normalizeId(packId);
     if (!id || !await this.getPack(id)) return false;
-    return this.store.remove(`${PACK_DIR}/${id}.json`);
+    return this.repository.removePack(id);
   }
 
   async loadStoredPacks() {
-    const files = await this.store.list(PACK_DIR);
-    return loadJsonFiles(this.store, PACK_DIR, files);
+    return this.repository.listPacks();
   }
-}
-
-function resolveResourceConflictType({ candidate, existing, fingerprint }) {
-  if (existing.fingerprint !== fingerprint) return 'same-title';
-  const portraitUrl = candidate.kind === 'character' ? candidate.payload?.portrait?.url : '';
-  if (
-    candidate.kind === 'character'
-    && (
-      (portraitUrl && portraitUrl !== existing.payload?.portrait?.url)
-      || (!portraitUrl && candidate.hasEmbeddedPortrait === true)
-    )
-  ) return 'portrait-update';
-  return 'exact-duplicate';
 }
 
 function buildPreviewCandidates(preview, source) {
@@ -836,22 +797,6 @@ function buildWorldBookCandidate(entries, title) {
 
 function diagnoseCandidate(candidate, conflicts, options = {}) {
   return evaluateResourceCandidate(candidate, { conflicts, ...options });
-}
-
-function normalizeSource(source, candidate, importedAt) {
-  return {
-    adapterId: String(source.adapterId || '').trim(),
-    community: String(source.community || '').trim(),
-    site: String(source.site || source.sourceId || 'local-file').trim(),
-    url: String(source.url || '').trim(),
-    author: String(source.author || '').trim(),
-    license: String(source.license || '未声明').trim(),
-    version: String(source.version || candidate.version || '').trim(),
-    fileName: String(source.fileName || '').trim(),
-    importBatchId: String(source.importBatchId || '').trim(),
-    importedAt,
-    originalHash: String(source.originalHash || '').trim()
-  };
 }
 
 function summarizePackSourceResource(resource = {}) {
@@ -1441,304 +1386,6 @@ function normalizeCustomBaseline(input = {}) {
   };
 }
 
-function normalizeWorldBookMergeMode(value) {
-  return ['smart', 'base-first', 'resources-only'].includes(String(value || ''))
-    ? String(value)
-    : 'smart';
-}
-
-function normalizeBaseInheritanceMode(value, includeBaseContent = true) {
-  if (includeBaseContent === false) return 'none';
-  const mode = String(value || '').trim().toLowerCase();
-  return BASE_INHERITANCE_MODES.has(mode) ? mode : 'full';
-}
-
-function selectInheritedWorldBook(entries = [], mode = 'full') {
-  if (mode === 'none') return [];
-  if (mode === 'full') return structuredClone(entries || []);
-  return structuredClone((entries || []).filter((entry) => {
-    const scope = String(entry?.extensions?.inheritanceScope || entry?.inheritanceScope || '').trim().toLowerCase();
-    return scope === 'genre' || scope === 'global';
-  }));
-}
-
-function selectInheritedPromptModules(modules = [], mode = 'full') {
-  if (mode === 'none') return [];
-  if (mode === 'full') return structuredClone(modules || []);
-  return structuredClone((modules || []).filter((module) => {
-    const scope = String(module?.extensions?.inheritanceScope || module?.inheritanceScope || '').trim().toLowerCase();
-    if (scope === 'story' || scope === 'none') return false;
-    if (scope === 'genre' || scope === 'global') return true;
-    const identity = [module?.id, module?.title].filter(Boolean).join(' ');
-    return !STORY_SPECIFIC_PROMPT_PATTERN.test(identity);
-  }));
-}
-
-function createComposedMemory(base, id, mode = 'full') {
-  if (mode === 'full') {
-    return {
-      ...structuredClone(base.memory || {}),
-      resourcePackId: id
-    };
-  }
-  const seed = createEmptyPackSeed(id).memory;
-  const genre = String(
-    base.memory?.worldState?.flags?.genre
-    || base.memory?.worldState?.genre
-    || base.id
-    || 'custom'
-  ).trim() || 'custom';
-  return {
-    ...seed,
-    resourcePackId: id,
-    worldState: {
-      ...seed.worldState,
-      genre,
-      flags: {
-        ...(seed.worldState?.flags || {}),
-        genre
-      }
-    }
-  };
-}
-
-function createComposedRuleSystem(base, id, mode = 'full', sourcePackId = '') {
-  if (mode === 'full') {
-    return {
-      ...structuredClone(base.ruleSystem || createEmptyPackSeed(id).ruleSystem),
-      contentPackId: id,
-      sourceContentPackId: sourcePackId
-    };
-  }
-  const seed = createEmptyPackSeed(id).ruleSystem;
-  const genreLabel = String(base.title || '题材基线').trim();
-  return {
-    ...seed,
-    title: mode === 'genre' ? `${genreLabel} · 通用规则` : seed.title,
-    boundary: mode === 'genre'
-      ? '角色卡及其同批世界书决定人物、地点、关系、故事前提与行文风格；题材基线只提供通用世界规则。'
-      : seed.boundary,
-    contentPackId: id,
-    sourceContentPackId: mode === 'genre' ? sourcePackId : '',
-    panels: []
-  };
-}
-
-function composeWorldBookEntries({ baseEntries = [], resourceGroups = [], mode = 'smart' } = {}) {
-  const mergeMode = normalizeWorldBookMergeMode(mode);
-  const candidates = [];
-  if (mergeMode !== 'resources-only') {
-    (baseEntries || []).forEach((entry) => candidates.push({
-      entry: normalizeWorldBookEntry(entry),
-      origin: 'base',
-      resourceId: '',
-      resourceTitle: '题材基线'
-    }));
-  }
-  (resourceGroups || []).forEach((group) => {
-    (group.entries || []).forEach((entry) => candidates.push({
-      entry: normalizeWorldBookEntry(entry),
-      origin: 'resource',
-      resourceId: group.resourceId || '',
-      resourceTitle: group.title || '补充世界书'
-    }));
-  });
-
-  const accepted = [];
-  const conflicts = [];
-  let exactDuplicates = 0;
-  let sameTitleConflicts = 0;
-  let constantConflicts = 0;
-  let triggerOverlaps = 0;
-  let replacedBaseEntries = 0;
-  let skippedSelectedEntries = 0;
-
-  candidates.forEach((candidate) => {
-    const fingerprint = createFingerprint(candidate.entry);
-    const exact = accepted.find((item) => item.fingerprint === fingerprint);
-    if (exact) {
-      exactDuplicates += 1;
-      return;
-    }
-
-    const titleKey = normalizeTitle(candidate.entry.title);
-    const sameTitleIndex = titleKey
-      ? accepted.findIndex((item) => normalizeTitle(item.entry.title) === titleKey)
-      : -1;
-    if (sameTitleIndex >= 0) {
-      const previous = accepted[sameTitleIndex];
-      const constant = previous.entry.constant === true || candidate.entry.constant === true;
-      if (constant) constantConflicts += 1;
-      else sameTitleConflicts += 1;
-      conflicts.push({
-        type: constant ? 'constant-conflict' : 'same-title-conflict',
-        title: candidate.entry.title,
-        message: `${candidate.entry.title}：${previous.resourceTitle}与${candidate.resourceTitle}内容不同`,
-        baseOrigin: previous.origin,
-        resourceId: candidate.resourceId
-      });
-      const selectedCanReplace = mergeMode === 'smart' && candidate.origin === 'resource';
-      if (selectedCanReplace) {
-        if (previous.origin === 'base') replacedBaseEntries += 1;
-        accepted[sameTitleIndex] = { ...candidate, fingerprint };
-      } else {
-        skippedSelectedEntries += candidate.origin === 'resource' ? 1 : 0;
-      }
-      return;
-    }
-
-    const candidateTriggers = getWorldBookTriggers(candidate.entry);
-    if (candidateTriggers.size && candidate.origin === 'resource') {
-      const overlap = accepted.find((item) => item.origin !== candidate.origin
-        && setsIntersect(candidateTriggers, getWorldBookTriggers(item.entry)));
-      if (overlap) {
-        triggerOverlaps += 1;
-        conflicts.push({
-          type: 'trigger-overlap',
-          title: candidate.entry.title,
-          message: `${candidate.entry.title}与${overlap.entry.title}共享触发词，可能同时注入`,
-          resourceId: candidate.resourceId
-        });
-      }
-    }
-    accepted.push({ ...candidate, fingerprint });
-  });
-
-  return {
-    entries: accepted.map((item) => item.entry),
-    report: {
-      mode: mergeMode,
-      summary: {
-        baseEntries: mergeMode === 'resources-only' ? 0 : Number(baseEntries?.length || 0),
-        selectedEntries: (resourceGroups || []).reduce((sum, group) => sum + Number(group.entries?.length || 0), 0),
-        finalEntries: accepted.length,
-        exactDuplicates,
-        sameTitleConflicts,
-        constantConflicts,
-        triggerOverlaps,
-        replacedBaseEntries,
-        skippedSelectedEntries
-      },
-      conflicts
-    }
-  };
-}
-
-function composePromptModules({ baseModules = [], resources = [] } = {}) {
-  const candidates = [
-    ...(baseModules || []).map((item) => ({
-      module: normalizePromptModule(item),
-      origin: 'base',
-      resourceId: '',
-      resourceTitle: '题材基线'
-    })),
-    ...(resources || []).map((resource) => ({
-      module: normalizePromptModule(resource.payload || {}),
-      origin: 'resource',
-      resourceId: resource.id || '',
-      resourceTitle: resource.title || '补充预设'
-    }))
-  ];
-  const accepted = [];
-  const conflicts = [];
-  let promptExactDuplicates = 0;
-  let promptIdConflicts = 0;
-  let replacedPromptModules = 0;
-
-  candidates.forEach((candidate) => {
-    const fingerprint = createFingerprint(candidate.module);
-    if (accepted.some((item) => item.fingerprint === fingerprint)) {
-      promptExactDuplicates += 1;
-      return;
-    }
-
-    const idKey = normalizeTitle(candidate.module.id || candidate.module.title);
-    const sameIdIndex = idKey
-      ? accepted.findIndex((item) => normalizeTitle(item.module.id || item.module.title) === idKey)
-      : -1;
-    if (sameIdIndex >= 0) {
-      const previous = accepted[sameIdIndex];
-      promptIdConflicts += 1;
-      conflicts.push({
-        type: 'prompt-id-conflict',
-        title: candidate.module.title || candidate.module.id,
-        message: `${candidate.module.title || candidate.module.id}：${previous.resourceTitle}与${candidate.resourceTitle}使用相同模块 ID`,
-        resourceId: candidate.resourceId
-      });
-      if (candidate.origin === 'resource') {
-        accepted[sameIdIndex] = { ...candidate, fingerprint };
-        replacedPromptModules += 1;
-      }
-      return;
-    }
-    accepted.push({ ...candidate, fingerprint });
-  });
-
-  return {
-    modules: accepted.map((item) => item.module),
-    report: {
-      summary: {
-        basePromptModules: Number(baseModules?.length || 0),
-        selectedPromptModules: Number(resources?.length || 0),
-        finalPromptModules: accepted.length,
-        promptExactDuplicates,
-        promptIdConflicts,
-        replacedPromptModules
-      },
-      conflicts
-    }
-  };
-}
-
-function getWorldBookTriggers(entry) {
-  return new Set([
-    ...(entry.keywords || []),
-    ...(entry.secondaryKeywords || []),
-    ...(entry.regex || [])
-  ].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
-}
-
-function setsIntersect(left, right) {
-  for (const value of left) {
-    if (right.has(value)) return true;
-  }
-  return false;
-}
-
-async function loadJsonFiles(store, directory, files) {
-  const items = await Promise.all((files || [])
-    .filter((file) => file.endsWith('.json'))
-    .map(async (file) => {
-      try {
-        return await store.read(`${directory}/${file}`, null);
-      } catch {
-        return null;
-      }
-    }));
-  return items.filter(Boolean);
-}
-
-function createFingerprint(value) {
-  const semanticValue = stripVolatileFields(value);
-  return crypto.createHash('sha256').update(stableStringify(semanticValue)).digest('hex');
-}
-
-function stripVolatileFields(value) {
-  if (Array.isArray(value)) return value.map(stripVolatileFields);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !['id', 'assetId', 'portrait', 'updatedAt', 'createdAt', 'importedAt', 'raw'].includes(key))
-    .map(([key, item]) => [key, stripVolatileFields(item)]));
-}
-
-function stableStringify(value) {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 function dedupeByFingerprint(items) {
   const seen = new Set();
   return (items || []).filter((item) => {
@@ -1759,10 +1406,6 @@ function normalizeLibraryText(value, fallback, maxLength, { allowEmpty = false }
 function uniqueStrings(values) {
   const list = Array.isArray(values) ? values : values === undefined || values === null ? [] : [values];
   return [...new Set(list.map((value) => String(value || '').trim()).filter(Boolean))];
-}
-
-function normalizeTitle(value) {
-  return String(value || '').trim().toLowerCase();
 }
 
 function normalizeId(value) {

@@ -1,0 +1,126 @@
+export function createSessionController({
+  els,
+  apiRequest,
+  getCurrentSessionId,
+  setCurrentSessionId,
+  loadState,
+  setStatus,
+  humanizeApiError
+}) {
+  function renderSessionSelect(sessions) {
+    if (!els.sessionSelect) return;
+    els.sessionSelect.innerHTML = '';
+    const currentSessionId = getCurrentSessionId();
+    const sessionIds = Array.from(new Set(['main', currentSessionId, ...(Array.isArray(sessions) ? sessions : [])]))
+      .filter(Boolean);
+    for (const sessionId of sessionIds) {
+      const option = document.createElement('option');
+      option.value = sessionId;
+      option.textContent = sessionId;
+      if (sessionId === currentSessionId) option.selected = true;
+      els.sessionSelect.appendChild(option);
+    }
+  }
+
+  function openNewSessionDialog() {
+    const assets = window.__assets || { characters: [], worldBooks: [], promptModules: [] };
+
+    if (els.newSessionCharacter) {
+      els.newSessionCharacter.innerHTML = '<option value="">（无）</option>';
+      for (const character of assets.characters) {
+        const option = document.createElement('option');
+        option.value = character.id;
+        option.textContent = character.name || character.id;
+        els.newSessionCharacter.appendChild(option);
+      }
+    }
+
+    if (els.newSessionWorldbook) {
+      els.newSessionWorldbook.innerHTML = '';
+      for (const worldBook of assets.worldBooks) {
+        const option = document.createElement('option');
+        option.value = worldBook.id;
+        option.textContent = worldBook.title || worldBook.id;
+        els.newSessionWorldbook.appendChild(option);
+      }
+    }
+
+    const titleInput = els.newSessionForm?.querySelector('#new-session-title');
+    if (titleInput) titleInput.value = '';
+    els.newSessionDialog.showModal();
+  }
+
+  async function handleNewSessionSubmit(event) {
+    event.preventDefault();
+    const title = els.newSessionForm.querySelector('#new-session-title').value;
+    const packId = els.newSessionPack.value;
+    const characterCardId = els.newSessionCharacter.value;
+    const worldBookIds = Array.from(els.newSessionWorldbook.selectedOptions).map((option) => option.value);
+    const newId = `session-${Date.now()}`;
+    const submitButton = els.newSessionForm.querySelector('button[type="submit"]');
+    if (submitButton) submitButton.disabled = true;
+
+    try {
+      const response = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: newId,
+          title,
+          packId,
+          characterCardId,
+          worldBookIds
+        })
+      });
+      if (!response.ok) throw new Error('Failed to create session');
+
+      setCurrentSessionId(newId);
+      els.newSessionDialog.close();
+      await loadState();
+    } catch (error) {
+      setStatus(els.appStatus, `新建会话失败：${error.message}`, 'error');
+    } finally {
+      if (submitButton) submitButton.disabled = false;
+    }
+  }
+
+  function exportCurrentSession() {
+    const currentSessionId = getCurrentSessionId();
+    const url = `/api/sessions/${encodeURIComponent(currentSessionId)}/export?format=json`;
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${currentSessionId}.json`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setStatus(els.appStatus, '已导出会话存档', 'ok');
+  }
+
+  async function handleImportSessionFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    event.target.value = '';
+
+    try {
+      const text = await file.text();
+      const sessionData = JSON.parse(text);
+      const payload = await apiRequest('/api/sessions/import', {
+        method: 'POST',
+        body: { session: sessionData }
+      });
+      setCurrentSessionId(payload.session.id);
+      await loadState();
+      setStatus(els.appStatus, '会话存档已导入', 'ok');
+    } catch (error) {
+      setStatus(els.appStatus, `导入失败：${humanizeApiError(error)}`, 'error');
+    }
+  }
+
+  return {
+    exportCurrentSession,
+    handleImportSessionFile,
+    handleNewSessionSubmit,
+    openNewSessionDialog,
+    renderSessionSelect
+  };
+}

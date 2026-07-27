@@ -24,120 +24,18 @@ import {
   getLightFrontendQuickReplies,
   resolveLightFrontendPanel
 } from './modules/lightFrontend.js';
+import { createProviderSettingsController } from './modules/providerSettings.js';
+import {
+  CONTENT_PACK_VISUAL_PRESETS,
+  STORY_PACK_PRESENTATION,
+  createVisualStageController
+} from './modules/visualStage.js';
+import { createWorkspaceController } from './modules/workspace.js';
+import { createSessionController } from './modules/session.js';
+import { createAssetLibraryController } from './modules/assetLibrary.js';
+import { createStoryOpeningController } from './modules/storyOpening.js';
 
 const MASKED_SECRET = '********';
-const CUSTOM_MODEL_VALUE = '__custom_model__';
-const PROVIDER_PRESETS = [
-  {
-    id: 'custom',
-    label: '自定义',
-    kind: 'openai-compatible',
-    baseUrl: '',
-    model: '',
-    models: [],
-    headers: {}
-  },
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-5.4-mini',
-    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-4.1-mini'],
-    headers: {}
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.deepseek.com/v1',
-    model: 'deepseek-v4-flash',
-    models: ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner'],
-    headers: {}
-  },
-  {
-    id: 'qwen',
-    label: '通义千问',
-    kind: 'openai-compatible',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
-    models: ['qwen-plus', 'qwen-max', 'qwen-turbo', 'qwen-long'],
-    headers: {}
-  },
-  {
-    id: 'moonshot',
-    label: 'Moonshot / Kimi',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    model: 'moonshot-v1-8k',
-    models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
-    headers: {}
-  },
-  {
-    id: 'siliconflow',
-    label: 'SiliconFlow',
-    kind: 'openai-compatible',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'deepseek-ai/DeepSeek-V3',
-    models: [
-      'deepseek-ai/DeepSeek-V3',
-      'deepseek-ai/DeepSeek-R1',
-      'Qwen/Qwen3-235B-A22B-Instruct-2507',
-      'moonshotai/Kimi-K2-Instruct'
-    ],
-    headers: {}
-  },
-  {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    kind: 'openai-compatible',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'openai/gpt-4o-mini',
-    models: [
-      'openai/gpt-4o-mini',
-      'anthropic/claude-sonnet-4',
-      'google/gemini-2.5-flash',
-      'deepseek/deepseek-chat'
-    ],
-    headers: {}
-  },
-  {
-    id: 'ollama',
-    label: 'Ollama 本地',
-    kind: 'openai-compatible',
-    baseUrl: 'http://localhost:11434/v1',
-    model: 'qwen2.5:7b',
-    models: ['qwen2.5:7b', 'qwen2.5:14b', 'llama3.1:8b', 'deepseek-r1:7b'],
-    headers: {}
-  },
-  {
-    id: 'lmstudio',
-    label: 'LM Studio 本地',
-    kind: 'openai-compatible',
-    baseUrl: 'http://localhost:1234/v1',
-    model: 'local-model',
-    models: ['local-model', 'qwen2.5-7b-instruct', 'llama-3.1-8b-instruct', 'deepseek-r1-distill-qwen-7b'],
-    headers: {}
-  },
-  {
-    id: 'anthropic',
-    label: 'Anthropic Claude',
-    kind: 'anthropic',
-    baseUrl: '',
-    model: 'claude-sonnet-5',
-    models: ['claude-sonnet-5', 'claude-opus-4-8', 'claude-haiku-4-5-20251001', 'claude-haiku-4-5'],
-    headers: {}
-  },
-  {
-    id: 'gemini',
-    label: 'Google Gemini',
-    kind: 'gemini',
-    baseUrl: '',
-    model: 'gemini-2.5-flash',
-    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
-    headers: {}
-  }
-];
 
 const FALLBACK_IMPORT_SOURCES = [
   { id: 'chub', name: 'Chub / CharacterHub', supports: ['characters', 'lorebooks'], searchable: true, downloadable: true },
@@ -177,12 +75,6 @@ const OPENING_GENRE_OPTIONS = [
     hint: '五朝、旧账、群像、信息隔离'
   }
 ];
-const WORK_MODES = {
-  creative: { label: '创作', panelTitle: '检查器', defaultTab: 'status', activeView: 'chat' },
-  immersive: { label: '沉浸', panelTitle: '检查器', defaultTab: 'status', activeView: 'chat' },
-  settings: { label: '设定', panelTitle: '内容设定', defaultTab: 'worldbook', activeView: 'inspector' },
-  debug: { label: '调试', panelTitle: '运行调试', defaultTab: 'memory', activeView: 'inspector' }
-};
 const WORLD_BOOK_TYPE_LABELS = {
   'world-premise': '世界总纲',
   geography: '地理交通',
@@ -918,6 +810,37 @@ const els = {
   tabPanes: Array.from(document.querySelectorAll('[data-pane]'))
 };
 
+const workspaceController = createWorkspaceController({
+  els,
+  activateTab: (tab) => activateTab(tab)
+});
+const {
+  activateWorkMode,
+  loadWorkMode,
+  openProviderSettings,
+  scrollInspectorIntoViewOnNarrowScreens,
+  setWorkspaceActiveView,
+  setWorkspacePanelExpanded
+} = workspaceController;
+const sessionController = createSessionController({
+  els,
+  apiRequest,
+  getCurrentSessionId: () => currentSessionId,
+  setCurrentSessionId: (sessionId) => {
+    currentSessionId = sessionId;
+    localStorage.setItem('localRoleplaySessionId', currentSessionId);
+  },
+  loadState,
+  setStatus,
+  humanizeApiError
+});
+const {
+  exportCurrentSession,
+  handleImportSessionFile,
+  handleNewSessionSubmit,
+  openNewSessionDialog,
+  renderSessionSelect
+} = sessionController;
 const inspectorController = createInspectorController({
   panel: els.inspectorPanel,
   tabSelect: els.inspectorTabSelect,
@@ -948,7 +871,95 @@ const voiceController = createVoiceController({
   escapeHtmlText,
   humanizeApiError
 });
-const assetCenterController = createAssetCenterController({
+const providerSettingsController = createProviderSettingsController({
+  els,
+  prettyJson,
+  setStatus
+});
+const {
+  applyProviderPreset,
+  getProviderPreset,
+  normalizeProviderKind,
+  renderProviderModelOptions,
+  renderProviderPresetOptions,
+  resolveProviderPreset,
+  resolveSelectedProviderModel,
+  syncProviderModelCustomField
+} = providerSettingsController;
+const visualStageController = createVisualStageController({
+  state,
+  els,
+  apiRequest,
+  getSessionId: () => currentSessionId,
+  getCharacterPortraitUrl,
+  saveSessionVisualSettings,
+  setStatus,
+  humanizeApiError
+});
+const {
+  applyBackgroundImage,
+  applyBackgroundUrl,
+  applyTheme,
+  clearBackgroundImage,
+  renderBackgroundPresets,
+  saveSessionTheme,
+  setBackgroundImage,
+  toggleBackgroundPanel,
+  updateBackgroundModeUi
+} = visualStageController;
+const storyOpeningController = createStoryOpeningController({
+  state,
+  els,
+  renderStoryContinuePanel,
+  renderStoryProjects,
+  renderStoryImportBaseOptions,
+  renderCustomStoryBuilder,
+  renderStoryCatalogFilters,
+  renderStoryPackGrid,
+  getAppliedContentPackId,
+  getMostRecentSessionSummary,
+  setStoryLauncherBackground
+});
+const {
+  closeStoryLauncher,
+  initializeStoryLauncherVisibility,
+  openStoryLauncher,
+  renderStoryLauncher
+} = storyOpeningController;
+let assetCenterController;
+const assetLibraryController = createAssetLibraryController({
+  state,
+  els,
+  apiRequest,
+  getAssetCenterController: () => assetCenterController,
+  closeStoryLauncher,
+  openStoryLauncher,
+  renderStoryPackGrid,
+  getCharacterPortraitUrl,
+  getCompanionWorldBooks,
+  invalidateCustomStoryInspection,
+  persistCustomStoryDraft,
+  openCustomStoryDialog,
+  activateWorkMode,
+  activateTab,
+  activateResourceView,
+  renderResourcePackBuilder,
+  downloadJsonFile
+});
+const {
+  deleteAssetFromCenter,
+  deleteAssetsFromCenter,
+  exportAssetsFromCenter,
+  openAssetCenter,
+  openAssetComposer,
+  openAssetImportPicker,
+  reevaluateAssetFromCenter,
+  saveAssetBatchMetadata,
+  saveAssetContent,
+  saveAssetMetadata,
+  useAssetFromCenter
+} = assetLibraryController;
+assetCenterController = createAssetCenterController({
   root: els.assetCenter,
   getResources: () => state.resourceLibrary,
   getPacks: () => state.resourcePacks,
@@ -1596,187 +1607,6 @@ async function loadState() {
   }
 }
 
-function renderSessionSelect(sessions) {
-  if (!els.sessionSelect) return;
-  els.sessionSelect.innerHTML = '';
-  const sessionIds = Array.from(new Set(['main', currentSessionId, ...(Array.isArray(sessions) ? sessions : [])]))
-    .filter(Boolean);
-  for (const s of sessionIds) {
-    const option = document.createElement('option');
-    option.value = s;
-    option.textContent = s;
-    if (s === currentSessionId) option.selected = true;
-    els.sessionSelect.appendChild(option);
-  }
-}
-
-function initializeStoryLauncherVisibility() {
-  if (state.storyLauncherInitialized) return;
-  state.storyLauncherInitialized = true;
-  const messages = Array.isArray(state.session?.messages) ? state.session.messages : [];
-  if (!state.session?.storyProjectId && messages.length === 0) {
-    openStoryLauncher({ focusSearch: false });
-  }
-}
-
-function openStoryLauncher(options = {}) {
-  if (!els.storyLauncher) return;
-  renderStoryLauncher();
-  const packId = getAppliedContentPackId()
-    || getMostRecentSessionSummary()?.packId
-    || state.contentPacks?.[0]?.id
-    || 'xuanhuan';
-  setStoryLauncherBackground(packId);
-  els.storyLauncher.classList.remove('is-hidden');
-  els.storyLauncher.setAttribute('aria-hidden', 'false');
-  document.body.classList.add('story-launcher-open');
-  if (options.focusSearch !== false) {
-    window.setTimeout(() => els.storyPackSearch?.focus(), 0);
-  }
-}
-
-function closeStoryLauncher() {
-  if (!els.storyLauncher) return;
-  if (els.storyCustomDialog?.open) els.storyCustomDialog.close();
-  els.storyLauncher.classList.add('is-hidden');
-  els.storyLauncher.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('story-launcher-open');
-}
-
-function openAssetCenter() {
-  closeStoryLauncher();
-  assetCenterController.open();
-}
-
-function openAssetImportPicker(kind = '') {
-  if (!els.characterCardImport) return;
-  const acceptedTypes = {
-    character: '.png,.json,image/png,application/json',
-    worldbook: '.json,.yaml,.yml,.txt,application/json,text/yaml,text/plain',
-    prompt: '.json,.yaml,.yml,.txt,application/json,text/yaml,text/plain'
-  };
-  els.characterCardImport.dataset.assetImportKind = kind;
-  els.characterCardImport.accept = acceptedTypes[kind]
-    || '.json,.png,.yaml,.yml,.txt,application/json,image/png,text/yaml,text/plain';
-  els.characterCardImport.click();
-}
-
-function useAssetFromCenter(item) {
-  if (!item) return;
-  if (item.kind === 'pack') {
-    openStoryLauncher({ focusSearch: false });
-    if (els.storyPackSearch) els.storyPackSearch.value = item.title || '';
-    renderStoryPackGrid();
-    return;
-  }
-  if (item.kind === 'prompt') {
-    openAssetComposer(item);
-    return;
-  }
-
-  if (item.kind === 'character') {
-    state.customStoryDraft.characterResourceId = item.id;
-    state.customStoryDraft.useCharacterPortraitAsBackground = Boolean(getCharacterPortraitUrl(item.payload));
-    if (!state.customStoryDraft.titleCustomized) {
-      state.customStoryDraft.title = `${item.title || '新角色'} · 新卷`;
-    }
-    const companions = getCompanionWorldBooks(item.raw, state.resourceLibrary).map((resource) => resource.id);
-    state.customStoryDraft.worldBookResourceIds = Array.from(new Set([
-      ...state.customStoryDraft.worldBookResourceIds,
-      ...companions
-    ]));
-  } else if (item.kind === 'worldbook') {
-    state.customStoryDraft.worldBookResourceIds = Array.from(new Set([
-      ...state.customStoryDraft.worldBookResourceIds,
-      item.id
-    ]));
-    if (!state.customStoryDraft.titleCustomized) {
-      state.customStoryDraft.title = `${item.title || '新世界'} · 新卷`;
-    }
-  }
-  invalidateCustomStoryInspection();
-  persistCustomStoryDraft();
-  openCustomStoryDialog();
-}
-
-function openAssetComposer(item = null) {
-  activateWorkMode('settings');
-  activateTab('sources');
-  activateResourceView('composer');
-  renderResourcePackBuilder();
-  if (!item) return;
-  if (item.kind === 'character' && els.resourcePackCharacter) {
-    els.resourcePackCharacter.value = item.id;
-  }
-  const picker = item.kind === 'worldbook'
-    ? els.resourcePackWorldbooks
-    : item.kind === 'prompt'
-      ? els.resourcePackPrompts
-      : null;
-  const checkbox = picker?.querySelector(`input[value="${CSS.escape(item.id)}"]`);
-  if (checkbox) checkbox.checked = true;
-}
-
-async function saveAssetMetadata(item, updates) {
-  if (!item?.id || item.kind === 'pack') return;
-  await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}`, {
-    method: 'PATCH',
-    body: updates
-  });
-}
-
-async function saveAssetContent(item, updates) {
-  if (!item?.id || !['worldbook', 'prompt'].includes(item.kind)) return;
-  await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}/content`, {
-    method: 'PATCH',
-    body: updates
-  });
-}
-
-async function reevaluateAssetFromCenter(item) {
-  if (!item?.id || item.kind === 'pack') return;
-  await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}/reevaluate`, {
-    method: 'POST',
-    body: {}
-  });
-}
-
-async function deleteAssetFromCenter(item) {
-  if (!item?.id) return;
-  const path = item.kind === 'pack'
-    ? `/api/resource-library/packs/${encodeURIComponent(item.id)}`
-    : `/api/resource-library/resources/${encodeURIComponent(item.id)}`;
-  await apiRequest(path, { method: 'DELETE', body: {} });
-}
-
-async function saveAssetBatchMetadata(items, updates) {
-  const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
-  if (!resourceIds.length) return;
-  await apiRequest('/api/resource-library/resources', {
-    method: 'PATCH',
-    body: { resourceIds, ...updates }
-  });
-}
-
-async function exportAssetsFromCenter(items) {
-  const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
-  if (!resourceIds.length) return;
-  const { bundle } = await apiRequest('/api/resource-library/resources/export', {
-    method: 'POST',
-    body: { resourceIds }
-  });
-  downloadJsonFile(bundle, `roleplay-assets-${new Date().toISOString().slice(0, 10)}.json`);
-}
-
-async function deleteAssetsFromCenter(items) {
-  const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
-  if (!resourceIds.length) return;
-  await apiRequest('/api/resource-library/resources', {
-    method: 'DELETE',
-    body: { resourceIds }
-  });
-}
-
 function downloadJsonFile(payload, fileName) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -1952,16 +1782,6 @@ function moveCustomStoryStep(offset) {
   const currentIndex = Math.max(0, CUSTOM_STORY_STEPS.indexOf(state.customStoryStep));
   const nextIndex = Math.max(0, Math.min(CUSTOM_STORY_STEPS.length - 1, currentIndex + offset));
   setCustomStoryStep(CUSTOM_STORY_STEPS[nextIndex], { focus: true });
-}
-
-function renderStoryLauncher() {
-  if (!els.storyLauncher) return;
-  renderStoryContinuePanel();
-  renderStoryProjects();
-  renderStoryImportBaseOptions();
-  renderCustomStoryBuilder();
-  renderStoryCatalogFilters();
-  renderStoryPackGrid();
 }
 
 function renderStoryImportBaseOptions() {
@@ -3021,103 +2841,6 @@ function appendContentPackOptionGroup(select, label, packs) {
   select.append(group);
 }
 
-function openNewSessionDialog() {
-  const assets = window.__assets || { characters: [], worldBooks: [], promptModules: [] };
-
-  if (els.newSessionCharacter) {
-    els.newSessionCharacter.innerHTML = '<option value="">（无）</option>';
-    for (const c of assets.characters) {
-      const opt = document.createElement('option');
-      opt.value = c.id;
-      opt.textContent = c.name || c.id;
-      els.newSessionCharacter.appendChild(opt);
-    }
-  }
-
-  if (els.newSessionWorldbook) {
-    els.newSessionWorldbook.innerHTML = '';
-    for (const w of assets.worldBooks) {
-      const opt = document.createElement('option');
-      opt.value = w.id;
-      opt.textContent = w.title || w.id;
-      els.newSessionWorldbook.appendChild(opt);
-    }
-  }
-
-  const titleInput = els.newSessionForm?.querySelector('#new-session-title');
-  if (titleInput) titleInput.value = '';
-  els.newSessionDialog.showModal();
-}
-
-async function handleNewSessionSubmit(e) {
-  e.preventDefault();
-  const title = els.newSessionForm.querySelector('#new-session-title').value;
-  const packId = els.newSessionPack.value;
-  const characterCardId = els.newSessionCharacter.value;
-
-  const worldBookIds = Array.from(els.newSessionWorldbook.selectedOptions).map(o => o.value);
-  const newId = 'session-' + Date.now();
-  const submitBtn = els.newSessionForm.querySelector('button[type="submit"]');
-  if (submitBtn) submitBtn.disabled = true;
-
-  try {
-    const res = await fetch('/api/sessions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: newId,
-        title,
-        packId,
-        characterCardId,
-        worldBookIds
-      })
-    });
-    if (!res.ok) throw new Error('Failed to create session');
-
-    currentSessionId = newId;
-    localStorage.setItem('localRoleplaySessionId', currentSessionId);
-    els.newSessionDialog.close();
-    await loadState();
-  } catch (error) {
-    setStatus(els.appStatus, `新建会话失败：${error.message}`, 'error');
-  } finally {
-    if (submitBtn) submitBtn.disabled = false;
-  }
-}
-
-function exportCurrentSession() {
-  const format = 'json';
-  const url = `/api/sessions/${encodeURIComponent(currentSessionId)}/export?format=${format}`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${currentSessionId}.json`;
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setStatus(els.appStatus, '已导出会话存档', 'ok');
-}
-
-async function handleImportSessionFile(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  event.target.value = '';
-
-  try {
-    const text = await file.text();
-    const sessionData = JSON.parse(text);
-    const payload = await apiRequest('/api/sessions/import', {
-      method: 'POST',
-      body: { session: sessionData }
-    });
-    currentSessionId = payload.session.id;
-    localStorage.setItem('localRoleplaySessionId', currentSessionId);
-    await loadState();
-    setStatus(els.appStatus, '会话存档已导入', 'ok');
-  } catch (error) {
-    setStatus(els.appStatus, `导入失败：${humanizeApiError(error)}`, 'error');
-  }
-}
-
 function renderAll() {
   syncSessionVisualState();
   renderProviderForm();
@@ -3288,288 +3011,6 @@ async function saveAuthorNote() {
   } catch (error) {
     setStatus(els.appStatus, `作者注释保存失败：${humanizeApiError(error)}`, 'error');
   }
-}
-
-const BACKGROUND_PRESETS = [
-  { label: '神荒·落雁北关', url: '/assets/xuanhuan-luoyan-stage.png' },
-  { label: '灵异·永安筒子楼', url: '/assets/lingyi-yongan-stage.png' },
-  { label: '明末·京师城门', url: '/assets/mingmo-chongzhen-stage.png' },
-  { label: '武侠卷轴', url: '/assets/wuxia-stage.png' },
-  { label: '仙侠云海', url: '/assets/xianxia-stage.png' },
-  { label: '英雄志·群像江湖', url: '/assets/wuxia-stage.png' },
-  { label: '竹林夜', prompt: 'dense bamboo forest at night, moonlight filtering through leaves, misty atmosphere, dark green tones, cinematic' },
-  { label: '雪山黎明', prompt: 'snow mountain peaks at dawn, golden sunrise, clear sky, vast landscape, cinematic wide shot' },
-  { label: '古镇雨巷', prompt: 'ancient Chinese town alley in rain, wet stone pavement, paper lanterns, misty atmosphere, cinematic' },
-  { label: '荒漠落日', prompt: 'vast desert at sunset, golden dunes, dramatic sky, lone figure silhouette, cinematic' },
-  { label: '深山古寺', prompt: 'ancient Buddhist temple deep in misty mountains, stone steps, pine trees, fog, cinematic' },
-  { label: '星河夜空', prompt: 'milky way galaxy over mountain lake, starry night sky, reflection in water, cinematic' }
-];
-
-const AVAILABLE_THEMES = ['default-dark', 'wuxia-scroll', 'xianxia-scroll'];
-const CONTENT_PACK_VISUAL_PRESETS = {
-  xuanhuan: {
-    label: '神荒玄幻',
-    theme: 'wuxia-scroll',
-    backgroundImage: '/assets/xuanhuan-luoyan-stage.png'
-  },
-  lingyi: {
-    label: '民俗灵异',
-    theme: 'default-dark',
-    backgroundImage: '/assets/lingyi-yongan-stage.png'
-  },
-  mingmo: {
-    label: '明末风云',
-    theme: 'wuxia-scroll',
-    backgroundImage: '/assets/mingmo-chongzhen-stage.png'
-  },
-  xianxia: {
-    label: '太虚仙侠',
-    theme: 'xianxia-scroll',
-    backgroundImage: '/assets/xianxia-stage.png'
-  },
-  yingxiongzhi: {
-    label: '英雄志群像',
-    theme: 'default-dark',
-    backgroundImage: '/assets/wuxia-stage.png'
-  }
-};
-const STORY_PACK_PRESENTATION = {
-  xuanhuan: { badge: '武道玄幻', accent: '#76c1b6' },
-  lingyi: { badge: '民俗悬疑', accent: '#c78f7a' },
-  mingmo: { badge: '历史生存', accent: '#d4aa59' },
-  xianxia: { badge: '仙侠修真', accent: '#83b7d4' },
-  yingxiongzhi: { badge: '群像武侠', accent: '#b18bd0' }
-};
-
-function toggleBackgroundPanel() {
-  if (!els.backgroundPanel) return;
-  const collapsed = els.backgroundPanel.classList.toggle('collapsed');
-  if (!collapsed) renderBackgroundPresets();
-}
-
-function renderBackgroundPresets() {
-  if (!els.backgroundPresets) return;
-  els.backgroundPresets.innerHTML = '';
-  const characterPreset = getActiveCharacterBackgroundPreset();
-  const presets = characterPreset ? [characterPreset, ...BACKGROUND_PRESETS] : BACKGROUND_PRESETS;
-  for (const preset of presets) {
-    const img = document.createElement('img');
-    img.className = 'background-preset-thumb';
-    img.loading = 'lazy';
-    img.alt = preset.label;
-    img.src = preset.url || `https://console.enterprise.trae.cn/api/ide/v1/text_to_image?prompt=${encodeURIComponent(preset.prompt)}&image_size=landscape_4_3`;
-
-    const item = document.createElement('div');
-    item.className = 'background-preset-item';
-    item.dataset.bgPreset = img.src;
-    item.dataset.bgFit = preset.fit || 'cover';
-    item.dataset.bgSource = preset.source || 'preset';
-    item.classList.toggle('is-character-portrait', preset.source === 'character-portrait');
-    item.title = preset.label;
-
-    const label = document.createElement('span');
-    label.textContent = preset.label;
-
-    item.append(img, label);
-    els.backgroundPresets.append(item);
-  }
-}
-
-function getActiveCharacterBackgroundPreset() {
-  const card = state.session?.config?.characterCard || state.config?.characterCard || {};
-  const url = getCharacterPortraitUrl(card);
-  if (!url) return null;
-  return {
-    label: `角色立绘 · ${card.name || '当前主角'}`,
-    url,
-    fit: 'portrait',
-    source: 'character-portrait'
-  };
-}
-
-async function setBackgroundImage(url, { fit = 'cover', source = 'manual' } = {}) {
-  const bgUrl = String(url || '').trim();
-  const safeFit = fit === 'portrait' ? 'portrait' : 'cover';
-  try {
-    const settings = {
-      ...(state.session?.settings || {}),
-      backgroundImage: bgUrl,
-      backgroundFit: bgUrl ? safeFit : 'cover',
-      backgroundSource: bgUrl ? String(source || 'manual') : ''
-    };
-    const payload = await apiRequest('/api/session/settings', {
-      method: 'PUT',
-      body: { sessionId: currentSessionId, settings }
-    });
-    state.session = payload.session || state.session;
-    applyBackgroundImage(bgUrl, settings.backgroundFit);
-    setStatus(els.appStatus, safeFit === 'portrait' ? '已使用角色立绘作为舞台背景' : '背景已更新', 'ok');
-  } catch (error) {
-    setStatus(els.appStatus, `背景保存失败：${humanizeApiError(error)}`, 'error');
-  }
-}
-
-function applyBackgroundImage(url, fit = state.session?.settings?.backgroundFit || 'cover') {
-  const chatPanel = document.querySelector('.chat-panel');
-  if (!chatPanel) return;
-  const bg = String(url || '').trim();
-  if (bg) {
-    chatPanel.style.setProperty('--chat-bg-image', `url("${bg}")`);
-  } else {
-    chatPanel.style.removeProperty('--chat-bg-image');
-  }
-  chatPanel.classList.toggle('has-stage-background', Boolean(bg));
-  chatPanel.classList.toggle('background-fit-portrait', Boolean(bg) && fit === 'portrait');
-  updateBackgroundModeUi(bg, fit);
-}
-
-function normalizeBackgroundUrlForMatch(url) {
-  const raw = String(url || '').trim();
-  if (!raw) return '';
-  try {
-    const parsed = new URL(raw, window.location.origin);
-    return parsed.origin === window.location.origin ? parsed.pathname : parsed.href;
-  } catch {
-    return raw;
-  }
-}
-
-function backgroundUrlsMatch(left, right) {
-  return normalizeBackgroundUrlForMatch(left) === normalizeBackgroundUrlForMatch(right);
-}
-
-function getBackgroundLabelForUrl(url) {
-  const bg = String(url || '').trim();
-  if (!bg) return '';
-  const characterPreset = getActiveCharacterBackgroundPreset();
-  if (characterPreset && backgroundUrlsMatch(characterPreset.url, bg)) return characterPreset.label;
-  const linkedPreset = Object.values(CONTENT_PACK_VISUAL_PRESETS)
-    .find((preset) => backgroundUrlsMatch(preset.backgroundImage, bg));
-  if (linkedPreset) return linkedPreset.label;
-  return BACKGROUND_PRESETS.find((preset) => backgroundUrlsMatch(preset.url, bg))?.label || '';
-}
-
-function updateBackgroundModeUi(
-  backgroundImage = state.session?.settings?.backgroundImage || '',
-  fit = state.session?.settings?.backgroundFit || 'cover'
-) {
-  const bg = String(backgroundImage || '').trim();
-  const isCustom = Boolean(bg);
-  const label = getBackgroundLabelForUrl(bg);
-  els.toggleBackground?.classList.toggle('active', isCustom);
-  if (els.toggleBackground) {
-    els.toggleBackground.title = isCustom ? `正在使用${label || '自定义'}舞台背景` : '当前未设置舞台背景';
-  }
-  if (els.backgroundMode) {
-    els.backgroundMode.textContent = isCustom ? `舞台背景：${label || '自定义'}` : '舞台背景：未设置';
-    els.backgroundMode.classList.toggle('is-custom', isCustom);
-  }
-  if (els.backgroundStatus) {
-    els.backgroundStatus.textContent = isCustom
-      ? `当前：${label || '自定义舞台背景'}${fit === 'portrait' ? '，使用人物聚焦构图' : ''}。界面皮肤只影响工作台，不覆盖会话内容。`
-      : '当前：未设置舞台背景。界面皮肤只影响工作台，不覆盖会话内容。';
-  }
-}
-
-async function applyBackgroundUrl() {
-  const url = String(els.backgroundUrlInput?.value || '').trim();
-  if (!url) return;
-  await setBackgroundImage(url);
-  els.backgroundUrlInput.value = '';
-}
-
-async function clearBackgroundImage() {
-  await setBackgroundImage('', { fit: 'cover', source: '' });
-}
-
-function renderProviderPresetOptions() {
-  if (!els.providerPreset || els.providerPreset.options.length > 1) return;
-  els.providerPreset.innerHTML = '';
-  PROVIDER_PRESETS.forEach((preset) => {
-    const option = document.createElement('option');
-    option.value = preset.id;
-    option.textContent = preset.label;
-    els.providerPreset.append(option);
-  });
-}
-
-function renderProviderModelOptions(presetId, currentModel = '') {
-  if (!els.providerModel) return;
-  const preset = getProviderPreset(presetId);
-  const modelNames = Array.isArray(preset?.models) ? preset.models : [];
-  const current = String(currentModel || '').trim();
-  const hasCurrent = current && modelNames.includes(current);
-
-  els.providerModel.innerHTML = '';
-  modelNames.forEach((model) => {
-    const option = document.createElement('option');
-    option.value = model;
-    option.textContent = model;
-    els.providerModel.append(option);
-  });
-
-  const customOption = document.createElement('option');
-  customOption.value = CUSTOM_MODEL_VALUE;
-  customOption.textContent = '自定义模型...';
-  els.providerModel.append(customOption);
-
-  els.providerModel.value = hasCurrent ? current : CUSTOM_MODEL_VALUE;
-  els.providerModelCustom.value = hasCurrent ? '' : current;
-  syncProviderModelCustomField();
-}
-
-function getProviderPreset(presetId) {
-  return PROVIDER_PRESETS.find((item) => item.id === presetId);
-}
-
-function resolveProviderPreset(provider) {
-  const presetId = String(provider?.preset || '').trim();
-  if (PROVIDER_PRESETS.some((preset) => preset.id === presetId)) return presetId;
-
-  const baseUrl = String(provider?.baseUrl || '').replace(/\/+$/, '').toLowerCase();
-  const kind = normalizeProviderKind(provider?.kind);
-  const matched = PROVIDER_PRESETS.find((preset) => (
-    preset.id !== 'custom'
-    && preset.kind === kind
-    && String(preset.baseUrl || '').replace(/\/+$/, '').toLowerCase() === baseUrl
-  ));
-  return matched?.id || (kind === 'anthropic' ? 'anthropic' : (kind === 'gemini' ? 'gemini' : 'custom'));
-}
-
-function normalizeProviderKind(kind) {
-  const value = String(kind || 'openai-compatible').toLowerCase();
-  return ['openai-compatible', 'anthropic', 'gemini'].includes(value) ? value : 'openai-compatible';
-}
-
-function applyProviderPreset(presetId) {
-  const preset = getProviderPreset(presetId);
-  renderProviderModelOptions(presetId, resolveSelectedProviderModel());
-  if (!preset || preset.id === 'custom') return;
-
-  const currentId = els.providerId.value.trim();
-  els.providerKind.value = preset.kind;
-  if (!currentId || currentId === 'local' || PROVIDER_PRESETS.some((item) => item.id === currentId)) {
-    els.providerId.value = preset.id;
-  }
-  els.providerBaseUrl.value = preset.baseUrl;
-  renderProviderModelOptions(presetId, preset.model);
-  els.providerHeaders.value = prettyJson(preset.headers || {});
-  setStatus(els.providerStatus, `已套用 ${preset.label} 模板`, 'ok');
-}
-
-function syncProviderModelCustomField() {
-  const custom = els.providerModel.value === CUSTOM_MODEL_VALUE;
-  els.providerModelCustomRow.classList.toggle('is-hidden', !custom);
-  if (custom && !els.providerModelCustom.value.trim()) {
-    els.providerModelCustom.placeholder = 'model-name';
-  }
-}
-
-function resolveSelectedProviderModel() {
-  if (els.providerModel.value === CUSTOM_MODEL_VALUE) {
-    return els.providerModelCustom.value.trim();
-  }
-  return els.providerModel.value.trim();
 }
 
 let moduleHintTimer = null;
@@ -11813,169 +11254,6 @@ function loadTheme() {
   } catch {
     return 'wuxia-scroll';
   }
-}
-
-function normalizeTheme(theme) {
-  return AVAILABLE_THEMES.includes(theme) ? theme : 'wuxia-scroll';
-}
-
-function applyTheme(theme) {
-  const value = normalizeTheme(theme);
-  document.documentElement.dataset.theme = value;
-  try {
-    localStorage.setItem('local-roleplay-agent-theme', value);
-  } catch {
-    // Theme still applies for the current page even if storage is unavailable.
-  }
-  if (els.themeSelect) els.themeSelect.value = value;
-  updateBackgroundModeUi();
-  return value;
-}
-
-async function saveSessionTheme(theme) {
-  const value = applyTheme(theme);
-  try {
-    await saveSessionVisualSettings({ theme: value });
-    setStatus(els.appStatus, '界面皮肤已保存到当前会话', 'ok');
-  } catch (error) {
-    setStatus(els.appStatus, `界面皮肤保存失败：${humanizeApiError(error)}`, 'error');
-  }
-}
-
-function scrollInspectorIntoViewOnNarrowScreens() {
-  if (!window.matchMedia('(max-width: 900px)').matches) return;
-  document.querySelector('.inspector-panel')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-}
-
-function isNarrowWorkspace() {
-  return window.matchMedia('(max-width: 900px)').matches;
-}
-
-function workspacePanelConfig(panelName) {
-  if (panelName === 'provider') {
-    return {
-      panel: els.providerPanel,
-      openButton: els.openProviderPanel,
-      closeButton: els.toggleProviderPanel,
-      view: 'provider'
-    };
-  }
-  if (panelName === 'inspector') {
-    return {
-      panel: els.inspectorPanel,
-      openButton: els.openInspectorPanel,
-      closeButton: els.toggleInspectorPanel,
-      view: 'inspector'
-    };
-  }
-  return null;
-}
-
-function syncWorkspacePanelControls(panelName) {
-  const config = workspacePanelConfig(panelName);
-  if (!config?.panel) return;
-
-  const expanded = !config.panel.classList.contains('collapsed');
-  config.panel.dataset.expanded = String(expanded);
-  config.openButton?.setAttribute('aria-expanded', String(expanded));
-  config.closeButton?.setAttribute('aria-expanded', String(expanded));
-}
-
-function syncMobileNavForView(view, mode = els.workspace?.dataset.workMode || 'creative') {
-  const mobileNavButtons = Array.from(document.querySelectorAll('[data-mobile-view]'));
-  mobileNavButtons.forEach((button) => {
-    const viewMatches = button.dataset.mobileView === view;
-    const modeMatches = !button.dataset.mobileMode || button.dataset.mobileMode === mode;
-    button.classList.toggle('active', viewMatches && modeMatches);
-  });
-}
-
-function setWorkspaceActiveView(view) {
-  const safeView = ['provider', 'chat', 'inspector'].includes(view) ? view : 'chat';
-  if (els.workspace) els.workspace.dataset.activeView = safeView;
-  syncMobileNavForView(safeView);
-}
-
-function setWorkspacePanelExpanded(panelName, expanded, options = {}) {
-  const config = workspacePanelConfig(panelName);
-  if (!config?.panel) return;
-
-  config.panel.classList.toggle('collapsed', !expanded);
-  syncWorkspacePanelControls(panelName);
-
-  if (isNarrowWorkspace() || options.syncActiveView) {
-    if (expanded) {
-      const otherPanelName = panelName === 'provider' ? 'inspector' : 'provider';
-      const otherConfig = workspacePanelConfig(otherPanelName);
-      otherConfig?.panel?.classList.add('collapsed');
-      syncWorkspacePanelControls(otherPanelName);
-      setWorkspaceActiveView(config.view);
-    } else if (els.workspace?.dataset.activeView === config.view) {
-      setWorkspaceActiveView('chat');
-    }
-  }
-}
-
-function openProviderSettings(sectionId = '') {
-  activateWorkMode('creative', { activateDefaultTab: false });
-  setWorkspacePanelExpanded('provider', true, { syncActiveView: true });
-  const section = sectionId ? document.getElementById(sectionId) : null;
-  if (section instanceof HTMLDetailsElement) section.open = true;
-  requestAnimationFrame(() => {
-    (section || els.providerPanel)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    const focusTarget = section?.querySelector('input, select, button') || els.providerPreset;
-    focusTarget?.focus({ preventScroll: true });
-  });
-}
-
-function loadWorkMode() {
-  try {
-    const saved = localStorage.getItem('local-roleplay-agent-work-mode');
-    return WORK_MODES[saved] ? saved : 'creative';
-  } catch {
-    return 'creative';
-  }
-}
-
-function activateWorkMode(mode, options = {}) {
-  const safeMode = WORK_MODES[mode] ? mode : 'creative';
-  const config = WORK_MODES[safeMode];
-  document.documentElement.dataset.workMode = safeMode;
-  if (els.workspace) {
-    els.workspace.dataset.workMode = safeMode;
-    els.workspace.dataset.activeView = config.activeView;
-  }
-
-  els.workModeButtons.forEach((button) => {
-    const active = button.dataset.workMode === safeMode;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', String(active));
-  });
-  if (els.inspectorPanelTitle) els.inspectorPanelTitle.textContent = config.panelTitle;
-
-  if (safeMode === 'creative' || safeMode === 'immersive') {
-    setWorkspacePanelExpanded('provider', false);
-    setWorkspacePanelExpanded('inspector', false);
-    setWorkspaceActiveView('chat');
-  } else {
-    setWorkspacePanelExpanded('provider', false);
-    setWorkspacePanelExpanded('inspector', true);
-    setWorkspaceActiveView('inspector');
-  }
-
-  if (options.activateDefaultTab !== false) activateTab(config.defaultTab);
-  if (options.syncMobileNav !== false) syncMobileNavForWorkMode(safeMode);
-  if (options.persist !== false) {
-    try {
-      localStorage.setItem('local-roleplay-agent-work-mode', safeMode);
-    } catch {
-      // The mode still applies for the current page when storage is unavailable.
-    }
-  }
-}
-
-function syncMobileNavForWorkMode(mode) {
-  syncMobileNavForView(els.workspace?.dataset.activeView || WORK_MODES[mode]?.activeView || 'chat', mode);
 }
 
 function syncInspectorTabSelect(activeTab) {
