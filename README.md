@@ -1,6 +1,6 @@
-# Local Story Engine
+# Narrative Roleplay Engine
 
-**本地叙事引擎**是一个面向个人创作的本地 AI 故事工作台。它把剧本内容包、角色卡、世界书、Prompt 预设、分层记忆、世界状态与多模型调用组织成一条可审阅、可回退、可持续扩展的叙事流程。
+**叙界**是一套面向个人创作的角色扮演与世界模拟引擎。它把剧本内容包、角色卡、世界书、Prompt 预设、分层记忆、世界状态与多模型调用组织成一条可审阅、可回退、可持续扩展的叙事流程。
 
 它不只是聊天前端。你可以先选择或组装一个世界，塑造主角与开局命运，再进入持续演进的故事；系统会在后续对话中维护人物关系、事实、事件账本和长期记忆。
 
@@ -140,4 +140,4 @@ Agent = 角色与世界资产 + Prompt 装配 + 模型调用
 - 插件清单规范：[`docs/plugin-manifest-spec-v1.md`](docs/plugin-manifest-spec-v1.md)
 - 动作协议：[`docs/action-protocol-v1.md`](docs/action-protocol-v1.md)
 
-`local-roleplay-agent` 继续作为仓库名、npm 包名和历史数据兼容标识；产品展示名称统一为 **Local Story Engine / 本地叙事引擎**。
+`local-roleplay-agent` 继续作为仓库名、npm 包名和历史数据兼容标识；产品展示名称统一为 **Narrative Roleplay Engine / 叙界**。本地优先是部署与隐私特性，不再作为品牌名的一部分。

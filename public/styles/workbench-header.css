@@ -115,6 +115,23 @@ button.busy:disabled {
   min-width: 0;
 }
 
+.product-identity > p {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.product-tagline {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.product-status::before {
+  margin-right: 7px;
+  color: var(--line-strong);
+  content: "·";
+}
+
 h1 {
   color: #f3ead9;
   font-size: 20px;

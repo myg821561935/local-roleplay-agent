@@ -84,6 +84,19 @@ test('convergence controllers expose the six frontend ownership boundaries', () 
   assert.equal(typeof createProviderSettingsController, 'function');
   assert.equal(typeof createVisualStageController, 'function');
   assert.equal(typeof createSessionController, 'function');
+
+  const visualStage = createVisualStageController({
+    state: {},
+    els: {},
+    apiRequest: async () => ({}),
+    getSessionId: () => 'main',
+    getCharacterPortraitUrl: () => '',
+    saveSessionVisualSettings: async () => ({}),
+    setStatus: () => {},
+    humanizeApiError: String
+  });
+  assert.equal(typeof visualStage.backgroundUrlsMatch, 'function');
+  assert.equal(typeof visualStage.getBackgroundLabelForUrl, 'function');
 });
 
 test('frontend entry imports feature modules and documents the three-step quick start', async () => {
