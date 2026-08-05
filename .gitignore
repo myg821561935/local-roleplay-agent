@@ -16,6 +16,8 @@ data/imports/
 data/community/
 data/private-content/
 data/content-packs-local/
+data/heavy-frontends/
+data/knowledge-graph.sqlite*
 private-content/
 local-content/
 .superpowers/

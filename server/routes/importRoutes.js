@@ -2,7 +2,13 @@ import { exportCharacterCardPng } from '../character/characterCardExport.js';
 import { importCharacterCardFromPayload } from '../character/characterCardImport.js';
 import { writeJson } from '../lib/http.js';
 import { listImportSources } from '../services/importSourceService.js';
-import { readRequestJson, validateMutatingRequest } from './http.js';
+import {
+  ApiError,
+  readRequestBuffer,
+  readRequestJson,
+  validateBinaryMutatingRequest,
+  validateMutatingRequest
+} from './http.js';
 
 export async function handleImportRoutes({
   req,
@@ -13,6 +19,7 @@ export async function handleImportRoutes({
   sessionService,
   resourceLibraryService,
   importSourceService,
+  importUploadService,
   operations
 }) {
   const {
@@ -46,16 +53,50 @@ export async function handleImportRoutes({
     return true;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/import/upload') {
+    validateBinaryMutatingRequest(req);
+    const bytes = await readRequestBuffer(req);
+    if (!bytes.length) throw new ApiError(400, 'IMPORT_UPLOAD_EMPTY');
+    const fileName = url.searchParams.get('fileName') || 'import.bin';
+    const mimeType = url.searchParams.get('mimeType') || req.headers?.['content-type'] || 'application/octet-stream';
+    const source = { site: 'local-file', fileName };
+    const upload = importUploadService.stage({ fileName, mimeType, bytes, source });
+    try {
+      const staged = importUploadService.get(upload.uploadId);
+      const preview = previewImport(staged.payload);
+      preview.inspection = await resourceLibraryService.inspectPreview(preview, source);
+      writeJson(res, 200, {
+        upload,
+        preview: summarizePreviewForClient(preview)
+      });
+    } catch (error) {
+      importUploadService.remove(upload.uploadId);
+      throw error;
+    }
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/import/commit') {
     validateMutatingRequest(req);
     const body = await readRequestJson(req);
+    const uploadId = String(body.payload?.uploadId || body.uploadId || '');
+    const staged = uploadId ? importUploadService.get(uploadId) : null;
+    if (uploadId && !staged) throw new ApiError(410, 'IMPORT_UPLOAD_EXPIRED');
+    const resolvedBody = staged
+      ? {
+        ...body,
+        payload: staged.payload,
+        source: { ...staged.source, ...(body.source || {}) }
+      }
+      : body;
     const result = await commitImport({
       assetService,
       configService,
       sessionService,
       resourceLibraryService,
-      body
+      body: resolvedBody
     });
+    if (uploadId) importUploadService.remove(uploadId);
     writeJson(res, 200, result);
     return true;
   }
@@ -105,4 +146,9 @@ export async function handleImportRoutes({
   }
 
   return false;
+}
+
+function summarizePreviewForClient(preview = {}) {
+  const { importData: _importData, ...clientPreview } = preview;
+  return clientPreview;
 }

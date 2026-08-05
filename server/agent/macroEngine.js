@@ -48,6 +48,11 @@ function resolveMacro(body, context) {
   // —— 身份变量 ——
   if (lower === 'user') return context.user || '用户';
   if (lower === 'char') return context.characterCard?.name || '主角';
+  if (lower === 'charifnotgroup') {
+    const hasGroup = Array.isArray(context.groupMembers)
+      && context.groupMembers.some((member) => member?.enabled !== false && String(member?.name || '').trim());
+    return hasGroup ? '' : (context.characterCard?.name || '主角');
+  }
 
   if (lower.startsWith('persona_')) {
     const field = body.slice('persona_'.length).toLowerCase();
@@ -90,6 +95,8 @@ function resolveMacro(body, context) {
   if (lower === 'timestamp') return String(Math.floor(Date.now() / 1000));
 
   // —— 状态 ——
+  // SillyTavern 的空白裁剪标记不产生可见文本；在本项目中安全降级为空串。
+  if (lower === 'trim') return '';
   if (lower === 'message_count') {
     return String((context.messages || []).filter((m) => !m.excluded).length);
   }
@@ -97,16 +104,28 @@ function resolveMacro(body, context) {
     const text = (context.messages || []).map((m) => m.content || '').join('');
     return String(text.length);
   }
-  if (lower === 'last_user_message') {
+  if (lower === 'last_user_message' || lower === 'lastusermessage') {
     const userMsgs = (context.messages || []).filter((m) => m.role === 'user' && !m.excluded);
     const last = userMsgs[userMsgs.length - 1];
     return last?.content || '';
+  }
+
+  // —— Prompt 内声明式变量写入 ——
+  // 只在调用方显式开启时使用临时作用域；不会执行 JavaScript，也不会持久化到会话。
+  if (/^(setvar|addvar|incvar|decvar)::/i.test(body) && context.allowVariableWrites === true) {
+    return applyPromptVariableWrite(body, context);
   }
 
   // —— 社区轻前端只读变量 ——
   if (lower.startsWith('getvar::') || lower.startsWith('globalvar::')) {
     const separator = body.indexOf('::');
     return resolveLightFrontendState(body.slice(separator + 2), context);
+  }
+
+  // 梦境思客等预设通过酒馆助手宏拼接 LoRA/变量片段。这里不执行助手脚本，
+  // 仅从本轮声明式变量或轻前端状态读取同名值；未声明时安全降级为空串。
+  if (lower.startsWith('压缩相邻消息::')) {
+    return resolveLightFrontendState(body.slice(body.indexOf('::') + 2), context);
   }
 
   // —— 引用世界书 ——
@@ -128,17 +147,91 @@ function resolveMacro(body, context) {
 }
 
 function resolveLightFrontendState(path, context) {
+  const promptValue = readStatePath(context.promptVariables, path);
+  if (promptValue.found) return serializeMacroValue(promptValue.value);
   const source = context.lightFrontendState ?? context.mvu ?? {};
   const values = isPlainObject(source?.values) ? source.values : isPlainObject(source) ? source : {};
-  const parts = String(path || '').replace(/^\//, '').split(/[./]/).map((part) => part.trim()).filter(Boolean);
-  if (!parts.length || parts.length > 8 || parts.some((part) => ['__proto__', 'prototype', 'constructor'].includes(part))) return '';
-  let current = values;
+  const result = readStatePath(values, path);
+  return result.found ? serializeMacroValue(result.value) : '';
+}
+
+function applyPromptVariableWrite(body, context) {
+  const parts = String(body || '').split('::');
+  const operation = String(parts.shift() || '').trim().toLowerCase();
+  const path = String(parts.shift() || '').trim();
+  const pathParts = normalizeVariablePath(path);
+  if (!pathParts.length) return '';
+  const variables = isPlainObject(context.promptVariables) ? context.promptVariables : {};
+  context.promptVariables = variables;
+  const current = readStatePath(variables, path).value;
+  const rawValue = parts.join('::').trim();
+  let value;
+  if (operation === 'setvar') value = parseMacroLiteral(rawValue);
+  else if (operation === 'addvar') value = addMacroValues(current, parseMacroLiteral(rawValue));
+  else if (operation === 'incvar') value = Number(current || 0) + 1;
+  else value = Number(current || 0) - 1;
+  writeStatePath(variables, pathParts, value);
+  if (Array.isArray(context.promptVariableAudit) && context.promptVariableAudit.length < 256) {
+    context.promptVariableAudit.push({ operation, path: pathParts.join('.') });
+  }
+  return '';
+}
+
+function readStatePath(source, path) {
+  const parts = normalizeVariablePath(path);
+  if (!parts.length || (!isPlainObject(source) && !Array.isArray(source))) return { found: false, value: undefined };
+  let current = source;
   for (const part of parts) {
-    if ((!isPlainObject(current) && !Array.isArray(current)) || !Object.hasOwn(current, part)) return '';
+    if ((!isPlainObject(current) && !Array.isArray(current)) || !Object.hasOwn(current, part)) {
+      return { found: false, value: undefined };
+    }
     current = current[part];
   }
-  if (current === null || current === undefined) return '';
-  return typeof current === 'object' ? JSON.stringify(current) : String(current);
+  return { found: true, value: current };
+}
+
+function writeStatePath(target, parts, value) {
+  let current = target;
+  parts.forEach((part, index) => {
+    if (index === parts.length - 1) {
+      current[part] = value;
+      return;
+    }
+    if (!isPlainObject(current[part])) current[part] = {};
+    current = current[part];
+  });
+}
+
+function normalizeVariablePath(path) {
+  const parts = String(path || '').replace(/^\//, '').split(/[./]/).map((part) => part.trim()).filter(Boolean);
+  if (!parts.length || parts.length > 8) return [];
+  if (parts.some((part) => ['__proto__', 'prototype', 'constructor'].includes(part) || !/^[\p{L}\p{N}_-]{1,80}$/u.test(part))) return [];
+  return parts;
+}
+
+function parseMacroLiteral(value) {
+  const raw = String(value ?? '').trim();
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw === 'null') return null;
+  const number = Number(raw);
+  if (raw && Number.isFinite(number)) return number;
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
+function addMacroValues(current, incoming) {
+  if (typeof current === 'number' && typeof incoming === 'number') return current + incoming;
+  if (Array.isArray(current)) return [...current, incoming];
+  if (current === undefined || current === null || current === '') return incoming;
+  return `${serializeMacroValue(current)}${serializeMacroValue(incoming)}`;
+}
+
+function serializeMacroValue(value) {
+  if (value === null || value === undefined) return '';
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
 function resolveRandom(arg) {

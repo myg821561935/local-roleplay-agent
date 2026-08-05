@@ -1,4 +1,6 @@
+import { isPlainObject, normalizeProviderReasoningMode } from './utils.js';
 export const CUSTOM_MODEL_VALUE = '__custom_model__';
+export const MASKED_PROVIDER_SECRET = '********';
 
 export const PROVIDER_PRESETS = [
   {
@@ -26,6 +28,7 @@ export const PROVIDER_PRESETS = [
     baseUrl: 'https://api.deepseek.com/v1',
     model: 'deepseek-v4-flash',
     models: ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner'],
+    reasoningMode: 'auto',
     headers: {}
   },
   {
@@ -112,11 +115,78 @@ export const PROVIDER_PRESETS = [
   }
 ];
 
+export function parseProviderHeaders(value) {
+  let headers;
+  try {
+    headers = JSON.parse(String(value || 'null'));
+  } catch {
+    throw new Error('Headers JSON 解析失败');
+  }
+  if (!isPlainObject(headers)) throw new Error('Headers JSON 必须是普通对象');
+  return headers;
+}
+
+export function buildProviderSaveConfig(currentConfig = {}, provider = {}) {
+  const providers = Array.isArray(currentConfig.providers) ? currentConfig.providers : [];
+  return {
+    activeProviderId: provider.id,
+    taskProviders: isPlainObject(currentConfig.taskProviders)
+      ? currentConfig.taskProviders
+      : { chat: '', rewrite: '', fact: '', summary: '' },
+    taskFallbackChains: isPlainObject(currentConfig.taskFallbackChains)
+      ? currentConfig.taskFallbackChains
+      : {},
+    fallbackChain: Array.isArray(currentConfig.fallbackChain) ? currentConfig.fallbackChain : [],
+    providers: [...providers.filter((item) => item.id !== provider.id), provider]
+  };
+}
+
+export function buildProviderRoutingConfig(currentConfig = {}, selections = {}) {
+  const providers = Array.isArray(currentConfig.providers) ? currentConfig.providers : [];
+  const fallbackChain = (Array.isArray(selections.fallbackChain)
+    ? selections.fallbackChain
+    : String(selections.fallbackChain || '').split(','))
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+  const invalidIds = fallbackChain.filter((id) => !providers.some((provider) => provider.id === id));
+  if (invalidIds.length) {
+    throw new Error(`回退链中存在未知 Provider ID：${invalidIds.join(', ')}`);
+  }
+
+  return {
+    activeProviderId: currentConfig.activeProviderId || providers[0]?.id || '',
+    taskProviders: {
+      ...(isPlainObject(currentConfig.taskProviders) ? currentConfig.taskProviders : {}),
+      chat: selections.chat || '',
+      fact: selections.fact || '',
+      summary: selections.summary || ''
+    },
+    taskFallbackChains: isPlainObject(currentConfig.taskFallbackChains)
+      ? currentConfig.taskFallbackChains
+      : {},
+    fallbackChain,
+    providers
+  };
+}
+
+function normalizeProviderNumber(value, fallback) {
+  const number = Number(value ?? fallback);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 export function createProviderSettingsController({
-  els,
-  prettyJson,
-  setStatus
-}) {
+  state = {},
+  els = {},
+  apiRequest = async () => ({}),
+  reloadState = async () => {},
+  prettyJson = (value) => JSON.stringify(value, null, 2),
+  setStatus = () => {},
+  humanizeApiError = (error) => error?.message || String(error),
+  documentObject = globalThis.document
+} = {}) {
+  let eventsBound = false;
+  let operationPending = false;
+
   function getProviderPreset(presetId) {
     return PROVIDER_PRESETS.find((item) => item.id === presetId);
   }
@@ -161,7 +231,7 @@ export function createProviderSettingsController({
     if (!els.providerPreset || els.providerPreset.options.length > 1) return;
     els.providerPreset.innerHTML = '';
     PROVIDER_PRESETS.forEach((preset) => {
-      const option = document.createElement('option');
+      const option = documentObject.createElement('option');
       option.value = preset.id;
       option.textContent = preset.label;
       els.providerPreset.append(option);
@@ -177,13 +247,13 @@ export function createProviderSettingsController({
 
     els.providerModel.innerHTML = '';
     modelNames.forEach((model) => {
-      const option = document.createElement('option');
+      const option = documentObject.createElement('option');
       option.value = model;
       option.textContent = model;
       els.providerModel.append(option);
     });
 
-    const customOption = document.createElement('option');
+    const customOption = documentObject.createElement('option');
     customOption.value = CUSTOM_MODEL_VALUE;
     customOption.textContent = '自定义模型...';
     els.providerModel.append(customOption);
@@ -205,18 +275,224 @@ export function createProviderSettingsController({
     }
     els.providerBaseUrl.value = preset.baseUrl;
     renderProviderModelOptions(presetId, preset.model);
+    if (els.providerReasoningMode && preset.reasoningMode) els.providerReasoningMode.value = normalizeProviderReasoningMode(preset.reasoningMode);
     els.providerHeaders.value = prettyJson(preset.headers || {});
     setStatus(els.providerStatus, `已套用 ${preset.label} 模板`, 'ok');
   }
 
+  function getProvidersConfig() {
+    return isPlainObject(state.config?.providers) ? state.config.providers : {};
+  }
+
+  function getExistingProvider(providerId = els.providerId?.value?.trim()) {
+    const providersConfig = getProvidersConfig();
+    const providers = Array.isArray(providersConfig.providers) ? providersConfig.providers : [];
+    const id = String(providerId || 'local').trim();
+    return providers.find((provider) => provider.id === id);
+  }
+
+  function resolveApiKeyForSave() {
+    const inputValue = String(els.providerApiKey?.value || '').trim();
+    const existing = getExistingProvider();
+    if (inputValue === MASKED_PROVIDER_SECRET) {
+      return existing?.apiKey ? MASKED_PROVIDER_SECRET : '';
+    }
+    if (inputValue) return inputValue;
+    return existing?.apiKey ? MASKED_PROVIDER_SECRET : '';
+  }
+
+  function readProviderForm() {
+    return {
+      id: String(els.providerId?.value || '').trim() || 'local',
+      kind: normalizeProviderKind(els.providerKind?.value),
+      preset: String(els.providerPreset?.value || ''),
+      baseUrl: String(els.providerBaseUrl?.value || '').trim(),
+      apiKey: resolveApiKeyForSave(),
+      model: resolveSelectedProviderModel(),
+      temperature: Number(els.providerTemperature?.value || 0.9),
+      maxTokens: Number(els.providerMaxTokens?.value || 2000),
+      reasoningMode: normalizeProviderReasoningMode(els.providerReasoningMode?.value),
+      headers: parseProviderHeaders(els.providerHeaders?.value)
+    };
+  }
+
+  function renderProviderForm() {
+    renderProviderPresetOptions();
+    const providersConfig = getProvidersConfig();
+    const providers = Array.isArray(providersConfig.providers) ? providersConfig.providers : [];
+    const activeId = providersConfig.activeProviderId || providers[0]?.id || '';
+    const provider = providers.find((item) => item.id === activeId) || providers[0] || {};
+
+    els.providerPreset.value = resolveProviderPreset(provider);
+    els.providerKind.value = normalizeProviderKind(provider.kind);
+    els.providerId.value = provider.id || activeId || 'local';
+    els.providerBaseUrl.value = provider.baseUrl || '';
+    els.providerApiKey.value = provider.apiKey ? MASKED_PROVIDER_SECRET : '';
+    els.providerTemperature.value = normalizeProviderNumber(provider.temperature, 0.9);
+    els.providerMaxTokens.value = normalizeProviderNumber(provider.maxTokens, 2000);
+    if (els.providerReasoningMode) els.providerReasoningMode.value = normalizeProviderReasoningMode(provider.reasoningMode);
+    els.providerHeaders.value = prettyJson(provider.headers || {});
+    renderProviderModelOptions(els.providerPreset.value, provider.model);
+
+    if (provider.id) setStatus(els.providerStatus, `当前：${provider.id}`, 'ok');
+    else setStatus(els.providerStatus, '未配置 provider', '');
+  }
+
+  function renderProviderRoutingOptions() {
+    const providersConfig = getProvidersConfig();
+    const providers = Array.isArray(providersConfig.providers) ? providersConfig.providers : [];
+    const taskProviders = isPlainObject(providersConfig.taskProviders) ? providersConfig.taskProviders : {};
+    const activeProviderId = String(providersConfig.activeProviderId || providers[0]?.id || '').trim();
+    const selects = {
+      chat: els.taskProviderChat,
+      fact: els.taskProviderFact,
+      summary: els.taskProviderSummary
+    };
+
+    Object.entries(selects).forEach(([taskKey, select]) => {
+      if (!select) return;
+      select.innerHTML = '';
+      const followOption = documentObject.createElement('option');
+      followOption.value = '';
+      followOption.textContent = activeProviderId ? `跟随全局：${activeProviderId}` : '跟随全局';
+      select.append(followOption);
+      providers.forEach((provider) => {
+        const option = documentObject.createElement('option');
+        option.value = provider.id;
+        option.textContent = provider.model ? `${provider.id} · ${provider.model}` : provider.id;
+        select.append(option);
+      });
+      select.value = providers.some((provider) => provider.id === taskProviders[taskKey])
+        ? taskProviders[taskKey]
+        : '';
+    });
+    if (els.fallbackChainInput) {
+      els.fallbackChainInput.value = Array.isArray(providersConfig.fallbackChain)
+        ? providersConfig.fallbackChain.join(', ')
+        : '';
+    }
+  }
+
+  function syncOperationState() {
+    [els.saveProvider, els.testProvider, els.saveProviderRouting].forEach((button) => {
+      if (button) button.disabled = operationPending;
+    });
+  }
+
+  function beginOperation() {
+    if (operationPending) {
+      setStatus(els.providerStatus, '上一项 Provider 操作仍在处理中', 'busy');
+      return false;
+    }
+    operationPending = true;
+    syncOperationState();
+    return true;
+  }
+
+  function endOperation() {
+    operationPending = false;
+    syncOperationState();
+  }
+
+  async function saveProvider() {
+    if (!beginOperation()) return null;
+    setStatus(els.providerStatus, '正在保存...', 'busy');
+    try {
+      const provider = readProviderForm();
+      const providers = buildProviderSaveConfig(getProvidersConfig(), provider);
+      await apiRequest('/api/providers', { method: 'PUT', body: providers });
+      setStatus(els.providerStatus, '接口已保存', 'ok');
+      setStatus(els.appStatus, 'Provider 配置已更新', 'ok');
+      await reloadState();
+      return providers;
+    } catch (error) {
+      setStatus(els.providerStatus, `保存失败：${error.message}`, 'error');
+      return null;
+    } finally {
+      endOperation();
+    }
+  }
+
+  async function testProviderConnection() {
+    if (!beginOperation()) return null;
+    setStatus(els.providerStatus, '正在测试...', 'busy');
+    setStatus(els.providerTestResult, '正在发起最小模型请求...', 'busy');
+    try {
+      const provider = readProviderForm();
+      const { result } = await apiRequest('/api/providers/test', {
+        method: 'POST',
+        body: { provider }
+      });
+      const preview = result.responsePreview ? ` · ${result.responsePreview}` : '';
+      setStatus(els.providerStatus, '连接正常', 'ok');
+      setStatus(
+        els.providerTestResult,
+        `${result.model || result.providerId} · ${result.latencyMs} ms${preview}`,
+        'ok'
+      );
+      return result;
+    } catch (error) {
+      setStatus(els.providerStatus, '连接失败', 'error');
+      setStatus(els.providerTestResult, `测试失败：${humanizeApiError(error)}`, 'error');
+      return null;
+    } finally {
+      endOperation();
+    }
+  }
+
+  async function saveProviderRouting() {
+    if (!beginOperation()) return null;
+    try {
+      const payload = buildProviderRoutingConfig(getProvidersConfig(), {
+        chat: els.taskProviderChat?.value || '',
+        fact: els.taskProviderFact?.value || '',
+        summary: els.taskProviderSummary?.value || '',
+        fallbackChain: els.fallbackChainInput?.value || ''
+      });
+      await apiRequest('/api/providers', { method: 'PUT', body: payload });
+      state.config ||= {};
+      state.config.providers = payload;
+      setStatus(els.providerStatus, '路由配置已保存', 'ok');
+      return payload;
+    } catch (error) {
+      setStatus(els.providerStatus, `保存失败：${error.message}`, 'error');
+      return null;
+    } finally {
+      endOperation();
+    }
+  }
+
+  function bindEvents() {
+    if (eventsBound) return;
+    eventsBound = true;
+    els.providerForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void saveProvider();
+    });
+    els.testProvider?.addEventListener('click', () => { void testProviderConnection(); });
+    els.saveProviderRouting?.addEventListener('click', () => { void saveProviderRouting(); });
+    els.providerPreset?.addEventListener('change', () => applyProviderPreset(els.providerPreset.value));
+    els.providerModel?.addEventListener('change', syncProviderModelCustomField);
+  }
+
   return {
     applyProviderPreset,
+    bindEvents,
+    getExistingProvider,
     getProviderPreset,
+    isOperationPending: () => operationPending,
     normalizeProviderKind,
+    readProviderForm,
+    renderProviderForm,
+    renderProviderRoutingOptions,
     renderProviderModelOptions,
     renderProviderPresetOptions,
+    resolveApiKeyForSave,
     resolveProviderPreset,
     resolveSelectedProviderModel,
-    syncProviderModelCustomField
+    saveProvider,
+    saveProviderRouting,
+    syncProviderModelCustomField,
+    testProviderConnection
   };
 }

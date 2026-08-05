@@ -19,6 +19,8 @@ test('content pack v1 bundle is self-contained and preserves story systems', () 
   assert.equal(restored.lightFrontend.quickReplies[0].label, '查看雨势');
   assert.equal(restored.lightFrontend.panels[0].title, '线索档案');
   assert.equal(restored.lightFrontend.mvu.values.clueCount, 0);
+  assert.equal(restored.groupMembers[0].name, '守夜人');
+  assert.equal(restored.openingTemplate.title, '听雨开局');
   assert.ok(bundle.manifest.capabilities.includes('quick-replies'));
   assert.ok(bundle.manifest.capabilities.includes('sidebar-panels'));
   assert.ok(bundle.manifest.capabilities.includes('mvu-state'));
@@ -47,6 +49,13 @@ test('content pack build dependencies are review warnings rather than runtime bl
   assert.equal(inspection.verdict, 'review');
 });
 
+test('imported bundles without a visual declaration use the neutral workbench', () => {
+  const bundle = createContentPackBundle(createPack());
+  delete bundle.content.visualPackId;
+  const restored = contentPackFromBundle(bundle, 'custom-imported-neutral');
+  assert.equal(restored.visualPackId, 'neutral');
+});
+
 function createPack() {
   return {
     id: 'rain-night-xianxia',
@@ -66,6 +75,8 @@ function createPack() {
         }
       }
     }],
+    groupMembers: [{ id: 'night-watch', name: '守夜人', enabled: true }],
+    openingTemplate: { title: '听雨开局', source: 'custom-pack' },
     worldBook: [{ id: 'rain-lore', title: '听雨楼', keywords: ['听雨楼'], content: '听雨楼不问来路。' }],
     promptModules: [{ id: 'rain-prompt', title: '雨夜文风', content: '克制叙事。', enabled: true }],
     lightFrontend: {

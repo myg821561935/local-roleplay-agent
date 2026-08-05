@@ -1,20 +1,29 @@
 const MAX_RULES = 32;
 const MAX_PANELS = 8;
 const MAX_TEXT_LENGTH = 120000;
+const MAX_REPLACEMENT_LENGTH = 524288; // 与后端一致
 
 export function applyLightFrontendDisplayTransforms(text, runtime = {}, { role = 'assistant', context = {} } = {}) {
   let output = String(text || '').slice(0, MAX_TEXT_LENGTH);
   const rules = Array.isArray(runtime?.regexTransforms) ? runtime.regexTransforms.slice(0, MAX_RULES) : [];
   for (const rule of rules) {
     if (!rule || rule.enabled === false) continue;
+    if (!isDisplayRule(rule)) continue;
     const scope = ['assistant', 'user', 'all'].includes(rule.scope) ? rule.scope : 'assistant';
     if (scope !== 'all' && scope !== role) continue;
     const pattern = String(rule.pattern || '');
     if (!pattern || pattern.length > 500 || !isSafePattern(pattern)) continue;
     const flags = normalizeFlags(rule.flags);
     try {
+      const rawReplacement = String(rule.replacement || '').slice(0, MAX_REPLACEMENT_LENGTH);
+      // 可执行 replacement 完全由 scriptGovernance/sandboxRenderer 处理。
+      // 未审核脚本必须保持原始消息内容，不能在这里生成悬空占位符。
+      if (rule.requiresSandbox === true) {
+        continue;
+      }
+      const processedReplacement = degradeStaticHtmlReplacement(rawReplacement);
       const replacement = expandDisplayMacros(
-        renderSafeLightFrontendTemplate(String(rule.replacement || '').slice(0, 4000), context),
+        renderSafeLightFrontendTemplate(processedReplacement, context),
         context
       );
       output = output.replace(new RegExp(pattern, flags), replacement);
@@ -23,6 +32,28 @@ export function applyLightFrontendDisplayTransforms(text, runtime = {}, { role =
     }
   }
   return output;
+}
+
+function isDisplayRule(rule) {
+  if (rule.markdownOnly === true) return true;
+  if (rule.promptOnly === true) return false;
+  return !Object.hasOwn(rule, 'markdownOnly') && !Object.hasOwn(rule, 'promptOnly');
+}
+
+function degradeStaticHtmlReplacement(value) {
+  const source = String(value || '');
+  if (!/<\/?[a-z][^>]*>/i.test(source)) return source;
+  return source
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\s*\/\s*(?:p|div|details|summary|section|article|h[1-6])\s*>/gi, '\n')
+    .replace(/<\s*li(?:\s[^>]*)?>/gi, '- ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export function getLightFrontendQuickReplies(runtime = {}) {
@@ -44,8 +75,9 @@ export function getLightFrontendQuickReplies(runtime = {}) {
 
 function expandDisplayMacros(text, context = {}) {
   const values = { user: context.user, char: context.char };
-  return String(text || '').replace(/\{\{\s*(user|char)\s*\}\}/gi, (_, key) => {
-    return String(values[String(key).toLowerCase()] || '');
+  return String(text || '').replace(/\{\{\s*(user|char|character[\s_-]+name)\s*\}\}/gi, (_, key) => {
+    const normalizedKey = /^character[\s_-]+name$/i.test(String(key || '').trim()) ? 'char' : String(key).toLowerCase();
+    return String(values[normalizedKey] || '');
   });
 }
 
@@ -70,26 +102,44 @@ export function getLightFrontendPanels(runtime = {}) {
 export function resolveLightFrontendPanel(panel, context = {}) {
   if (!panel) return null;
   const render = (value) => renderLightFrontendText(value, context);
-  const fields = (Array.isArray(panel.fields) ? panel.fields : []).map((field) => ({
-    id: String(field?.id || ''),
-    label: render(field?.label).slice(0, 32),
-    value: render(field?.template ?? field?.value).slice(0, 1000),
-    tone: normalizePanelTone(field?.tone),
-    wide: field?.wide === true
-  })).filter((field) => field.label && field.value);
+  const sourceFields = Array.isArray(panel.fields) ? panel.fields : [];
+  let unresolvedFieldCount = 0;
+  const fields = sourceFields.map((field) => {
+    const value = render(field?.template ?? field?.value).slice(0, 1000);
+    if (hasUnresolvedTemplate(value)) unresolvedFieldCount += 1;
+    return {
+      id: String(field?.id || ''),
+      label: render(field?.label).slice(0, 32),
+      value,
+      tone: normalizePanelTone(field?.tone),
+      wide: field?.wide === true
+    };
+  }).filter((field) => field.label && field.value && !hasUnresolvedTemplate(`${field.label}\n${field.value}`));
   const items = (Array.isArray(panel.items) ? panel.items : []).map((item) => ({
     id: String(item?.id || ''),
     title: render(item?.title).slice(0, 100),
     detail: render(item?.detail).slice(0, 4000),
     meta: render(item?.meta).slice(0, 200),
     tone: normalizePanelTone(item?.tone)
-  })).filter((item) => item.title || item.detail);
+  })).filter((item) => (item.title || item.detail) && !hasUnresolvedTemplate(`${item.title}\n${item.detail}\n${item.meta}`));
+  const title = render(panel.title).slice(0, 40);
+  const subtitle = render(panel.subtitle).slice(0, 80);
+  const summary = render(panel.summary).slice(0, 500);
+  const content = render(panel.content).slice(0, 4000);
+  const unresolvedSchema = unresolvedFieldCount >= 2
+    && unresolvedFieldCount * 2 >= sourceFields.length
+    && fields.length <= 1
+    && !items.length
+    && !summary
+    && !content;
+  if (unresolvedSchema || hasUnresolvedTemplate(title)) return null;
+  if (!fields.length && !items.length && !summary && !content) return null;
   return {
     ...panel,
-    title: render(panel.title).slice(0, 40),
-    subtitle: render(panel.subtitle).slice(0, 80),
-    summary: render(panel.summary).slice(0, 500),
-    content: render(panel.content).slice(0, 4000),
+    title,
+    subtitle: hasUnresolvedTemplate(subtitle) ? '' : subtitle,
+    summary: hasUnresolvedTemplate(summary) ? '' : summary,
+    content: hasUnresolvedTemplate(content) ? '' : content,
     fields,
     items
   };
@@ -105,8 +155,9 @@ export function expandLightFrontendQuickReply(reply, context = {}) {
     time: context.time
   };
   return renderSafeLightFrontendTemplate(template, context)
-    .replace(/\{\{\s*(user|char|scene|location|time)\s*\}\}/gi, (_, key) => {
-    return String(values[String(key).toLowerCase()] || '');
+    .replace(/\{\{\s*(user|char|character[\s_-]+name|scene|location|time)\s*\}\}/gi, (_, key) => {
+      const normalizedKey = /^character[\s_-]+name$/i.test(String(key || '').trim()) ? 'char' : String(key).toLowerCase();
+      return String(values[normalizedKey] || '');
     })
     .replace(/\{\{\s*(?:getvar|globalvar)::([^{}]+)\}\}/gi, (_, path) => {
       return stringifyValue(readPath(resolveState(context), path));
@@ -124,13 +175,18 @@ function renderLightFrontendText(value, context) {
     time: context.time
   };
   return rendered
-    .replace(/\{\{\s*(user|char|scene|location|time)\s*\}\}/gi, (_, key) => {
-      return String(values[String(key).toLowerCase()] || '');
+    .replace(/\{\{\s*(user|char|character[\s_-]+name|scene|location|time)\s*\}\}/gi, (_, key) => {
+      const normalizedKey = /^character[\s_-]+name$/i.test(String(key || '').trim()) ? 'char' : String(key).toLowerCase();
+      return String(values[normalizedKey] || '');
     })
     .replace(/\{\{\s*(?:getvar|globalvar)::([^{}]+)\}\}/gi, (_, path) => {
       return stringifyValue(readPath(resolveState(context), path));
     })
     .trim();
+}
+
+function hasUnresolvedTemplate(value) {
+  return /\{\{[^{}]+\}\}/u.test(String(value || ''));
 }
 
 export function renderSafeLightFrontendTemplate(text = '', context = {}) {

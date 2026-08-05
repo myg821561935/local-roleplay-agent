@@ -31,6 +31,32 @@ export function validateMutatingRequest(req) {
   }
 }
 
+export function validateBinaryMutatingRequest(req) {
+  if (!isAllowedOrigin(req)) {
+    throw new ApiError(403, 'FORBIDDEN_ORIGIN');
+  }
+  const contentType = getHeader(req, 'content-type').split(';', 1)[0].trim().toLowerCase();
+  const supported = contentType === 'application/octet-stream'
+    || contentType === 'application/json'
+    || contentType === 'image/png'
+    || contentType === 'text/plain'
+    || contentType === 'text/yaml'
+    || contentType === 'application/yaml';
+  if (!supported) throw new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE');
+}
+
+export async function readRequestBuffer(req, { maxBytes = 96 * 1024 * 1024 } = {}) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) throw new ApiError(413, 'IMPORT_SOURCE_FILE_TOO_LARGE');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, size);
+}
+
 export function isAllowedOrigin(req) {
   const origin = getHeader(req, 'origin');
   if (!origin) return true;

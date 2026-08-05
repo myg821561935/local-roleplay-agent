@@ -1,0 +1,317 @@
+/* Reading modes style the workspace and dialogue. Story assets remain the only source of stage imagery. */
+:root[data-theme] body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+:root[data-theme] .app-shell {
+  background: var(--reading-app-shell);
+}
+
+:root[data-theme] h1,
+:root[data-theme] h2 {
+  color: var(--text);
+}
+
+:root[data-theme] .topbar,
+:root[data-theme] .panel,
+:root[data-theme] .work-mode-switch,
+:root[data-theme] .tabs,
+:root[data-theme] .theme-switcher select,
+:root[data-theme] .mode-pill {
+  border-color: var(--line);
+}
+
+:root[data-theme] .work-mode-switch,
+:root[data-theme] .theme-switcher select,
+:root[data-theme] .mode-pill {
+  background: color-mix(in srgb, var(--panel-deep) 88%, transparent);
+  color: var(--text);
+}
+
+:root[data-theme] .work-mode-button.active {
+  background: var(--panel-raised);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+:root[data-theme] .mode-pill.is-custom {
+  border-color: color-mix(in srgb, var(--teal) 52%, transparent);
+  background: color-mix(in srgb, var(--teal) 12%, var(--panel-deep));
+  color: var(--text);
+}
+
+:root[data-theme] .chat-panel {
+  border-color: var(--reading-border);
+  background-color: var(--panel-deep);
+  box-shadow: var(--shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+:root[data-theme] .chat-panel::before {
+  border-color: var(--reading-border);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--line-strong) 18%, transparent),
+    inset 0 0 52px color-mix(in srgb, var(--panel-deep) 58%, transparent);
+}
+
+:root[data-theme] .chat-panel::after,
+:root[data-theme] .chat-panel.has-stage-background::after {
+  background: var(--reading-stage-effect);
+  mix-blend-mode: normal;
+  opacity: 1;
+}
+
+:root[data-theme] .chat-header-overlay {
+  border-bottom-color: var(--reading-border);
+  background: var(--reading-header);
+}
+
+:root[data-theme] .composer {
+  border-color: var(--reading-border);
+  background: var(--reading-composer);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--bg) 62%, transparent);
+}
+
+:root[data-theme] .composer::before {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 48%, transparent), transparent);
+}
+
+:root[data-theme] .message,
+:root[data-theme] .chat-panel.has-stage-background .message.assistant,
+:root[data-theme] .chat-panel.has-stage-background .message.user {
+  border-color: var(--reading-border);
+  border-radius: var(--reading-radius);
+  background: var(--reading-surface);
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--bg) 44%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+:root[data-theme] .message.assistant,
+:root[data-theme] .chat-panel.has-stage-background .message.assistant {
+  background: var(--reading-assistant);
+}
+
+:root[data-theme] .message.user,
+:root[data-theme] .chat-panel.has-stage-background .message.user {
+  background: var(--reading-user);
+}
+
+:root[data-theme] .message-role {
+  color: var(--gold);
+  text-shadow: var(--reading-role-shadow);
+}
+
+:root[data-theme] .message.user .message-role {
+  color: var(--teal);
+}
+
+:root[data-theme] .message-content {
+  color: var(--reading-content);
+  text-shadow: none;
+}
+
+:root[data-theme] .message-content strong {
+  color: var(--reading-strong);
+}
+
+:root[data-theme] .message-content em {
+  color: var(--reading-emphasis);
+}
+
+:root[data-theme] .message-avatar {
+  border-color: color-mix(in srgb, var(--accent) 54%, transparent);
+  background: var(--panel-deep);
+}
+
+:root[data-theme] .chat-form textarea {
+  border-color: var(--reading-border);
+  background: color-mix(in srgb, var(--reading-surface) 92%, transparent);
+  color: var(--reading-content);
+}
+
+:root[data-theme] .chat-form textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  background: var(--reading-surface);
+}
+
+:root[data-theme] .chat-form textarea::placeholder {
+  color: color-mix(in srgb, var(--muted) 58%, transparent);
+}
+
+:root[data-theme] .send-button {
+  background: var(--accent);
+  color: var(--panel-deep);
+  box-shadow: none;
+}
+
+/* Eye-care: low glare, low ornament, and steady reading surfaces. */
+:root[data-theme="eye-care"] .message {
+  box-shadow: 0 8px 22px rgba(5, 10, 7, 0.16);
+  backdrop-filter: blur(3px);
+}
+
+:root[data-theme="eye-care"] .message-content,
+:root[data-theme="eye-care"] .message-role,
+:root[data-theme="eye-care"] .empty-state {
+  text-shadow: none;
+}
+
+/* Dark: asymmetric frames and a restrained vignette for suspense or horror. */
+:root[data-theme="dark"] .chat-panel {
+  border-radius: 4px;
+}
+
+:root[data-theme="dark"] .message.assistant {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+:root[data-theme="dark"] .message.user,
+:root[data-theme="dark"] .chat-panel.has-stage-background .message.user {
+  border-right: 3px solid color-mix(in srgb, var(--teal) 54%, transparent);
+  border-radius: 14px 3px 3px 14px;
+}
+
+:root[data-theme="dark"] .composer {
+  border-radius: 6px;
+}
+
+/* Bright: a clean daylight surface while the story image remains untouched beneath it. */
+:root[data-theme="bright"] .topbar,
+:root[data-theme="bright"] .work-mode-switch,
+:root[data-theme="bright"] .theme-switcher select,
+:root[data-theme="bright"] .mode-pill {
+  background: rgba(246, 248, 248, 0.9);
+  color: var(--text);
+}
+
+:root[data-theme="bright"] .message,
+:root[data-theme="bright"] .composer {
+  box-shadow: 0 10px 28px rgba(39, 54, 61, 0.16);
+}
+
+:root[data-theme="bright"] .provider-panel,
+:root[data-theme="bright"] .inspector-panel,
+:root[data-theme="bright"] .immersive-sidebar-content {
+  border-color: var(--line);
+  background: rgba(245, 247, 247, 0.94);
+  color: var(--text);
+  box-shadow: 0 14px 34px rgba(39, 54, 61, 0.16);
+}
+
+:root[data-theme="bright"] .panel.collapsed .collapsed-rail-button,
+:root[data-theme="bright"] .panel.collapsed .collapsed-rail-button svg,
+:root[data-theme="bright"] .panel.collapsed .drawer-toggle,
+:root[data-theme="bright"] .ghost-button,
+:root[data-theme="bright"] .chat-header-overlay select,
+:root[data-theme="bright"] .narrative-mode-switch {
+  border-color: var(--line);
+  background: rgba(248, 250, 250, 0.92);
+  color: var(--text);
+  box-shadow: none;
+}
+
+:root[data-theme="bright"] .ghost-button:hover,
+:root[data-theme="bright"] .panel.collapsed .collapsed-rail-button:hover,
+:root[data-theme="bright"] .panel.collapsed .collapsed-rail-button:hover span {
+  border-color: var(--line-strong);
+  color: var(--blue);
+}
+
+:root[data-theme="bright"] .immersive-sidebar-tab {
+  border-color: var(--line);
+  background: rgba(245, 247, 247, 0.92);
+  color: var(--muted);
+  box-shadow: 0 8px 22px rgba(39, 54, 61, 0.14);
+}
+
+:root[data-theme="bright"] .immersive-sidebar-tab.active,
+:root[data-theme="bright"] .immersive-sidebar-tab:hover {
+  border-color: var(--line-strong);
+  background: #ffffff;
+  color: var(--blue);
+}
+
+:root[data-theme="bright"] .stage-actions {
+  border-color: var(--line);
+  background: rgba(245, 247, 247, 0.84);
+}
+
+:root[data-theme="bright"] .composer-menu-trigger,
+:root[data-theme="bright"] .stage-actions .tool-button {
+  border-color: rgba(69, 91, 101, 0.18);
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--muted);
+}
+
+:root[data-theme="bright"] .send-button {
+  background: #597f97;
+  color: #ffffff;
+}
+
+/* Soft: warm tinting and rounded dialogue for light-novel and character-driven scenes. */
+:root[data-theme="soft"] .message.assistant,
+:root[data-theme="soft"] .chat-panel.has-stage-background .message.assistant {
+  border-radius: 8px 22px 22px 22px;
+}
+
+:root[data-theme="soft"] .message.user,
+:root[data-theme="soft"] .chat-panel.has-stage-background .message.user {
+  border-radius: 22px 8px 22px 22px;
+}
+
+:root[data-theme="soft"] .composer,
+:root[data-theme="soft"] .chat-form textarea {
+  border-radius: 22px;
+}
+
+:root[data-theme="soft"] .send-button {
+  background: linear-gradient(135deg, #d3a4ba, #9ebcb7);
+}
+
+/* Modern: clean geometry and minimal ornament for contemporary stories. */
+:root[data-theme="modern"] .chat-panel::after,
+:root[data-theme="modern"] .chat-panel.has-stage-background::after {
+  opacity: 0.72;
+}
+
+:root[data-theme="modern"] .message {
+  box-shadow: 0 10px 24px rgba(2, 7, 12, 0.24);
+}
+
+:root[data-theme="modern"] .composer {
+  border-radius: 12px;
+}
+
+/* Cyber: precise neon edges while body text stays matte and readable. */
+:root[data-theme="cyber"] .chat-panel,
+:root[data-theme="cyber"] .composer,
+:root[data-theme="cyber"] .chat-form textarea {
+  border-radius: 2px;
+}
+
+:root[data-theme="cyber"] .message {
+  border-left: 2px solid color-mix(in srgb, var(--teal) 66%, transparent);
+  border-right-color: color-mix(in srgb, #d64e92 38%, transparent);
+}
+
+:root[data-theme="cyber"] .message.user {
+  border-left-color: color-mix(in srgb, #d64e92 58%, transparent);
+  border-right: 2px solid color-mix(in srgb, var(--teal) 66%, transparent);
+}
+
+:root[data-theme="cyber"] .message-content {
+  text-shadow: none;
+}
+
+:root[data-theme="cyber"] .send-button {
+  background: linear-gradient(135deg, #55c5c4, #4b82bb);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme] .message,
+  :root[data-theme] .composer,
+  :root[data-theme] .chat-header-overlay {
+    transition: none;
+    animation: none;
+  }
+}

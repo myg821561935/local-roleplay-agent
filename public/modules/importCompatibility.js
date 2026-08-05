@@ -1,12 +1,14 @@
 const STATUS_LABELS = {
   supported: '原生支持',
   degraded: '需转换',
+  review: '待人工审核',
   missing: '运行时缺失'
 };
 
 const ACCEPTANCE_LABELS = {
   'full-mapping': '完整映射',
   'safe-degradation': '安全降级',
+  'review-required': '待人工审核',
   blocked: '阻断运行'
 };
 
@@ -48,6 +50,7 @@ export function createCommunityCompatibilitySection(report = {}, { storyImport =
   [
     ['supported', '原生', report.counts?.supported],
     ['degraded', '转换', report.counts?.degraded],
+    ['review', '待审核', report.counts?.review],
     ['missing', '缺失', report.counts?.missing]
   ].forEach(([status, text, value]) => {
     const item = document.createElement('span');
@@ -62,20 +65,29 @@ export function createCommunityCompatibilitySection(report = {}, { storyImport =
 
   const safety = document.createElement('p');
   safety.className = 'import-community-safety';
-  if (outcome === 'blocked') {
-    const reason = report.acceptance?.blockers?.[0]?.label || '资源依赖不受控运行时';
-    safety.textContent = `已阻断运行：${reason}。原件可保存审阅，但不会执行第三方 JavaScript、DOM 或 iframe。`;
-  } else if (outcome === 'safe-degradation') {
-    const differenceCount = Number(report.acceptance?.differences?.length || 0);
-    safety.textContent = `已保留静态内容并禁用不安全部分，共 ${differenceCount} 项差异；导入后请按差异清单审阅。`;
-  } else {
-    safety.textContent = report.counts?.missing
-      ? `${storyImport ? '可以保存并创建待完善副本，但' : '可以安全保存原件，但'}缺失能力不会因此恢复；未知 JavaScript 始终保持禁用。`
-      : '主要交互语义已映射；导入仍只保存数据，不执行第三方 JavaScript。';
-  }
+  safety.textContent = getCommunityCompatibilitySafetyText(report, { storyImport });
 
   section.append(heading, playability, summary, counters, list, safety);
   return section;
+}
+
+export function getCommunityCompatibilitySafetyText(report = {}, { storyImport = false } = {}) {
+  const outcome = report.acceptance?.outcome || '';
+  if (outcome === 'blocked') {
+    const reason = report.acceptance?.blockers?.[0]?.label || '资源依赖不受控运行时';
+    return `已阻断运行：${reason}。原件可保存审阅，但不会执行第三方 JavaScript、DOM 或 iframe。`;
+  }
+  if (outcome === 'safe-degradation') {
+    const differenceCount = Number(report.acceptance?.differences?.length || 0);
+    return `已保留静态内容并禁用不安全部分，共 ${differenceCount} 项差异；导入后请按差异清单审阅。`;
+  }
+  if (outcome === 'review-required') {
+    const reviewCount = Number(report.acceptance?.reviews?.length || report.counts?.review || 0);
+    return `检测到 ${reviewCount} 项脚本能力，当前保持禁用；完成人工审核、内容哈希绑定与本地审计后，受支持脚本才可进入隔离沙箱。`;
+  }
+  return report.counts?.missing
+    ? `${storyImport ? '可以保存并创建待完善副本，但' : '可以安全保存原件，但'}缺失能力不会因此恢复；未知 JavaScript 始终保持禁用。`
+    : '主要交互语义已映射；静态内容可直接入库，第三方脚本只有经人工审核、内容哈希绑定并写入本地审计后，才会进入隔离沙箱。';
 }
 
 function createRequirementRow(item = {}) {

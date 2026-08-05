@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="wuxia-scroll">
+<html lang="zh-CN" data-theme="eye-care">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Narrative Roleplay Engine · 叙界</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/styles.css?v=20260727-1">
+    <link rel="stylesheet" href="/styles.css?v=20260804-1">
   </head>
   <body>
     <div class="app-shell">
@@ -47,11 +47,14 @@
           <button class="ghost-button compact" type="button" data-mobile-view="inspector" data-mobile-mode="debug">调试</button>
         </div>
         <label class="theme-switcher">
-          <span>界面皮肤</span>
-          <select id="theme-select" aria-label="界面皮肤">
-            <option value="default-dark">极简暗黑</option>
-            <option value="wuxia-scroll">武侠卷轴</option>
-            <option value="xianxia-scroll">仙侠云海</option>
+          <span>阅读模式</span>
+          <select id="theme-select" aria-label="阅读模式" title="只调整界面与对话呈现，不改变剧本背景">
+            <option value="eye-care">护眼</option>
+            <option value="dark">阴暗</option>
+            <option value="bright">明亮</option>
+            <option value="soft">柔缓</option>
+            <option value="modern">现代</option>
+            <option value="cyber">赛博</option>
           </select>
         </label>
         <span id="background-mode" class="mode-pill" aria-live="polite">舞台背景：未设置</span>
@@ -163,6 +166,7 @@
                 <button type="button" role="menuitem" data-asset-import-kind="character"><strong>角色卡</strong><span>PNG / JSON</span></button>
                 <button type="button" role="menuitem" data-asset-import-kind="worldbook"><strong>世界书</strong><span>JSON / YAML / TXT</span></button>
                 <button type="button" role="menuitem" data-asset-import-kind="prompt"><strong>预设 / Prompt</strong><span>JSON / YAML / TXT</span></button>
+                <button type="button" role="menuitem" data-asset-import-kind="heavy-frontend"><strong>独立重前端</strong><span>完整网页目录</span></button>
               </div>
             </details>
             <button id="asset-center-refresh" class="asset-secondary-button" type="button" aria-label="刷新素材索引" title="刷新素材索引">
@@ -261,12 +265,64 @@
         </footer>
       </section>
 
+      <section id="heavy-frontend-manager" class="heavy-frontend-manager is-hidden" aria-labelledby="heavy-frontend-manager-title" aria-hidden="true">
+        <header class="heavy-frontend-manager-header">
+          <div>
+            <span>ISOLATED APP HOST</span>
+            <h2 id="heavy-frontend-manager-title">重前端托管与审核</h2>
+            <p>完整网页应用独立运行；密钥、模型调用、预算和审计由叙界接管。</p>
+          </div>
+          <div class="heavy-frontend-header-actions">
+            <input id="heavy-frontend-directory-input" type="file" webkitdirectory multiple hidden>
+            <button id="heavy-frontend-import-directory" class="primary-button" type="button">导入网页目录</button>
+            <button id="heavy-frontend-refresh" class="ghost-button" type="button">刷新</button>
+            <button id="close-heavy-frontend-manager" class="icon-button" type="button" aria-label="关闭重前端托管" title="关闭">×</button>
+          </div>
+        </header>
+        <div class="heavy-frontend-manager-layout">
+          <aside class="heavy-frontend-sidebar" aria-label="重前端包列表">
+            <div class="heavy-frontend-sidebar-summary">
+              <span>LOCAL PACKAGES</span>
+              <strong><b id="heavy-frontend-count">0</b> 个本地应用</strong>
+              <p>原始网页文件保留在本机私有目录，不进入 Git，也不随普通备份复制。</p>
+            </div>
+            <div id="heavy-frontend-list" class="heavy-frontend-list"></div>
+          </aside>
+          <main id="heavy-frontend-detail" class="heavy-frontend-detail" aria-live="polite"></main>
+        </div>
+        <footer class="heavy-frontend-manager-footer">
+          <output id="heavy-frontend-status" aria-live="polite">导入后先审核当前内容哈希，再创建隔离运行实例。</output>
+          <span>导入 → 扫描 → 人工审核 → 隔离运行 → 审计</span>
+        </footer>
+      </section>
+
+      <section id="heavy-frontend-player" class="heavy-frontend-player is-hidden" aria-labelledby="heavy-frontend-player-title" aria-hidden="true">
+        <header class="heavy-frontend-player-header">
+          <div class="heavy-frontend-player-identity">
+            <span>MANAGED HEAVY FRONTEND</span>
+            <h2 id="heavy-frontend-player-title">重前端</h2>
+          </div>
+          <div id="heavy-frontend-player-usage" class="heavy-frontend-player-usage" aria-label="运行预算"></div>
+          <div class="heavy-frontend-player-actions">
+            <button id="heavy-frontend-runtime-refresh" class="ghost-button compact" type="button">刷新状态</button>
+            <button id="heavy-frontend-save-snapshot" class="ghost-button compact" type="button">保存托管快照</button>
+            <button id="close-heavy-frontend-player" class="icon-button" type="button" aria-label="关闭重前端" title="关闭">×</button>
+          </div>
+        </header>
+        <div class="heavy-frontend-runtime-notice">
+          <span class="heavy-frontend-runtime-dot" aria-hidden="true"></span>
+          <output id="heavy-frontend-player-status" aria-live="polite">正在创建隔离实例...</output>
+          <span>第三方页面无法读取叙界 DOM、存档或真实 API 密钥</span>
+        </div>
+        <iframe id="heavy-frontend-frame" class="heavy-frontend-frame" title="隔离重前端应用" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe>
+      </section>
+
       <dialog id="story-custom-dialog" class="story-custom-dialog" aria-labelledby="story-custom-dialog-title">
         <div class="story-custom-dialog-shell">
           <header class="story-custom-dialog-header">
             <div class="story-custom-copy">
               <h2 id="story-custom-dialog-title">创建自定义剧本</h2>
-              <p>可以继承完整内容包，也可以从原创空白基线开始，再加入角色卡与世界书。</p>
+              <p>先从素材库选择角色卡、世界书与预设；素材不足时再导入本地文件或下载新资源。</p>
               <div id="story-custom-library-summary" class="story-custom-library-summary" aria-live="polite">正在读取素材库...</div>
             </div>
             <div class="story-custom-dialog-header-actions">
@@ -327,6 +383,7 @@
                   <header class="story-custom-step-heading"><div><h4>选择主角与立绘</h4></div><p>可沿用剧本角色，也可加载素材库角色卡。随卡世界书会在下一步自动标记。</p></header>
                   <div class="story-custom-panel-grid">
                     <label class="story-custom-field story-custom-panel-wide"><span>主角 / 角色卡 <small>可沿用基线或进入开局时创建</small></span><select id="story-custom-character" aria-label="自定义剧本角色卡"></select></label>
+                    <div class="story-custom-inline-actions story-custom-panel-wide"><button type="button" data-story-import-kind="character">素材库没有？导入角色卡</button></div>
                     <label id="story-custom-character-background-option" class="story-character-background-option story-custom-panel-wide" hidden><input id="story-custom-character-background" type="checkbox" checked><img id="story-custom-character-background-preview" alt="所选角色立绘预览"><span><strong>使用角色立绘作为舞台背景</strong><small>竖版图片会采用人物聚焦构图；进入剧本后仍可切换系统背景。</small></span></label>
                   </div>
                 </section>
@@ -354,6 +411,7 @@
                 </div>
                 <ul id="story-custom-checklist" class="story-custom-checklist"></ul>
                 <div id="story-custom-conflicts" class="story-custom-conflicts" aria-live="polite"></div>
+                <div id="story-custom-approvals" class="story-custom-approvals is-hidden" aria-live="polite"></div>
                 <p id="story-custom-guidance" class="story-custom-guidance">选择题材基线后即可创建；角色与设定可从基线继承。</p>
               </aside>
             </div>
@@ -446,20 +504,33 @@
               <span>自定义 Model</span>
               <input id="provider-model-custom" name="provider-model-custom" autocomplete="off" placeholder="model-name">
             </label>
-            <div class="split-row">
+            <details class="provider-advanced-settings">
+              <summary>高级请求参数</summary>
+              <p>仅在模型服务要求特殊采样、输出上限或自定义请求头时调整。</p>
+              <div class="split-row">
+                <label>
+                  <span>Temperature</span>
+                  <input id="provider-temperature" name="provider-temperature" type="number" min="0" max="2" step="0.01" value="0.9">
+                </label>
+                <label>
+                  <span>Max Tokens</span>
+                  <input id="provider-max-tokens" name="provider-max-tokens" type="number" min="1" step="1" value="2000">
+                </label>
+              </div>
               <label>
-                <span>Temperature</span>
-                <input id="provider-temperature" name="provider-temperature" type="number" min="0" max="2" step="0.01" value="0.9">
+                <span>思考模式（DeepSeek）</span>
+                <select id="provider-reasoning-mode" name="provider-reasoning-mode">
+                  <option value="auto">自动 · 显式思维链预设时关闭</option>
+                  <option value="disabled">关闭 · 优先直接生成正文</option>
+                  <option value="enabled">开启 · 保留深度思考</option>
+                </select>
               </label>
+              <p>仅对 DeepSeek 官方 OpenAI 接口生效；自动模式在酒馆预设要求输出思维链时关闭模型内置思考，避免两套思考流程争抢输出预算。</p>
               <label>
-                <span>Max Tokens</span>
-                <input id="provider-max-tokens" name="provider-max-tokens" type="number" min="1" step="1" value="2000">
+                <span>Headers JSON</span>
+                <textarea id="provider-headers" name="provider-headers" spellcheck="false" rows="5">{}</textarea>
               </label>
-            </div>
-            <label>
-              <span>Headers JSON</span>
-              <textarea id="provider-headers" name="provider-headers" spellcheck="false" rows="5">{}</textarea>
-            </label>
+            </details>
             <div class="provider-form-actions">
               <button id="test-provider" class="ghost-button" type="button">测试连接</button>
               <button id="save-provider" class="primary-button" type="submit">保存接口</button>
@@ -686,6 +757,15 @@
               </details>
             </div>
           </details>
+
+          <details id="sandbox-audit-panel" class="worldbook-entries-panel" style="margin-top: 16px;">
+            <summary style="cursor: pointer; padding: 8px 0; font-size: 13px; color: var(--gold, #f5d58d);">第三方脚本审核与审计 <span id="sandbox-audit-count" class="sandbox-audit-count" hidden></span></summary>
+            <div style="padding: 8px 12px; font-size: 12px; line-height: 1.6;">
+              <p style="margin: 0 0 8px 0; color: var(--subtle);">第三方脚本只有在人工审核并绑定当前内容哈希后才会执行。脚本运行在无父页面权限、默认禁止联网的沙箱中；内容变化会自动撤销旧授权，执行尝试保留在本地审计记录中。</p>
+              <div id="sandbox-audit-list" style="margin-bottom: 8px;"></div>
+              <div id="sandbox-audit-empty" style="color: var(--subtle); font-style: italic; display: none;">当前会话无沙箱脚本规则。</div>
+            </div>
+          </details>
           </div>
         </aside>
 
@@ -705,6 +785,18 @@
                 <button class="narrative-mode-button active" type="button" data-narrative-mode="stable" aria-pressed="true" title="允许辅线，最多两轮必须回流主线">稳定</button>
                 <button class="narrative-mode-button" type="button" data-narrative-mode="strict" aria-pressed="false" title="未经确认不更换题材与主线">严格</button>
               </div>
+              <select id="session-roleplay-mode" class="form-input compact-select" style="max-width: 132px;" aria-label="角色扮演流派" title="控制谁可以替谁行动以及正文如何组织；不改变主线约束">
+                <option value="dialogue">对白流</option>
+                <option value="dm" selected>标准 DM</option>
+                <option value="protagonist">叙事子流派</option>
+                <option value="director">导演 / 共创</option>
+                <option value="commentary">旁白解说</option>
+              </select>
+              <select id="session-response-length" class="form-input compact-select" style="max-width: 118px;" aria-label="每轮正文篇幅" title="控制当前会话每轮正文的篇幅与场景推进程度">
+                <option value="compact">紧凑 · 600-1000</option>
+                <option value="balanced" selected>标准 · 1200-2000</option>
+                <option value="long">长篇 · 2000-3200</option>
+              </select>
               <span id="session-status" class="status-text">等待状态</span>
               <select id="session-provider" class="form-input compact-select" style="max-width: 130px;" aria-label="本会话对话模型" title="仅绑定本会话的对话与改写模型；后台事实提取和记忆总结继续按任务路由执行"></select>
               <button id="save-session-settings" class="ghost-button compact" type="button">绑定</button>
@@ -714,12 +806,12 @@
 
           <div id="messages" class="messages" aria-live="polite"></div>
 
-          <div id="author-note-panel" class="author-note-panel collapsed">
+          <div id="author-note-panel" class="author-note-panel collapsed" aria-hidden="true">
             <textarea id="author-note-input" rows="2" placeholder="作者注释：临时上下文指令，如「本回合加入暴雨」「快进三天」..." spellcheck="false"></textarea>
           </div>
 
           <div id="background-panel" class="background-panel collapsed">
-            <div id="background-status" class="background-status">当前：未设置舞台背景。界面皮肤只影响工作台，不覆盖会话内容。</div>
+            <div id="background-status" class="background-status">当前：未设置舞台背景。阅读模式独立于剧本，剧本只提供舞台背景。</div>
             <div class="background-presets" id="background-presets"></div>
             <div class="file-row">
               <input id="background-url-input" class="form-input" type="text" placeholder="或粘贴图片 URL..." autocomplete="off">
@@ -731,16 +823,39 @@
           <div class="composer">
             <div class="composer-command-rail" role="toolbar" aria-label="创作与场景操作">
               <div id="quick-replies-bar" class="quick-replies-bar" aria-label="快捷指令"></div>
-              <div class="stage-actions" role="group" aria-label="编辑工具">
-                <button class="tool-button" type="button" data-tab-shortcut="character" data-help-key="character">角色设定</button>
-                <button class="tool-button" type="button" data-tab-shortcut="authoring" title="编辑当前场景、伏笔和创作决策">创作账本</button>
-                <button id="continue-message" class="tool-button" type="button" data-help-key="continue" data-immersive-action>续写回复</button>
-                <button id="rewrite-chat-input" class="tool-button" type="button" data-help-key="rewrite">润色</button>
-                <button class="tool-button" type="button" data-help-key="format" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
-                <button id="target-speaker-btn" class="tool-button" type="button" data-help-key="targetSpeaker" data-immersive-action>指定发言</button>
-                <button id="toggle-author-note" class="tool-button" type="button" data-help-key="authorNote">注释</button>
-                <button id="toggle-background" class="tool-button" type="button" data-help-key="background">背景</button>
-                <button class="tool-button" type="button" data-help-key="scrollBottom" data-scroll-bottom data-immersive-action>底部</button>
+              <div class="stage-actions" role="group" aria-label="更多创作工具">
+                <details class="composer-action-menu" data-composer-menu>
+                  <summary class="composer-menu-trigger">创作工具</summary>
+                  <div class="composer-menu-panel" role="group" aria-label="创作工具">
+                    <section class="composer-menu-section" aria-label="导演控制">
+                      <span class="composer-menu-section-label">导演控制</span>
+                      <div class="composer-menu-actions">
+                        <button class="tool-button" type="button" data-tab-shortcut="character" data-help-key="character">角色设定</button>
+                        <button class="tool-button" type="button" data-tab-shortcut="authoring" data-help-key="authoring" title="编辑当前场景、伏笔和创作决策">创作账本</button>
+                        <button id="target-speaker-btn" class="tool-button" type="button" data-help-key="targetSpeaker" data-immersive-action>指定发言</button>
+                        <button id="toggle-author-note" class="tool-button" type="button" data-help-key="authorNote" aria-controls="author-note-panel" aria-expanded="false">注释</button>
+                      </div>
+                    </section>
+                    <section class="composer-menu-section" aria-label="文本处理">
+                      <span class="composer-menu-section-label">文本处理</span>
+                      <div class="composer-menu-actions">
+                        <button id="continue-message" class="tool-button" type="button" data-immersive-action title="沿着上一轮旁白继续生成">续写回复</button>
+                        <button id="rewrite-chat-input" class="tool-button" type="button" data-help-key="rewrite">润色</button>
+                        <button class="tool-button" type="button" data-help-key="format" data-action-template="请修复上一轮回复的格式，保持剧情不倒退。">修复格式</button>
+                      </div>
+                    </section>
+                  </div>
+                </details>
+                <details class="composer-action-menu composer-view-menu" data-composer-menu>
+                  <summary class="composer-menu-trigger">显示</summary>
+                  <div class="composer-menu-panel" role="group" aria-label="显示工具">
+                    <div class="composer-menu-actions">
+                      <button class="tool-button" type="button" data-tab-shortcut="health" title="查看当前剧本的安全派生、禁用能力与脚本审批记录">兼容状态</button>
+                      <button id="toggle-background" class="tool-button" type="button" data-help-key="background">背景</button>
+                      <button class="tool-button" type="button" data-help-key="scrollBottom" data-scroll-bottom data-immersive-action>底部</button>
+                    </div>
+                  </div>
+                </details>
               </div>
               <span id="composer-status" class="composer-status" aria-live="polite" hidden></span>
             </div>
@@ -813,11 +928,12 @@
 
           <div class="tabs" role="tablist" aria-label="检查器标签">
             <button class="tab-button" type="button" data-tab="memory" data-tab-group="debug" data-mode-groups="debug" data-help-key="memory" role="tab" aria-selected="false" hidden>记忆</button>
+            <button class="tab-button" type="button" data-tab="health" data-tab-group="debug" data-mode-groups="debug" role="tab" aria-selected="false" hidden>健康</button>
             <button class="tab-button active" type="button" data-tab="status" data-tab-group="advanced" data-mode-groups="creative settings debug" data-help-key="status" role="tab" aria-selected="true">世界模拟</button>
             <button class="tab-button" type="button" data-tab="facts" data-tab-group="debug" data-mode-groups="debug" data-help-key="facts" role="tab" aria-selected="false" hidden>事实</button>
             <button class="tab-button" type="button" data-tab="usage" data-tab-group="debug" data-mode-groups="debug" data-help-key="usage" role="tab" aria-selected="false" hidden>用量</button>
             <button class="tab-button" type="button" data-tab="worldbook" data-tab-group="core" data-mode-groups="settings" data-help-key="worldbook" role="tab" aria-selected="false" hidden>世界书</button>
-            <button class="tab-button" type="button" data-tab="authoring" data-tab-group="core" data-mode-groups="settings" role="tab" aria-selected="false" hidden>创作账本</button>
+            <button class="tab-button" type="button" data-tab="authoring" data-tab-group="core" data-mode-groups="settings" data-help-key="authoring" role="tab" aria-selected="false" hidden>创作账本</button>
             <button class="tab-button" type="button" data-tab="character" data-tab-group="core" data-mode-groups="settings" data-help-key="character" role="tab" aria-selected="false" hidden>角色卡</button>
             <button class="tab-button" type="button" data-tab="sources" data-tab-group="core" data-mode-groups="settings" data-help-key="sources" role="tab" aria-selected="false" hidden>资源库</button>
             <button class="tab-button" type="button" data-tab="prompt" data-tab-group="core" data-mode-groups="settings" data-help-key="prompt" role="tab" aria-selected="false" hidden>Prompt</button>
@@ -933,6 +1049,45 @@
             </details>
           </section>
 
+          <section class="tab-pane session-health-pane" data-pane="health" role="tabpanel" hidden>
+            <div class="session-health-toolbar">
+              <div>
+                <strong>会话健康检查</strong>
+                <p>只读检查，不会自动改写用户会话、素材或脚本审核记录。</p>
+              </div>
+              <button id="refresh-session-health" class="ghost-button compact" type="button">重新检查</button>
+            </div>
+            <span id="session-health-status" class="status-text"></span>
+            <div id="session-health-summary" class="session-health-summary"></div>
+            <section class="reference-repair-card" aria-labelledby="reference-repair-title">
+              <div class="reference-repair-heading">
+                <div>
+                  <strong id="reference-repair-title">历史引用治理</strong>
+                  <p>只清理已不存在的故事、素材包和存档编号；执行前会再次核对计划并创建本地备份。</p>
+                </div>
+                <div class="reference-repair-actions">
+                  <button id="preview-reference-repair" class="ghost-button compact" type="button">预览全局影响</button>
+                  <button id="apply-reference-repair" class="danger-button compact" type="button" disabled>备份并修复</button>
+                </div>
+              </div>
+              <p id="reference-repair-summary" class="reference-repair-summary">尚未扫描历史引用，不会自动修改数据。</p>
+            </section>
+            <section class="reference-repair-card" aria-labelledby="session-config-migration-title">
+              <div class="reference-repair-heading">
+                <div>
+                  <strong id="session-config-migration-title">历史会话配置迁移</strong>
+                  <p>只把旧会话缺少的人设与轻前端声明补为当前会话持有的空配置，不复制系统默认剧本内容。</p>
+                </div>
+                <div class="reference-repair-actions">
+                  <button id="preview-session-config-migration" class="ghost-button compact" type="button">预览迁移</button>
+                  <button id="apply-session-config-migration" class="danger-button compact" type="button" disabled>备份并迁移</button>
+                </div>
+              </div>
+              <p id="session-config-migration-summary" class="reference-repair-summary">尚未扫描历史会话配置，不会自动修改数据。</p>
+            </section>
+            <div id="session-health-list" class="session-health-list"></div>
+          </section>
+
           <section class="tab-pane status-pane active" data-pane="status" role="tabpanel">
             <div id="rule-status-view" class="rule-status-view"></div>
             <section class="world-simulation-panel" aria-label="幕后世界">
@@ -1009,8 +1164,8 @@
 
           <section class="tab-pane worldbook-pane" data-pane="worldbook" role="tabpanel" hidden>
             <div class="preset-controls">
-              <select id="worldbook-preset-select" class="form-input" style="flex: 1;">
-                <option value="">-- 选择预设模板 --</option>
+              <select id="worldbook-preset-select" class="form-input" style="flex: 1;" data-help-key="worldbook">
+                <option value="">-- 选择内置或已导入设定 --</option>
                 <option value="tiandao">玄幻世界预设</option>
                 <option value="wuxia">硬核武侠预设</option>
                 <option value="lingyi">中式民俗灵异预设</option>
@@ -1018,7 +1173,7 @@
                 <option value="xianxia">太虚仙侠预设</option>
                 <option value="default">基础框架预设</option>
               </select>
-              <button id="apply-worldbook-preset" class="ghost-button compact" type="button">加载预设</button>
+              <button id="apply-worldbook-preset" class="ghost-button compact" type="button" data-help-key="worldbook">加载预设</button>
             </div>
             <div class="editor-actions worldbook-primary-actions">
               <span id="worldbook-status" class="status-text"></span>
@@ -1058,8 +1213,8 @@
 
           <section class="tab-pane" data-pane="character" role="tabpanel" hidden>
             <div class="preset-controls">
-              <select id="character-preset-select" class="form-input" style="flex: 1;">
-                <option value="">-- 选择预设模板 --</option>
+              <select id="character-preset-select" class="form-input" style="flex: 1;" data-help-key="character">
+                <option value="">-- 选择内置或已导入设定 --</option>
                 <option value="custom_protagonist">自定义主角模板</option>
                 <optgroup label="神荒玄幻">
                   <option value="yechenzhou">叶沉舟（雁回旧案主线）</option>
@@ -1099,7 +1254,7 @@
                 </optgroup>
                 <option value="default">基础角色模板</option>
               </select>
-              <button id="apply-character-preset" class="ghost-button compact" type="button">加载预设</button>
+              <button id="apply-character-preset" class="ghost-button compact" type="button" data-help-key="character">加载预设</button>
               <select id="random-protagonist-genre" class="form-input compact-select" aria-label="随机主角题材">
                 <option value="xuanhuan">玄幻</option>
                 <option value="lingyi">灵异</option>
@@ -1296,9 +1451,47 @@
           </section>
 
           <section class="tab-pane" data-pane="prompt" role="tabpanel" hidden>
+            <section id="prompt-template-center" class="prompt-template-center" aria-labelledby="prompt-template-center-title">
+              <header class="prompt-template-center-header">
+                <div>
+                  <h3 id="prompt-template-center-title">提示词模板中心</h3>
+                  <p>根据当前角色卡、世界书和运行协议补充高价值约束；不会修改原始素材。</p>
+                </div>
+                <p id="prompt-template-summary" class="prompt-template-summary">正在分析当前故事...</p>
+              </header>
+              <div id="prompt-template-grid" class="prompt-template-grid" aria-live="polite"></div>
+              <section id="prompt-template-detail" class="prompt-template-detail" hidden>
+                <header class="prompt-template-detail-heading">
+                  <div>
+                    <h4 id="prompt-template-detail-title">选择模板</h4>
+                    <p id="prompt-template-detail-description"></p>
+                  </div>
+                  <ul id="prompt-template-reasons" class="prompt-template-reasons"></ul>
+                </header>
+                <div id="prompt-template-parameters" class="prompt-template-parameters"></div>
+                <div class="prompt-template-apply-row">
+                  <label>
+                    <span>应用方式</span>
+                    <select id="prompt-template-apply-mode" class="form-input">
+                      <option value="append">追加 / 更新此模板（推荐）</option>
+                      <option value="replace">替换模板层（保留角色卡与社区预设）</option>
+                    </select>
+                  </label>
+                  <button id="preview-prompt-template" class="ghost-button compact" type="button">预览变化</button>
+                  <button id="apply-prompt-template" class="primary-button compact" type="button" disabled>应用到当前故事</button>
+                </div>
+                <div id="prompt-template-preview" class="prompt-template-preview" aria-live="polite">
+                  <p>先预览再应用；当前故事不会因预览发生变化。</p>
+                </div>
+                <span id="prompt-template-status" class="status-text" aria-live="polite"></span>
+              </section>
+            </section>
+            <details class="prompt-template-advanced">
+              <summary>高级：完整预设与 Prompt 模块 JSON</summary>
+              <div class="prompt-template-advanced-body">
             <div class="preset-controls">
-              <select id="prompt-preset-select" class="form-input" style="flex: 1;">
-                <option value="">-- 选择预设模板 --</option>
+              <select id="prompt-preset-select" class="form-input" style="flex: 1;" data-help-key="prompt">
+                <option value="">-- 选择内置或已导入设定 --</option>
                 <option value="tiandao">破甲预设：玄幻天道流</option>
                 <option value="wuxia">破甲预设：硬核武侠流</option>
                 <option value="lingyi">破甲预设：中式民俗恐怖</option>
@@ -1306,7 +1499,7 @@
                 <option value="xianxia">破甲预设：太虚仙侠</option>
                 <option value="default">默认基础规则</option>
               </select>
-              <button id="apply-prompt-preset" class="ghost-button compact" type="button">加载预设</button>
+              <button id="apply-prompt-preset" class="ghost-button compact" type="button" data-help-key="prompt">加载预设</button>
             </div>
             <div class="preset-controls">
               <select id="prompt-preset-favorites" class="form-input" style="flex: 1;">
@@ -1321,6 +1514,8 @@
               <span id="prompt-status" class="status-text"></span>
               <button id="save-prompt" class="primary-button compact" type="button">保存 Prompt</button>
             </div>
+              </div>
+            </details>
           </section>
 
           <section class="tab-pane" data-pane="persona" role="tabpanel" hidden>
@@ -1486,6 +1681,6 @@
         </footer>
       </div>
     </dialog>
-    <script type="module" src="/app.js?v=20260722-3"></script>
+    <script type="module" src="/app.js?v=20260804-1"></script>
   </body>
 </html>

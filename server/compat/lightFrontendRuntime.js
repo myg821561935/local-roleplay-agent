@@ -10,7 +10,7 @@ const MAX_PANELS = 8;
 const MAX_PANEL_FIELDS = 16;
 const MAX_PANEL_ITEMS = 24;
 const MAX_PATTERN_LENGTH = 500;
-const MAX_REPLACEMENT_LENGTH = 4000;
+const MAX_REPLACEMENT_LENGTH = 524288; // 512KB：支持大型 HTML 状态栏（如九渊 4.5MB 需授权后分块，常规状态栏 ~200KB 可完整存储）
 const MAX_TEMPLATE_LENGTH = 4000;
 const MAX_TEMPLATE_TAGS = 80;
 const MAX_DISPLAY_TEXT_LENGTH = 120000;
@@ -178,7 +178,34 @@ export function applyDisplayTransforms(text, rules = [], { role = 'assistant', c
   for (const rule of Array.isArray(rules) ? rules.slice(0, MAX_REGEX_RULES) : []) {
     const normalized = normalizeRegexTransform(rule, 0, []);
     if (!normalized || normalized.enabled === false) continue;
+    if (!isDisplayRegexRule(normalized)) continue;
     if (normalized.scope !== 'all' && normalized.scope !== role) continue;
+    try {
+      const replacement = expandDisplayMacros(
+        renderSafeTemplate(degradeStaticHtmlReplacement(normalized.replacement), context, { unsupported: 'strip' }),
+        context
+      );
+      output = output.replace(new RegExp(normalized.pattern, normalized.flags), replacement);
+    } catch {
+      // Invalid rules are ignored at display time and remain visible in diagnostics.
+    }
+  }
+  return output;
+}
+
+export function applyPromptTransforms(text, rules = [], {
+  role = 'assistant',
+  context = {},
+  depth = 0
+} = {}) {
+  let output = String(text || '').slice(0, MAX_DISPLAY_TEXT_LENGTH);
+  const messageDepth = Math.max(0, Math.trunc(Number(depth) || 0));
+  for (const rule of Array.isArray(rules) ? rules.slice(0, MAX_REGEX_RULES) : []) {
+    const normalized = normalizeRegexTransform(rule, 0, []);
+    if (!normalized || normalized.enabled === false || normalized.promptOnly !== true) continue;
+    if (normalized.scope !== 'all' && normalized.scope !== role) continue;
+    if (normalized.minDepth !== undefined && messageDepth < normalized.minDepth) continue;
+    if (normalized.maxDepth !== undefined && messageDepth > normalized.maxDepth) continue;
     try {
       const replacement = expandDisplayMacros(
         renderSafeTemplate(normalized.replacement, context, { unsupported: 'strip' }),
@@ -186,7 +213,7 @@ export function applyDisplayTransforms(text, rules = [], { role = 'assistant', c
       );
       output = output.replace(new RegExp(normalized.pattern, normalized.flags), replacement);
     } catch {
-      // Invalid rules are ignored at display time and remain visible in diagnostics.
+      // Invalid imported rules are ignored and never interrupt prompt assembly.
     }
   }
   return output;
@@ -204,8 +231,9 @@ export function expandQuickReply(reply, context = {}) {
   };
   const rendered = renderSafeTemplate(normalized.template, context, { unsupported: 'strip' });
   return rendered
-    .replace(/\{\{\s*(user|char|scene|location|time)\s*\}\}/gi, (_, key) => {
-      return String(values[String(key).toLowerCase()] || '');
+    .replace(/\{\{\s*(user|char|character[\s_-]+name|scene|location|time)\s*\}\}/gi, (_, key) => {
+      const normalizedKey = /^character[\s_-]+name$/i.test(String(key || '').trim()) ? 'char' : String(key).toLowerCase();
+      return String(values[normalizedKey] || '');
     })
     .replace(/\{\{\s*(?:getvar|globalvar)::([^{}]+)\}\}/gi, (_, path) => {
       return stringifyTemplateValue(readStatePath(resolveTemplateState(context), path));
@@ -427,6 +455,44 @@ function normalizeRegexTransform(value, index, diagnostics) {
     diagnostics.push({ code: 'invalid-regex-disabled', index, label: String(value.scriptName || value.name || '') });
     return null;
   }
+  const hasMarkdownOnly = Object.hasOwn(value, 'markdownOnly') || Object.hasOwn(value, 'markdown_only');
+  const hasPromptOnly = Object.hasOwn(value, 'promptOnly') || Object.hasOwn(value, 'prompt_only');
+  const markdownOnly = Boolean(value.markdownOnly ?? value.markdown_only);
+  const promptOnly = Boolean(value.promptOnly ?? value.prompt_only);
+  if (hasExecutableReplacement(replacement)) {
+    diagnostics.push({
+      code: 'executable-regex-replacement-sandboxed',
+      index,
+      label: String(value.scriptName || value.name || ''),
+      message: '正则替换包含可执行内容，只有人工审核并绑定当前内容哈希后才会在隔离沙箱中执行。'
+    });
+    return {
+      id: cleanId(value.id || value.scriptName || value.name || `regex-${index + 1}`),
+      name: String(value.scriptName || value.name || `显示规则 ${index + 1}`).trim().slice(0, 80),
+      pattern,
+      flags,
+      replacement,
+      scope: normalizeRegexScope(value.scope ?? value.placement ?? value.source),
+      enabled: value.disabled !== true && value.enabled !== false,
+      ...(hasMarkdownOnly ? { markdownOnly } : {}),
+      ...(hasPromptOnly ? { promptOnly } : {}),
+      runOnEdit: value.runOnEdit === true || value.run_on_edit === true,
+      requiresSandbox: true,
+      ...normalizeOptionalDepth(value.minDepth ?? value.min_depth, 'minDepth'),
+      ...normalizeOptionalDepth(value.maxDepth ?? value.max_depth, 'maxDepth'),
+      trimStrings: Array.isArray(value.trimStrings ?? value.trim_strings)
+        ? (value.trimStrings ?? value.trim_strings).map((item) => String(item || '')).slice(0, 24)
+        : []
+    };
+  }
+  if (markdownOnly && /<\/?[a-z][^>]*>/i.test(replacement)) {
+    diagnostics.push({
+      code: 'html-regex-replacement-degraded',
+      index,
+      label: String(value.scriptName || value.name || ''),
+      message: '静态 HTML 美化不会作为页面代码执行，显示时将降级为可读文本。'
+    });
+  }
   return {
     id: cleanId(value.id || value.scriptName || value.name || `regex-${index + 1}`),
     name: String(value.scriptName || value.name || `显示规则 ${index + 1}`).trim().slice(0, 80),
@@ -434,7 +500,15 @@ function normalizeRegexTransform(value, index, diagnostics) {
     flags,
     replacement,
     scope: normalizeRegexScope(value.scope ?? value.placement ?? value.source),
-    enabled: value.disabled !== true && value.enabled !== false
+    enabled: value.disabled !== true && value.enabled !== false,
+    ...(hasMarkdownOnly ? { markdownOnly } : {}),
+    ...(hasPromptOnly ? { promptOnly } : {}),
+    runOnEdit: value.runOnEdit === true || value.run_on_edit === true,
+    ...normalizeOptionalDepth(value.minDepth ?? value.min_depth, 'minDepth'),
+    ...normalizeOptionalDepth(value.maxDepth ?? value.max_depth, 'maxDepth'),
+    trimStrings: Array.isArray(value.trimStrings ?? value.trim_strings)
+      ? (value.trimStrings ?? value.trim_strings).map((item) => String(item || '')).slice(0, 24)
+      : []
   };
 }
 
@@ -627,7 +701,7 @@ function applyMvuOperation(target, operation) {
   const op = String(operation.op || 'set').toLowerCase();
   const path = normalizeStatePath(operation.path);
   if (!path.length) throw new Error('INVALID_MVU_PATH');
-  const { parent, key } = resolveStateParent(target, path, op === 'set' || op === 'increment');
+  const { parent, key } = resolveStateParent(target, path, op === 'set' || op === 'increment' || op === 'append');
   if (op === 'set') {
     assertSafeState(operation.value);
     parent[key] = structuredClone(operation.value);
@@ -637,6 +711,19 @@ function applyMvuOperation(target, operation) {
     const current = Number(parent[key] || 0);
     if (!Number.isFinite(current)) throw new Error('INVALID_MVU_INCREMENT_TARGET');
     parent[key] = current + amount;
+  } else if (op === 'append') {
+    // addvar 语义：数组追加、字符串拼接、数值累加（兼容 SillyTavern {{addvar::}}）
+    assertSafeState(operation.value);
+    const value = structuredClone(operation.value);
+    if (Array.isArray(parent[key]) && Array.isArray(value)) {
+      parent[key] = [...parent[key], ...value];
+    } else if (typeof parent[key] === 'string' || typeof value === 'string') {
+      parent[key] = String(parent[key] || '') + String(value);
+    } else if (typeof parent[key] === 'number' || typeof value === 'number') {
+      parent[key] = Number(parent[key] || 0) + Number(value || 0);
+    } else {
+      parent[key] = value;
+    }
   } else if (op === 'delete') {
     delete parent[key];
   } else {
@@ -715,8 +802,44 @@ function normalizeRegexFlags(value) {
 function normalizeRegexScope(value) {
   const source = String(value || '').toLowerCase();
   if (source.includes('user') || source === '1') return 'user';
-  if (source.includes('all') || source === '2') return 'all';
+  if (source.includes('all')) return 'all';
+  if (source.includes('assistant') || source.includes('ai') || source === '2') return 'assistant';
   return 'assistant';
+}
+
+function normalizeOptionalDepth(value, key) {
+  if (value === undefined || value === null || value === '') return {};
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? { [key]: Math.trunc(number) } : {};
+}
+
+function isDisplayRegexRule(rule) {
+  if (rule.markdownOnly === true) return true;
+  if (rule.promptOnly === true) return false;
+  return !Object.hasOwn(rule, 'markdownOnly') && !Object.hasOwn(rule, 'promptOnly');
+}
+
+function hasExecutableReplacement(value) {
+  const source = String(value || '');
+  return /<\s*(?:script|iframe|object|embed)(?:\s|>)/i.test(source)
+    || /javascript\s*:/i.test(source)
+    || /\son[a-z]+\s*=/i.test(source);
+}
+
+function degradeStaticHtmlReplacement(value) {
+  const source = String(value || '');
+  if (!/<\/?[a-z][^>]*>/i.test(source)) return source;
+  return source
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\s*\/\s*(?:p|div|details|summary|section|article|h[1-6])\s*>/gi, '\n')
+    .replace(/<\s*li(?:\s[^>]*)?>/gi, '- ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function normalizeQuickReplyCommand(value) {
@@ -741,8 +864,9 @@ function expandDisplayMacros(text, context = {}) {
     user: context.user,
     char: context.char
   };
-  return String(text || '').replace(/\{\{\s*(user|char)\s*\}\}/gi, (_, key) => {
-    return String(values[String(key).toLowerCase()] || '');
+  return String(text || '').replace(/\{\{\s*(user|char|character[\s_-]+name)\s*\}\}/gi, (_, key) => {
+    const normalizedKey = /^character[\s_-]+name$/i.test(String(key || '').trim()) ? 'char' : String(key).toLowerCase();
+    return String(values[normalizedKey] || '');
   });
 }
 
@@ -857,8 +981,13 @@ function extractStaticStatusPanels(payload) {
   const unsupportedCapabilities = detectExecutableAdapterMarkers(payload);
   const candidates = collectStaticMarkupCandidates(payload);
   const panels = [];
+  let deferredTemplateCount = 0;
   for (const candidate of candidates) {
     for (const block of splitStaticPanelBlocks(candidate)) {
+      if (isAuthorInstructionStatusTemplate(block)) {
+        deferredTemplateCount += 1;
+        continue;
+      }
       const panel = parseStaticPanel(block, panels.length);
       if (!panel) continue;
       panels.push(panel);
@@ -871,6 +1000,13 @@ function extractStaticStatusPanels(payload) {
       code: 'static-heavy-panel-mapped',
       count: panels.length,
       message: `已将 ${panels.length} 个静态重前端状态块转换为原生侧栏卡片。`
+    });
+  }
+  if (deferredTemplateCount) {
+    diagnostics.push({
+      code: 'static-status-template-deferred',
+      count: deferredTemplateCount,
+      message: `检测到 ${deferredTemplateCount} 个待模型填写的状态模板；生成具体状态前不挂载为实时侧栏。`
     });
   }
   if (unsupportedCapabilities.length) {
@@ -923,31 +1059,34 @@ function splitStaticPanelBlocks(markup) {
 }
 
 function parseStaticPanel(markup, index) {
-  const title = extractFirstMarkupText(markup, [
+  const title = normalizeCommunityMacroAliases(extractFirstMarkupText(markup, [
     /<summary\b[^>]*>([\s\S]*?)<\/summary>/iu,
     /<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/iu,
     /<(?:header|strong)\b[^>]*>([\s\S]*?)<\/(?:header|strong)>/iu
-  ]);
+  ]));
   if (!title || !STATUS_PANEL_TITLE_PATTERN.test(title)) return null;
 
   const fields = [];
   const rowPattern = /<tr\b[^>]*>\s*<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>\s*<td\b[^>]*>([\s\S]*?)<\/td>[\s\S]*?<\/tr>/giu;
   for (const match of markup.matchAll(rowPattern)) {
     const label = stripStaticMarkup(match[1]).slice(0, 32);
-    const value = stripStaticMarkup(match[2]).slice(0, 500);
+    const value = normalizeCommunityMacroAliases(stripStaticMarkup(match[2])).slice(0, 500);
+    if (hasUnknownMustachePlaceholder(value)) continue;
     if (label && value) fields.push({ label, value });
     if (fields.length >= MAX_PANEL_FIELDS) break;
   }
 
   const items = [];
   for (const match of markup.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/giu)) {
-    const text = stripStaticMarkup(match[1]);
+    const text = normalizeCommunityMacroAliases(stripStaticMarkup(match[1]));
     if (!text) continue;
     const parts = text.split(/[：:]/u);
-    items.push({
+    const item = {
       title: (parts.shift() || `条目 ${items.length + 1}`).trim().slice(0, 100),
       detail: parts.join('：').trim().slice(0, MAX_TEMPLATE_LENGTH)
-    });
+    };
+    if (hasUnknownMustachePlaceholder(`${item.title}\n${item.detail}`)) continue;
+    items.push(item);
     if (items.length >= MAX_PANEL_ITEMS) break;
   }
 
@@ -956,7 +1095,9 @@ function parseStaticPanel(markup, index) {
     for (const line of text.split('\n')) {
       const match = line.match(/^([^：:\n]{1,32})[：:]\s*(.+)$/u);
       if (!match || match[1].trim() === title) continue;
-      fields.push({ label: match[1].trim(), value: match[2].trim().slice(0, 500) });
+      const value = normalizeCommunityMacroAliases(match[2].trim()).slice(0, 500);
+      if (hasUnknownMustachePlaceholder(value)) continue;
+      fields.push({ label: match[1].trim(), value });
       if (fields.length >= MAX_PANEL_FIELDS) break;
     }
   }
@@ -978,6 +1119,36 @@ function parseStaticPanel(markup, index) {
     items,
     content: fields.length || items.length ? '' : plainText.slice(0, MAX_TEMPLATE_LENGTH)
   };
+}
+
+function isAuthorInstructionStatusTemplate(markup) {
+  if (!STATUS_PANEL_TITLE_PATTERN.test(stripStaticMarkup(markup))) return false;
+  const unknownPlaceholders = getMustachePlaceholders(markup)
+    .filter((placeholder) => !isSupportedDisplayPlaceholder(placeholder));
+  return unknownPlaceholders.length >= 2;
+}
+
+function normalizeCommunityMacroAliases(value) {
+  return String(value || '').replace(
+    /\{\{\s*character[\s_-]+name\s*\}\}/giu,
+    '{{char}}'
+  );
+}
+
+function hasUnknownMustachePlaceholder(value) {
+  return getMustachePlaceholders(value)
+    .some((placeholder) => !isSupportedDisplayPlaceholder(placeholder));
+}
+
+function getMustachePlaceholders(value) {
+  return [...String(value || '').matchAll(/\{\{\s*([^{}]+?)\s*\}\}/gu)]
+    .map((match) => String(match[1] || '').trim())
+    .filter(Boolean);
+}
+
+function isSupportedDisplayPlaceholder(value) {
+  return /^(?:user|char|character[\s_-]+name|scene|location|time|(?:getvar|globalvar)::[^{}]+)$/iu
+    .test(String(value || '').trim());
 }
 
 function sanitizeStaticMarkup(value) {

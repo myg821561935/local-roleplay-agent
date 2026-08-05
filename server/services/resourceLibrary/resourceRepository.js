@@ -1,4 +1,5 @@
 export const RESOURCE_DIR = 'library/resources';
+export const RESOURCE_REVISION_DIR = 'library/resource-revisions';
 export const PACK_DIR = 'library/packs';
 
 export class ResourceRepository {
@@ -21,6 +22,28 @@ export class ResourceRepository {
 
   async removeResource(resourceId) {
     return this.store.remove(`${RESOURCE_DIR}/${resourceId}.json`);
+  }
+
+  async listResourceRevisions(resourceId) {
+    return this.loadJsonDirectory(`${RESOURCE_REVISION_DIR}/${resourceId}`);
+  }
+
+  async getResourceRevision(resourceId, revisionId) {
+    return this.store.read(`${RESOURCE_REVISION_DIR}/${resourceId}/${revisionId}.json`, null);
+  }
+
+  async writeResourceRevision(resourceId, revisionId, revision) {
+    await this.store.write(`${RESOURCE_REVISION_DIR}/${resourceId}/${revisionId}.json`, revision);
+    return revision;
+  }
+
+  async removeResourceRevisions(resourceId) {
+    const files = await this.store.list(`${RESOURCE_REVISION_DIR}/${resourceId}`);
+    let removed = 0;
+    for (const file of files.filter((item) => item.endsWith('.json'))) {
+      if (await this.store.remove(`${RESOURCE_REVISION_DIR}/${resourceId}/${file}`)) removed += 1;
+    }
+    return removed;
   }
 
   async listPacks() {

@@ -18,9 +18,12 @@ export const DECLARATIVE_LIFECYCLE_BUDGETS = Object.freeze({
     'scene',
     'story',
     'status',
-    'stats'
+    'stats',
+    'stat_data',
+    'delta_data',
+    'display_data'
   ]),
-  allowedPatchOperations: Object.freeze(['set', 'increment', 'delete']),
+  allowedPatchOperations: Object.freeze(['set', 'increment', 'append', 'delete']),
   maxRecursionDepth: 4,
   maxChangesPerTurn: 32
 });
@@ -93,6 +96,57 @@ export function parseAllowlistedSlashCommand(command = '') {
     path,
     value: parseLiteral(rawValue)
   };
+}
+
+/**
+ * 解析 SillyTavern 风格的双花括号变量写入宏：
+ *   {{setvar::key::value}}  → 覆盖写入
+ *   {{addvar::key::value}}  → 追加（数组/字符串/数值）
+ *   {{incvar::key}}         → 数值 +1
+ *   {{decvar::key}}         → 数值 -1
+ * @param {string} text - 含宏的文本
+ * @returns {Array<{op: string, path: string[], value: any}>} - 解析出的 MVU 操作
+ */
+export function parseMacroVariableWrites(text = '') {
+  const source = String(text || '');
+  const macroPattern = /\{\{\s*(setvar|addvar|incvar|decvar)\s*::\s*([^{}]+?)\s*\}\}/gi;
+  const operations = [];
+  let match;
+  while ((match = macroPattern.exec(source)) && operations.length < 32) {
+    const name = match[1].toLowerCase();
+    const args = match[2].split('::').map((part) => part.trim()).filter(Boolean);
+    const key = args[0];
+    if (!key) continue;
+    const path = normalizeStatePath(`variables.${key}`);
+    if (!path) continue;
+
+    if (name === 'setvar') {
+      const value = args[1] ?? '';
+      operations.push({ op: 'set', path, value: parseMacroValue(value) });
+    } else if (name === 'addvar') {
+      const value = args[1] ?? '';
+      operations.push({ op: 'append', path, value: parseMacroValue(value) });
+    } else if (name === 'incvar') {
+      operations.push({ op: 'increment', path, value: 1 });
+    } else if (name === 'decvar') {
+      operations.push({ op: 'increment', path, value: -1 });
+    }
+  }
+  return operations;
+}
+
+function parseMacroValue(value) {
+  const raw = String(value || '').trim();
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw === 'null') return null;
+  const num = Number(raw);
+  if (raw !== '' && Number.isFinite(num)) return num;
+  // 去除引号包裹
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1);
+  }
+  return raw;
 }
 
 export function isAllowedLifecyclePath(path, currentValues = {}) {

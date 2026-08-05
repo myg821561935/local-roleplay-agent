@@ -1,4 +1,12 @@
 const RESERVED_CUSTOM_HEADERS = new Set(['authorization', 'content-type']);
+const REASONING_ONLY_ERROR = 'PROVIDER_REASONING_ONLY_RESPONSE';
+const EXPLICIT_REASONING_WORKFLOW_PATTERNS = [
+  /<think_rules>/i,
+  /思维链只做思考/,
+  /思考内容以[\s\S]{0,120}<think>/i,
+  /到此思考才算结束/,
+  /正文创作必须在思考阶段完全结束/
+];
 
 function requireNonEmptyString(value, message) {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -30,7 +38,7 @@ function validateOpenAICompatibleRequest({ provider, messages }) {
   };
 }
 
-export function buildOpenAICompatibleRequest({ provider, messages, stream = false }) {
+export function buildOpenAICompatibleRequest({ provider, messages, stream = false, tools = null }) {
   const validated = validateOpenAICompatibleRequest({ provider, messages });
   if (!Array.isArray(validated.messages)) {
     throw new Error('messages must be an array');
@@ -44,7 +52,19 @@ export function buildOpenAICompatibleRequest({ provider, messages, stream = fals
     temperature: Number(provider.temperature ?? 0.9),
     max_tokens: Number(provider.maxTokens ?? 2000)
   };
+  const reasoningMode = resolveDeepSeekReasoningMode(provider, validated.messages);
+  if (reasoningMode !== 'auto') body.thinking = { type: reasoningMode };
   if (stream) body.stream = true;
+  if (Array.isArray(tools) && tools.length) {
+    body.tools = tools.map((tool) => ({
+      type: 'function',
+      function: {
+        name: String(tool.name || tool.toolName || ''),
+        description: String(tool.description || ''),
+        parameters: tool.inputSchema || tool.parameters || { type: 'object', properties: {} }
+      }
+    }));
+  }
 
   return {
     url,
@@ -60,13 +80,45 @@ export function buildOpenAICompatibleRequest({ provider, messages, stream = fals
   };
 }
 
-export async function callOpenAICompatible({ provider, messages, fetchImpl = fetch }) {
-  const { url, init } = buildOpenAICompatibleRequest({ provider, messages });
+export async function callOpenAICompatible({ provider, messages, fetchImpl = fetch, tools = null }) {
+  try {
+    return await callOpenAICompatibleOnce({ provider, messages, fetchImpl, tools });
+  } catch (error) {
+    if (!shouldRetryWithoutReasoning({ error, provider, messages })) throw error;
+    const result = await callOpenAICompatibleOnce({
+      provider: { ...provider, reasoningMode: 'disabled' },
+      messages,
+      fetchImpl,
+      tools
+    });
+    result.reasoningRecovery = { used: true, mode: 'disabled' };
+    return result;
+  }
+}
+
+export async function streamOpenAICompatible({ provider, messages, onToken, fetchImpl = fetch }) {
+  try {
+    return await streamOpenAICompatibleOnce({ provider, messages, onToken, fetchImpl });
+  } catch (error) {
+    if (!shouldRetryWithoutReasoning({ error, provider, messages })) throw error;
+    const result = await streamOpenAICompatibleOnce({
+      provider: { ...provider, reasoningMode: 'disabled' },
+      messages,
+      onToken,
+      fetchImpl
+    });
+    result.reasoningRecovery = { used: true, mode: 'disabled' };
+    return result;
+  }
+}
+
+async function callOpenAICompatibleOnce({ provider, messages, fetchImpl, tools }) {
+  const { url, init } = buildOpenAICompatibleRequest({ provider, messages, tools });
   const response = await fetchImpl(url, init);
   return readOpenAICompatibleResponse(response);
 }
 
-export async function streamOpenAICompatible({ provider, messages, onToken, fetchImpl = fetch }) {
+async function streamOpenAICompatibleOnce({ provider, messages, onToken, fetchImpl }) {
   const { url, init } = buildOpenAICompatibleRequest({ provider, messages, stream: true });
   const response = await fetchImpl(url, init);
   if (!response.ok) {
@@ -107,7 +159,7 @@ export async function streamOpenAICompatible({ provider, messages, onToken, fetc
 
   if (!content.trim()) {
     if (reasoningObserved) {
-      throw new Error(`PROVIDER_REASONING_ONLY_RESPONSE${finishReason ? `:${finishReason}` : ''}`);
+      throw new Error(`${REASONING_ONLY_ERROR}${finishReason ? `:${finishReason}` : ''}`);
     }
     throw new Error('PROVIDER_EMPTY_RESPONSE');
   }
@@ -116,6 +168,42 @@ export async function streamOpenAICompatible({ provider, messages, onToken, fetc
     content,
     raw: { finishReason, reasoningObserved }
   };
+}
+
+function shouldRetryWithoutReasoning({ error, provider, messages }) {
+  return String(error?.message || '').startsWith(REASONING_ONLY_ERROR)
+    && resolveDeepSeekReasoningMode(provider, messages) === 'auto'
+    && supportsDeepSeekThinkingControl(provider);
+}
+
+function resolveDeepSeekReasoningMode(provider, messages) {
+  if (!supportsDeepSeekThinkingControl(provider)) return 'auto';
+  const configured = normalizeReasoningMode(provider?.reasoningMode);
+  if (configured !== 'auto') return configured;
+  return hasExplicitReasoningWorkflow(messages) ? 'disabled' : 'auto';
+}
+
+function normalizeReasoningMode(value) {
+  const mode = String(value || 'auto').trim().toLowerCase();
+  return ['auto', 'enabled', 'disabled'].includes(mode) ? mode : 'auto';
+}
+
+function supportsDeepSeekThinkingControl(provider) {
+  const model = String(provider?.model || '').trim().toLowerCase();
+  if (!model.startsWith('deepseek-')) return false;
+  try {
+    return new URL(String(provider?.baseUrl || '')).hostname.toLowerCase() === 'api.deepseek.com';
+  } catch {
+    return false;
+  }
+}
+
+function hasExplicitReasoningWorkflow(messages) {
+  return (Array.isArray(messages) ? messages : []).some((message) => {
+    if (String(message?.role || '').toLowerCase() !== 'system') return false;
+    const content = String(message?.content || '');
+    return EXPLICIT_REASONING_WORKFLOW_PATTERNS.some((pattern) => pattern.test(content));
+  });
 }
 
 function readStreamDelta(eventText) {
@@ -150,16 +238,35 @@ export async function readOpenAICompatibleResponse(response) {
   }
 
   const choice = payload?.choices?.[0];
-  const content = choice?.message?.content;
-  if (typeof content !== 'string' || content.length === 0) {
-    if (typeof choice?.message?.reasoning_content === 'string' && choice.message.reasoning_content.length > 0) {
-      throw new Error(`PROVIDER_REASONING_ONLY_RESPONSE${choice?.finish_reason ? `:${choice.finish_reason}` : ''}`);
+  const message = choice?.message || {};
+  const content = typeof message.content === 'string' ? message.content : '';
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+  // 当存在 tool_calls 时允许 content 为空（模型只请求调用工具）
+  if (!content && toolCalls.length === 0) {
+    if (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0) {
+      throw new Error(`${REASONING_ONLY_ERROR}${choice?.finish_reason ? `:${choice.finish_reason}` : ''}`);
     }
     throw new Error(`Provider response missing assistant content: ${JSON.stringify(payload).slice(0, 240)}`);
   }
 
-  return {
-    content,
-    raw: payload
-  };
+  const result = { content, raw: payload };
+  if (toolCalls.length) {
+    result.toolCalls = toolCalls.map((call) => ({
+      id: String(call.id || ''),
+      name: String(call.function?.name || call.name || ''),
+      arguments: parseToolArguments(call.function?.arguments ?? call.arguments)
+    }));
+  }
+  return result;
+}
+
+function parseToolArguments(raw) {
+  if (typeof raw === 'object' && raw !== null) return raw;
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { _raw: raw };
+  }
 }

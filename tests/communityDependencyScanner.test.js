@@ -16,6 +16,7 @@ test('standard character cards are reported as native compatible', () => {
   assert.equal(report.label, '可直接游玩');
   assert.equal(report.counts.supported, 1);
   assert.equal(report.counts.degraded, 0);
+  assert.equal(report.counts.review, 0);
   assert.equal(report.counts.missing, 0);
   assert.equal(report.executesThirdPartyCode, false);
   assert.equal(report.safeToStore, true);
@@ -57,6 +58,28 @@ test('reports safe Quick Reply and regex scripts as supported while preset order
   assert.ok(report.requirements.some((item) => item.id === 'quick-replies' && item.status === 'supported'));
   assert.ok(report.requirements.some((item) => item.id === 'regex-scripts' && item.status === 'supported'));
   assert.ok(report.requirements.some((item) => item.id === 'prompt-preset-order'));
+});
+
+test('reports sandbox-capable regex JavaScript as review-required instead of a missing host runtime', () => {
+  const report = scanCommunityDependencies({
+    extensions: {
+      regex_scripts: [{
+        scriptName: '状态栏',
+        findRegex: '/<status>[\\s\\S]*?<\\/status>/g',
+        replaceString: '<script type="module">renderStatus()</script>',
+        disabled: false
+      }]
+    }
+  }, { kind: 'character' });
+
+  assert.equal(report.level, 'review-required');
+  assert.equal(report.readyToPlay, true);
+  assert.equal(report.acceptance.outcome, 'review-required');
+  assert.equal(report.acceptance.canRun, true);
+  assert.ok(report.counts.review >= 1);
+  assert.ok(report.requirements.some((item) => item.id === 'executable-extension' && item.status === 'review'));
+  assert.ok(report.requirements.some((item) => item.id === 'regex-scripts' && item.status === 'review'));
+  assert.match(report.summary, /人工审核.*内容哈希.*本地审计/);
 });
 
 test('reports MVU JSON state as supported without claiming script compatibility', () => {
@@ -120,4 +143,40 @@ test('reports safe and unsupported EJS template tags separately', () => {
 
   assert.equal(ejs.status, 'degraded');
   assert.match(ejs.impact, /保持禁用/);
+});
+
+test('reports unresolved SillyTavern Character Filter tag IDs before assembly', () => {
+  const tagId = '31f7b74e-9828-4cd2-b7ac-3d93840d471c';
+  const report = scanCommunityDependencies({
+    entries: [{
+      uid: 7,
+      comment: '仅限武侠角色',
+      content: '门派只接待武林中人。',
+      character_filter: { tags: [tagId], isExclude: false }
+    }]
+  }, { kind: 'worldbook' });
+
+  const requirement = report.requirements.find((item) => item.id === 'worldbook-character-filter-tag-registry');
+  assert.equal(report.level, 'degraded');
+  assert.equal(requirement.status, 'degraded');
+  assert.deepEqual(requirement.evidence, [`仅限武侠角色：${tagId}`]);
+  assert.match(requirement.impact, /包含过滤条目会保持不激活/);
+  assert.equal(report.acceptance.differences[0].id, 'worldbook-character-filter-tag-registry');
+});
+
+test('maps SillyTavern Character Filter tag IDs when a registry is present', () => {
+  const tagId = '31f7b74e-9828-4cd2-b7ac-3d93840d471c';
+  const report = scanCommunityDependencies({
+    tags: [{ id: tagId, name: '武侠' }],
+    entries: [{
+      uid: 8,
+      content: '门派只接待武林中人。',
+      character_filter: { tags: [tagId], isExclude: false }
+    }]
+  }, { kind: 'worldbook' });
+
+  const requirement = report.requirements.find((item) => item.id === 'worldbook-character-filter-tag-registry');
+  assert.equal(report.level, 'native');
+  assert.equal(requirement.status, 'supported');
+  assert.deepEqual(requirement.evidence, [`${tagId} → 武侠`]);
 });

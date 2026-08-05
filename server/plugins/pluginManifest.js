@@ -12,10 +12,23 @@ export const SUPPORTED_DECLARATIVE_CAPABILITIES = Object.freeze([
   'action-protocol',
   'prompt-ordering',
   'safe-regex-display',
+  'safe-regex-runtime',
   'quick-replies',
   'mvu-state',
   'safe-ejs-template',
   'community-light-adapters'
+]);
+export const SUPPORTED_ADAPTER_CAPABILITIES = Object.freeze([
+  'inspect',
+  'normalize',
+  'provenance',
+  'prompt-order',
+  'generation-settings',
+  'dependency-report',
+  'safe-regex-runtime',
+  'dependencies',
+  'install',
+  'export'
 ]);
 
 const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9.-]{2,79}$/;
@@ -24,6 +37,7 @@ const SUPPORTED_KINDS = new Set(['character', 'worldbook', 'prompt', 'content-pa
 const SUPPORTED_FORMATS = new Set(['png', 'json', 'txt', 'yaml', 'yml']);
 const EXECUTABLE_FIELDS = ['entry', 'main', 'module', 'script', 'scripts', 'command', 'hooks'];
 const DECLARATIVE_CAPABILITY_SET = new Set(SUPPORTED_DECLARATIVE_CAPABILITIES);
+const ADAPTER_CAPABILITY_SET = new Set(SUPPORTED_ADAPTER_CAPABILITIES);
 
 export function inspectPluginManifest(input = {}, {
   appVersion = APP_VERSION,
@@ -240,13 +254,13 @@ function normalizeDependency(input, blockingIssues) {
 function normalizeAdapterCapabilities(values, index, warnings) {
   const declared = uniqueStrings(values);
   declared
-    .filter((capability) => !DECLARATIVE_CAPABILITY_SET.has(capability))
+    .filter((capability) => !ADAPTER_CAPABILITY_SET.has(capability))
     .forEach((capability) => warnings.push(issue(
       'adapter-capability-unsupported',
       `适配器能力 ${capability} 不在声明式白名单中，安装后不会启用。`,
       `adapters.${index}.capabilities.${capability}`
     )));
-  return declared.filter((capability) => DECLARATIVE_CAPABILITY_SET.has(capability));
+  return declared.filter((capability) => ADAPTER_CAPABILITY_SET.has(capability));
 }
 
 function findExecutableManifestPaths(input) {

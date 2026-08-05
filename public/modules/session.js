@@ -1,3 +1,20 @@
+export function getSessionDisplayTitle(sessionId, summaries = []) {
+  const summary = (Array.isArray(summaries) ? summaries : [])
+    .find((item) => item?.id === sessionId);
+  const title = String(summary?.title || '').trim();
+  return title || (sessionId === 'main' ? '默认会话' : sessionId);
+}
+
+export function formatSessionOptionLabel(sessionId, summaries = []) {
+  const summary = (Array.isArray(summaries) ? summaries : [])
+    .find((item) => item?.id === sessionId);
+  const label = getSessionDisplayTitle(sessionId, summaries);
+  const messageCount = Number(summary?.messageCount);
+  return summary && Number.isFinite(messageCount)
+    ? `${label} · ${messageCount} 条消息`
+    : label;
+}
+
 export function createSessionController({
   els,
   apiRequest,
@@ -7,7 +24,7 @@ export function createSessionController({
   setStatus,
   humanizeApiError
 }) {
-  function renderSessionSelect(sessions) {
+  function renderSessionSelect(sessions, summaries = []) {
     if (!els.sessionSelect) return;
     els.sessionSelect.innerHTML = '';
     const currentSessionId = getCurrentSessionId();
@@ -16,7 +33,7 @@ export function createSessionController({
     for (const sessionId of sessionIds) {
       const option = document.createElement('option');
       option.value = sessionId;
-      option.textContent = sessionId;
+      option.textContent = formatSessionOptionLabel(sessionId, summaries);
       if (sessionId === currentSessionId) option.selected = true;
       els.sessionSelect.appendChild(option);
     }

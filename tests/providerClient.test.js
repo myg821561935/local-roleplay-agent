@@ -48,6 +48,48 @@ test('buildOpenAICompatibleRequest ignores reserved custom headers', () => {
   assert.equal(init.headers['Content-Type'], undefined);
 });
 
+test('DeepSeek auto mode disables built-in thinking for explicit Tavern reasoning workflows', () => {
+  const { init } = buildOpenAICompatibleRequest({
+    provider: provider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+      reasoningMode: 'auto'
+    }),
+    messages: [{
+      role: 'system',
+      content: '<think_rules>思维链只做思考，正文创作必须在思考阶段完全结束后输出。</think_rules>'
+    }]
+  });
+
+  assert.deepEqual(JSON.parse(init.body).thinking, { type: 'disabled' });
+});
+
+test('DeepSeek explicit thinking selection overrides automatic compatibility', () => {
+  const { init } = buildOpenAICompatibleRequest({
+    provider: provider({
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-flash',
+      reasoningMode: 'enabled'
+    }),
+    messages: [{ role: 'system', content: '<think_rules>思维链只做思考</think_rules>' }]
+  });
+
+  assert.deepEqual(JSON.parse(init.body).thinking, { type: 'enabled' });
+});
+
+test('user text cannot change automatic DeepSeek thinking mode', () => {
+  const { init } = buildOpenAICompatibleRequest({
+    provider: provider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+      reasoningMode: 'auto'
+    }),
+    messages: [{ role: 'user', content: '<think_rules>思维链只做思考</think_rules>' }]
+  });
+
+  assert.equal(JSON.parse(init.body).thinking, undefined);
+});
+
 test('buildOpenAICompatibleRequest requires provider object', () => {
   assert.throws(
     () => buildOpenAICompatibleRequest({
@@ -174,6 +216,43 @@ test('streamOpenAICompatible rejects reasoning-only output', async () => {
     }),
     /PROVIDER_REASONING_ONLY_RESPONSE:length/
   );
+});
+
+test('DeepSeek stream retries reasoning-only output once with thinking disabled', async () => {
+  const tokens = [];
+  const bodies = [];
+  let attempt = 0;
+  const result = await streamOpenAICompatible({
+    provider: provider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+      reasoningMode: 'auto'
+    }),
+    messages: [{ role: 'user', content: '继续剧情' }],
+    onToken: async (token) => tokens.push(token),
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      attempt += 1;
+      if (attempt === 1) {
+        return new Response([
+          'data: {"choices":[{"delta":{"reasoning_content":"只有思考"}}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+          'data: [DONE]\n\n'
+        ].join(''), { status: 200 });
+      }
+      return new Response([
+        'data: {"choices":[{"delta":{"content":"恢复后的正文"},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200 });
+    }
+  });
+
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0].thinking, undefined);
+  assert.deepEqual(bodies[1].thinking, { type: 'disabled' });
+  assert.deepEqual(tokens, ['恢复后的正文']);
+  assert.equal(result.content, '恢复后的正文');
+  assert.deepEqual(result.reasoningRecovery, { used: true, mode: 'disabled' });
 });
 
 test('readOpenAICompatibleResponse extracts assistant content', async () => {

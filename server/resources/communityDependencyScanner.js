@@ -3,11 +3,13 @@ import {
   inspectSafeTemplate
 } from '../compat/lightFrontendRuntime.js';
 import { buildCompatibilityAcceptance } from '../compat/compatibilityPolicy.js';
+import { inspectWorldBookCharacterFilterTags } from '../character/worldBookTagRegistry.js';
 
 const STATUS_PRIORITY = {
   supported: 0,
   degraded: 1,
-  missing: 2
+  review: 2,
+  missing: 3
 };
 
 const RUNTIME_RULES = [
@@ -52,8 +54,8 @@ const RUNTIME_RULES = [
     status: 'missing',
     pathPatterns: [/(?:^|\.)(?:scripts?|javascript|scriptcode|onload|onmessage|hooks?)(?:\.|$)/i],
     textPatterns: [/<script(?:\s|>)/i, /javascript:\s*/i],
-    impact: '检测到可执行脚本或事件钩子。本项目出于本地数据安全考虑只保存文本，不执行未知代码。',
-    recommendation: '只转换明确、可审计的声明式行为；未知脚本继续保持禁用。'
+    impact: '检测到可执行脚本或事件钩子。未审核代码保持禁用；通过人工审核、内容哈希绑定和本地审计后，受支持的正则脚本可进入隔离沙箱。',
+    recommendation: '逐条审核脚本来源、能力与副作用；只有审核通过且哈希未变化的脚本才能启用。'
   },
   {
     id: 'regex-scripts',
@@ -113,7 +115,7 @@ const RUNTIME_RULES = [
     label: '酒馆 Prompt 预设顺序',
     category: 'prompt',
     status: 'degraded',
-    pathPatterns: [/(?:^|\.)(?:prompt[_-]?order|promptmanager|instruct[_-]?template|context[_-]?template|preset)(?:\.|$)/i],
+    pathPatterns: [/(?:^|\.)(?:prompt[_-]?(?:order|layout)|promptmanager|instruct[_-]?template|context[_-]?template|preset)(?:\.|$)/i],
     textPatterns: [/提示词预设顺序/u, /prompt\s*(?:manager|order|preset)/i],
     impact: '普通系统提示和历史后指令可以使用，但酒馆预设的精确插入锚点与排序不会完全复现。',
     recommendation: '导入后在 Prompt 检查器中核对系统层、角色层和历史后指令的顺序。'
@@ -167,6 +169,28 @@ export function scanCommunityDependencies(payload, { kind = '' } = {}) {
       impact: '由本项目世界书检索器原生加载。',
       recommendation: '无需额外扩展。'
     }));
+    const tagFilterReport = inspectWorldBookCharacterFilterTags(payload);
+    if (tagFilterReport.unresolved.length) {
+      requirements.push(requirement({
+        id: 'worldbook-character-filter-tag-registry',
+        label: 'Character Filter 标签注册表',
+        category: 'worldbook',
+        status: 'degraded',
+        evidence: tagFilterReport.unresolved.slice(0, 6).map((item) => `${item.title}：${item.id}`),
+        impact: `发现 ${tagFilterReport.unresolved.length} 个无法解析的 SillyTavern 私有标签 ID；包含过滤条目会保持不激活，排除过滤也无法可靠命中。`,
+        recommendation: '从原 SillyTavern 用户设置导出对应 Tag Registry（ID 与名称），与世界书一起导入；或把过滤条件改为可移植标签名。'
+      }));
+    } else if (tagFilterReport.resolvedMappings.length) {
+      requirements.push(requirement({
+        id: 'worldbook-character-filter-tag-registry',
+        label: 'Character Filter 标签注册表',
+        category: 'worldbook',
+        status: 'supported',
+        evidence: tagFilterReport.resolvedMappings.slice(0, 6).map((item) => `${item.id} → ${item.name}`),
+        impact: `已恢复 ${tagFilterReport.resolvedMappings.length} 个标签 ID 与可移植名称的映射。`,
+        recommendation: '无需额外处理；运行时同时保留原 ID 和标签名匹配。'
+      }));
+    }
   } else if (normalizedKind === 'prompt') {
     requirements.push(requirement({
       id: 'prompt-module-core',
@@ -302,12 +326,27 @@ function summarizeRequirements(requirements) {
   const counts = {
     supported: normalized.filter((item) => item.status === 'supported').length,
     degraded: normalized.filter((item) => item.status === 'degraded').length,
+    review: normalized.filter((item) => item.status === 'review').length,
     missing: normalized.filter((item) => item.status === 'missing').length
   };
-  const level = counts.missing ? 'external-runtime' : counts.degraded ? 'degraded' : 'native';
-  const label = level === 'external-runtime' ? '仅可安全保存' : level === 'degraded' ? '可降级游玩' : '可直接游玩';
+  const level = counts.missing
+    ? 'external-runtime'
+    : counts.review
+      ? 'review-required'
+      : counts.degraded
+        ? 'degraded'
+        : 'native';
+  const label = level === 'external-runtime'
+    ? '仅可安全保存'
+    : level === 'review-required'
+      ? '可运行 · 脚本待审核'
+      : level === 'degraded'
+        ? '可降级游玩'
+        : '可直接游玩';
   const summary = level === 'external-runtime'
     ? `检测到 ${counts.missing} 项当前无法执行的社区扩展能力；角色与设定可以安全保存，但不能视为可直接游玩的完整卡。`
+    : level === 'review-required'
+      ? `检测到 ${counts.review} 项可进入隔离沙箱的脚本能力；默认保持禁用，需完成人工审核、内容哈希绑定与本地审计后才能启用。`
     : level === 'degraded'
       ? `检测到 ${counts.degraded} 项需要转换的社区能力；核心内容可以游玩，降级项需要复核。`
       : '未发现必须依赖酒馆助手、小白 X 或第三方脚本的能力。';
@@ -319,8 +358,8 @@ function summarizeRequirements(requirements) {
     summary,
     safeToStore: true,
     readyToPlay: counts.missing === 0,
-    fullyCompatible: counts.missing === 0 && counts.degraded === 0,
-    requiresReview: counts.missing > 0 || counts.degraded > 0,
+    fullyCompatible: counts.missing === 0 && counts.review === 0 && counts.degraded === 0,
+    requiresReview: counts.missing > 0 || counts.review > 0 || counts.degraded > 0,
     safeToImport: true,
     executesThirdPartyCode: false,
     acceptance,
@@ -344,13 +383,31 @@ function resolveLightFrontendRule(rule, runtime, evidence, templateReport) {
       };
     }
   }
+  if (rule.id === 'executable-extension') {
+    const sandboxTransforms = runtime.regexTransforms.filter((item) => item.requiresSandbox && item.enabled !== false);
+    if (sandboxTransforms.length) {
+      return {
+        ...rule,
+        status: 'review',
+        evidence,
+        impact: `识别到 ${sandboxTransforms.length} 条需要隔离沙箱的正则脚本；导入后默认禁用，不再误报为“运行时缺失”。`,
+        recommendation: '逐条人工审核后生成内容哈希并写入本地审计；脚本内容变化时自动撤销授权。'
+      };
+    }
+  }
   if (rule.id === 'regex-scripts' && runtime.regexTransforms.length) {
+    const sandboxCount = runtime.regexTransforms.filter((item) => item.requiresSandbox && item.enabled !== false).length;
+    const safeCount = runtime.regexTransforms.length - sandboxCount;
     return {
       ...rule,
-      status: 'supported',
+      status: sandboxCount ? 'review' : 'supported',
       evidence,
-      impact: `已识别 ${runtime.regexTransforms.length} 条安全显示规则；只影响页面呈现，不改写原始消息与记忆。`,
-      recommendation: '导入后可在兼容报告中复核被禁用的高风险表达式。'
+      impact: sandboxCount
+        ? `已识别 ${safeCount} 条安全显示规则与 ${sandboxCount} 条待审核沙箱规则；未审核规则保持禁用。`
+        : `已识别 ${safeCount} 条安全显示规则；只影响页面呈现，不改写原始消息与记忆。`,
+      recommendation: sandboxCount
+        ? '在脚本治理面板逐条审核沙箱规则；内容哈希变化后必须重新审核。'
+        : '导入后可在兼容报告中复核被禁用的高风险表达式。'
     };
   }
   if (rule.id === 'quick-replies' && runtime.quickReplies.length) {
@@ -465,7 +522,7 @@ function requirement(value = {}) {
     id: String(value.id || 'unknown'),
     label: String(value.label || value.id || '未命名能力'),
     category: String(value.category || 'runtime'),
-    status: ['supported', 'degraded', 'missing'].includes(value.status) ? value.status : 'degraded',
+    status: ['supported', 'degraded', 'review', 'missing'].includes(value.status) ? value.status : 'degraded',
     evidence: uniqueStrings(value.evidence || []).slice(0, 6),
     impact: String(value.impact || ''),
     recommendation: String(value.recommendation || '')

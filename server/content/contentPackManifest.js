@@ -60,7 +60,9 @@ export function createContentPackBundle(pack = {}, options = {}) {
       lightFrontend: normalizeLightFrontendRuntime(pack.lightFrontend || {}),
       memory: structuredClone(pack.memory || {}),
       ruleSystem: structuredClone(pack.ruleSystem || {}),
-      characterPresets: structuredClone(Array.isArray(pack.characterPresets) ? pack.characterPresets : [])
+      characterPresets: structuredClone(Array.isArray(pack.characterPresets) ? pack.characterPresets : []),
+      groupMembers: structuredClone(Array.isArray(pack.groupMembers) ? pack.groupMembers : []),
+      openingTemplate: isPlainObject(pack.openingTemplate) ? structuredClone(pack.openingTemplate) : null
     }
   };
 }
@@ -197,7 +199,7 @@ export function contentPackFromBundle(bundle, internalId, { importedAt = new Dat
     title: manifest.title,
     description: manifest.description,
     sessionTitle: String(content.sessionTitle || manifest.title).trim(),
-    visualPackId: String(content.visualPackId || 'xuanhuan').trim(),
+    visualPackId: String(content.visualPackId || 'neutral').trim(),
     characterCard: structuredClone(content.characterCard || {}),
     stageBackground: normalizeStageBackground(content.stageBackground, content.characterCard),
     worldBook: structuredClone(Array.isArray(content.worldBook) ? content.worldBook : []),
@@ -206,6 +208,8 @@ export function contentPackFromBundle(bundle, internalId, { importedAt = new Dat
     memory: structuredClone(content.memory || {}),
     ruleSystem: structuredClone(content.ruleSystem || {}),
     characterPresets: structuredClone(Array.isArray(content.characterPresets) ? content.characterPresets : []),
+    groupMembers: structuredClone(Array.isArray(content.groupMembers) ? content.groupMembers : []),
+    openingTemplate: isPlainObject(content.openingTemplate) ? structuredClone(content.openingTemplate) : null,
     manifest,
     custom: true,
     imported: true,

@@ -295,6 +295,43 @@ test('AgentService separates roleplay protocol panels from visible story text', 
   assert.deepEqual(readback.messages[1].swipeMetadata[0].roleplayPanels, result.reply.roleplayPanels);
 });
 
+test('AgentService converts Tavern community panels and w2g into stored native fields', async () => {
+  const { service, sessionService } = await createHarness({
+    providerClient: {
+      complete: async () => ({
+        content: [
+          '<bginfor>时间：下午5:42<br>地点：咖啡厅</bginfor>',
+          '她把冰水放在桌边，安静地等你回应。',
+          '<w2g>',
+          'A：追问店长的麻烦',
+          'B：接过水杯回到座位',
+          'C：表示必要时可以作证',
+          'D：继续观察',
+          'E：跳过',
+          '</w2g>',
+          '<catsay><details><summary>😼咪咪点评</summary>没有硬追问，分寸感尚可。<br>继续观察她的反应。</details></catsay>'
+        ].join('\n'),
+        raw: { fake: true }
+      })
+    }
+  });
+
+  const result = await service.sendMessage({ sessionId: 'main', content: 'B' });
+  const readback = await sessionService.getSession('main');
+
+  assert.equal(result.reply.content, '她把冰水放在桌边，安静地等你回应。');
+  assert.deepEqual(result.reply.recommendedActions, [
+    '追问店长的麻烦',
+    '接过水杯回到座位',
+    '表示必要时可以作证',
+    '继续观察',
+    '跳过'
+  ]);
+  assert.match(result.reply.roleplayPanels.sceneStatus, /下午5:42/);
+  assert.match(result.reply.roleplayPanels.communityComment, /分寸感尚可/);
+  assert.doesNotMatch(readback.messages[1].content, /bginfor|w2g|catsay|<br>/i);
+});
+
 test('AgentService hides action protocol blocks and commits adjudicated world effects', async () => {
   const { service, sessionService } = await createHarness({
     providerClient: {
@@ -498,6 +535,99 @@ test('AgentService regenerates an assistant message as a new swipe', async () =>
   assert.equal(regenerated.session.usageLedger.every((entry) => entry.messageId === assistantId), true);
 });
 
+test('AgentService persists world book activation per swipe without duplicating regenerated user input', async () => {
+  const providerCalls = [];
+  const { service, configService } = await createHarness({
+    providerClient: {
+      complete: async ({ messages }) => {
+        if (isSummaryRequest(messages) || isFactExtractionRequest(messages)) {
+          return { content: '{}', raw: { maintenance: true } };
+        }
+        providerCalls.push(messages);
+        return { content: `回应：${messages.at(-1).content}`, raw: { fake: true } };
+      }
+    }
+  });
+  await configService.saveWorldBook([{
+    id: 'timed-world-entry',
+    title: '镇武司时效条目',
+    keywords: ['镇武司'],
+    content: '镇武司正在封锁内城。',
+    priority: 80,
+    enabled: true,
+    extensions: { scan_depth: 1, sticky: 3, cooldown: 2 }
+  }]);
+
+  const first = await service.sendMessage({ sessionId: 'main', content: '我要查镇武司。' });
+  assert.deepEqual(first.reply.worldBookActivation.activatedIds, ['timed-world-entry']);
+  assert.deepEqual(first.reply.swipeMetadata[0].worldBookActivation.activatedIds, ['timed-world-entry']);
+
+  const regenerated = await service.regenerateAssistantMessage({
+    sessionId: 'main',
+    messageId: first.reply.id
+  });
+  const assistant = regenerated.session.messages[1];
+  assert.equal(assistant.swipeMetadata.length, 2);
+  assert.deepEqual(assistant.swipeMetadata[1].worldBookActivation.activatedIds, ['timed-world-entry']);
+  assert.equal(
+    providerCalls[1].filter((message) => message.content === '我要查镇武司。').length,
+    1
+  );
+
+  const switched = await service.switchMessageSwipe({
+    sessionId: 'main',
+    messageId: first.reply.id,
+    swipeIndex: 0
+  });
+  assert.deepEqual(
+    switched.session.messages[1].worldBookActivation,
+    switched.session.messages[1].swipeMetadata[0].worldBookActivation
+  );
+
+  await service.editMessage({
+    sessionId: 'main',
+    messageId: switched.session.messages[0].id,
+    content: '我改查听雨楼。'
+  });
+  assert.equal(
+    providerCalls[2].filter((message) => message.content === '我改查听雨楼。').length,
+    1
+  );
+});
+
+test('AgentService passes normal, continue, and regenerate generation types to world book activation', async () => {
+  const { service, configService } = await createHarness();
+  await configService.saveWorldBook([
+    {
+      id: 'normal-entry', title: '普通生成', content: '普通生成规则。',
+      constant: true, enabled: true, extensions: { triggers: ['normal'] }
+    },
+    {
+      id: 'continue-entry', title: '续写生成', content: '续写生成规则。',
+      constant: true, enabled: true, extensions: { triggers: ['continue'] }
+    },
+    {
+      id: 'regenerate-entry', title: '重生成', content: '重生成规则。',
+      constant: true, enabled: true, extensions: { triggers: ['regenerate'] }
+    }
+  ]);
+
+  const first = await service.sendMessage({ sessionId: 'main', content: '开始。' });
+  assert.deepEqual(first.debug.sections.worldBookActivation.activatedIds, ['normal-entry']);
+  assert.equal(first.debug.sections.worldBookActivation.context.generationType, 'normal');
+
+  const continued = await service.continueMessage({ sessionId: 'main', onToken: () => {} });
+  assert.deepEqual(continued.debug.sections.worldBookActivation.activatedIds, ['continue-entry']);
+  assert.equal(continued.reply.worldBookActivation.context.generationType, 'continue');
+
+  const regenerated = await service.regenerateAssistantMessage({
+    sessionId: 'main',
+    messageId: first.reply.id
+  });
+  assert.deepEqual(regenerated.debug.sections.worldBookActivation.activatedIds, ['regenerate-entry']);
+  assert.equal(regenerated.reply.worldBookActivation.context.generationType, 'regenerate');
+});
+
 test('SessionService rejects unsafe session id on read', async () => {
   const { sessionService } = await createHarness({ configureProvider: false });
 
@@ -551,7 +681,14 @@ test('AgentService summary success resets count and writes rolling summary', asy
       complete: async ({ messages }) => {
         if (isSummaryRequest(messages)) {
           summaryCalls += 1;
-          return { content: '新的滚动摘要。', raw: { summary: true } };
+          return {
+            content: JSON.stringify({
+              rollingSummary: '新的滚动摘要。',
+              sceneTitle: '前四轮行动',
+              sceneSummary: '主角完成了前四轮行动。'
+            }),
+            raw: { summary: true }
+          };
         }
         return { content: `回应：${messages.at(-1).content}`, raw: { fake: true } };
       }
@@ -566,6 +703,9 @@ test('AgentService summary success resets count and writes rolling summary', asy
   assert.equal(summaryCalls, 1);
   assert.equal(result.session.memory.unsummarizedTurnCount, 0);
   assert.equal(result.session.memory.rollingSummary, '新的滚动摘要。');
+  assert.equal(result.session.memory.episodicMemory.summaries.scenes.length, 1);
+  assert.equal(result.session.memory.episodicMemory.summaries.scenes[0].title, '前四轮行动');
+  assert.equal(result.session.memory.episodicMemory.summaries.scenes[0].sourceEpisodeIds.length, 4);
 });
 
 test('AgentService summary failure preserves count and records error', async () => {

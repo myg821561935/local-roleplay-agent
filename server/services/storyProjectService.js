@@ -101,6 +101,9 @@ export function summarizeStoryProject(project) {
     basePackTitle: normalized.basePackTitle,
     basePackVersion: normalized.basePackVersion,
     visualPackId: normalized.visualPackId,
+    lifecycle: normalized.lifecycle,
+    lifecycleState: normalized.lifecycle.state,
+    canCreateSession: normalized.lifecycle.state === 'active' && Boolean(normalized.basePackId),
     activeSessionId: normalized.activeSessionId,
     sessionCount: normalized.sessionIds.length,
     updatedAt: normalized.updatedAt,
@@ -127,10 +130,30 @@ function normalizeStoredProject(project = {}) {
     visualPackId: cleanId(project.visualPackId || project.basePackId),
     bindings: normalizeBindings(project.bindings),
     runtimePolicy: normalizeRuntimePolicy(project.runtimePolicy),
+    lifecycle: normalizeProjectLifecycle(project.lifecycle),
     sessionIds: Array.from(new Set(sessionIds)),
     activeSessionId: activeSessionId || sessionIds.at(-1) || '',
     createdAt: cleanText(project.createdAt, 60) || new Date().toISOString(),
     updatedAt: cleanText(project.updatedAt, 60) || new Date().toISOString()
+  };
+}
+
+function normalizeProjectLifecycle(lifecycle = {}) {
+  const detached = lifecycle?.state === 'detached';
+  return {
+    state: detached ? 'detached' : 'active',
+    detachedAt: detached ? cleanText(lifecycle.detachedAt, 60) : '',
+    reason: detached ? cleanText(lifecycle.reason, 80) : '',
+    sourcePack: detached ? normalizeSourcePack(lifecycle.sourcePack) : null
+  };
+}
+
+function normalizeSourcePack(pack = {}) {
+  return {
+    id: cleanId(pack.id),
+    title: cleanText(pack.title, 100),
+    version: cleanText(pack.version, 40) || '1.0.0',
+    visualPackId: cleanId(pack.visualPackId)
   };
 }
 

@@ -1,4 +1,12 @@
-export function createVoiceController({ state, els, setStatus, escapeHtmlText, humanizeApiError, fetchImpl = globalThis.fetch } = {}) {
+export function createVoiceController({
+  state,
+  els,
+  setStatus,
+  escapeHtmlText,
+  humanizeApiError,
+  insertIntoChat = null,
+  fetchImpl = globalThis.fetch
+} = {}) {
   let mediaRecorder = null;
   let recordedChunks = [];
   let recordedBlob = null;
@@ -60,8 +68,9 @@ export function createVoiceController({ state, els, setStatus, escapeHtmlText, h
       setStatus(els.providerStatus, '当前环境不支持录音', 'error');
       return;
     }
+    let stream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recordedChunks = [];
       mediaRecorder = new MediaRecorder(stream);
       mediaRecorder.ondataavailable = (event) => {
@@ -79,6 +88,7 @@ export function createVoiceController({ state, els, setStatus, escapeHtmlText, h
       if (els.sttTranscribe) els.sttTranscribe.disabled = true;
       if (els.sttResult) els.sttResult.innerHTML = '<div class="module-empty-note">录音中...</div>';
     } catch (error) {
+      stream?.getTracks?.().forEach((track) => track.stop());
       setStatus(els.providerStatus, `录音失败：${error.message}`, 'error');
     }
   }
@@ -124,8 +134,16 @@ export function createVoiceController({ state, els, setStatus, escapeHtmlText, h
   }
 
   function insertToChat() {
-    if (!lastText || !els.chatInput) return;
-    els.chatInput.value = els.chatInput.value ? `${els.chatInput.value}\n${lastText}` : lastText;
+    if (!lastText) return;
+    if (typeof insertIntoChat === 'function') {
+      insertIntoChat(lastText);
+    } else if (els.chatInput) {
+      els.chatInput.value = els.chatInput.value ? `${els.chatInput.value}\n${lastText}` : lastText;
+      els.chatInput.dispatchEvent?.(new Event('input', { bubbles: true }));
+      els.chatInput.focus();
+    } else {
+      return;
+    }
     setStatus(els.providerStatus, '已插入到输入框', 'ok');
   }
 

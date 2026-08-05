@@ -83,6 +83,52 @@ test('imports all four SillyTavern selectiveLogic values without semantic drift'
   ]);
 });
 
+test('imports SillyTavern character filters, generation triggers, and additional matching sources', () => {
+  const [entry] = importWorldBookFromPayload({
+    fileName: 'filtered-world.json',
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      entries: [{
+        uid: 7,
+        comment: '角色专属续写线索',
+        keys: ['冷月印'],
+        content: '继续追踪冷月印。',
+        enabled: true,
+        character_filter: {
+          names: ['沈观澜'],
+          tags: ['武侠'],
+          isExclude: false
+        },
+        extensions: {
+          triggers: ['continue', 'regenerate'],
+          match_persona_description: true,
+          match_character_description: true,
+          match_character_personality: true,
+          match_character_depth_prompt: true,
+          match_scenario: true,
+          match_creator_notes: true
+        }
+      }]
+    })
+  });
+
+  assert.deepEqual(entry.characterFilter, {
+    isExclude: false,
+    names: ['沈观澜'],
+    tags: ['武侠'],
+    tagNames: ['武侠'],
+    unresolvedTagIds: []
+  });
+  assert.deepEqual(entry.triggers, ['continue', 'regenerate']);
+  assert.equal(entry.extensions.character_filter.names[0], '沈观澜');
+  assert.equal(entry.extensions.match_persona_description, true);
+  assert.equal(entry.extensions.match_character_description, true);
+  assert.equal(entry.extensions.match_character_personality, true);
+  assert.equal(entry.extensions.match_character_depth_prompt, true);
+  assert.equal(entry.extensions.match_scenario, true);
+  assert.equal(entry.extensions.match_creator_notes, true);
+});
+
 test('previews standalone world book imports', () => {
   const preview = previewImportPayload({
     fileName: 'world.json',
@@ -100,6 +146,29 @@ test('previews standalone world book imports', () => {
   assert.deepEqual(preview.summary.titles, ['黑虎帮']);
   assert.deepEqual(preview.summary.keywordSamples, ['黑虎帮']);
   assert.equal(preview.importData.worldBook[0].title, '黑虎帮');
+});
+
+test('recognizes named object-entry world books before character-card fallback', () => {
+  const preview = previewImportPayload({
+    fileName: '百鬼录.json',
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      name: '百鬼录',
+      entries: {
+        1: {
+          comment: '纸人借命',
+          key: ['纸人', '借命'],
+          content: '纸人不可点睛，借命须偿。',
+          enabled: true
+        }
+      }
+    })
+  });
+
+  assert.equal(preview.kind, 'world-book');
+  assert.equal(preview.summary.worldBookCount, 1);
+  assert.deepEqual(preview.summary.keywordSamples, ['纸人', '借命']);
+  assert.equal(preview.importData.worldBook[0].title, '纸人借命');
 });
 
 test('imports tutorial style text world book entries', () => {
@@ -238,7 +307,13 @@ test('previews Tavern Helper normalized prompt presets without executing extensi
         }
       ],
       extensions: {
-        regex_scripts: [{ scriptName: '隐藏状态标签' }],
+        regex_scripts: [{
+          scriptName: '隐藏状态标签',
+          findRegex: '/<state>[\\s\\S]*?<\\/state>/g',
+          replaceString: '',
+          placement: [2],
+          markdownOnly: true
+        }],
         tavern_helper: {
           scripts: [{ id: 'unsafe-runtime-hook' }],
           variables: { affection: 0 }
@@ -253,16 +328,24 @@ test('previews Tavern Helper normalized prompt presets without executing extensi
   assert.equal(preview.summary.promptModuleCount, 2);
   assert.equal(preview.summary.placeholderCount, 1);
   assert.equal(preview.summary.regexScriptCount, 1);
+  assert.equal(preview.summary.runtimeCompanionCount, 1);
   assert.equal(preview.summary.tavernHelperScriptCount, 1);
   assert.equal(preview.summary.generationSettings.maxContext, 32000);
   assert.equal(preview.summary.generationSettings.stream, true);
   assert.equal(preview.importData.promptModules[1].position, 'in_chat');
   assert.equal(preview.importData.promptModules[1].depth, 2);
   assert.equal(preview.importData.promptModules[1].role, 'user');
+  assert.equal(preview.importData.promptModules[2].enabled, false);
   assert.equal(
-    preview.importData.promptModules[0].extensions.sillyTavernPreset.dependencySignals.tavern_helper.execution,
+    preview.importData.promptModules[2].extensions.sillyTavernRuntimeCompanion.kind,
+    'regex'
+  );
+  assert.equal(
+    preview.importData.promptPreset.dependencySignals.tavern_helper.execution,
     'disabled'
   );
+  assert.equal(preview.importData.promptModules[0].extensions.sillyTavernPreset.promptLayout, undefined);
+  assert.equal(preview.importData.promptModules[0].extensions.sillyTavernPreset.generationSettings, undefined);
 });
 
 test('previews native SillyTavern presets using prompt_order as the canonical order', () => {
@@ -297,6 +380,199 @@ test('previews native SillyTavern presets using prompt_order as the canonical or
   assert.equal(preview.summary.generationSettings.maxCompletionTokens, 3000);
   assert.equal(preview.summary.generationSettings.stream, false);
   assert.equal(preview.importData.promptPreset.promptLayout.at(-1).id, 'chatHistory');
+});
+
+test('previews staged JSON uploads across binary and parsed payload representations', () => {
+  const presetDocument = {
+    openai_max_context: 200000,
+    openai_max_tokens: 32000,
+    prompts: [
+      { identifier: 'main', name: '主提示', role: 'system', content: '保持角色身份。' }
+    ],
+    prompt_order: [{
+      character_id: 100001,
+      order: [{ identifier: 'main', enabled: true }]
+    }]
+  };
+  const presetBytes = Buffer.from(JSON.stringify(presetDocument), 'utf8');
+  const presetRepresentations = [
+    presetBytes,
+    new Uint8Array(presetBytes),
+    presetBytes.buffer.slice(presetBytes.byteOffset, presetBytes.byteOffset + presetBytes.byteLength),
+    presetBytes.toJSON(),
+    presetDocument
+  ];
+
+  for (const data of presetRepresentations) {
+    const preview = previewImportPayload({
+      fileName: 'binary-preset.json',
+      mimeType: 'application/json',
+      data
+    });
+    assert.equal(preview.kind, 'prompt-preset');
+    assert.equal(preview.summary.promptModuleCount, 1);
+    assert.equal(preview.summary.generationSettings.maxCompletionTokens, 32000);
+  }
+
+  const worldBookPreview = previewImportPayload({
+    fileName: 'binary-world.json',
+    mimeType: 'application/json',
+    data: new Uint8Array(Buffer.from(JSON.stringify({
+      entries: [{ name: '天琴座', keys: ['天琴座'], content: '故事发生地。', enabled: true }]
+    }), 'utf8'))
+  });
+  assert.equal(worldBookPreview.kind, 'world-book');
+  assert.equal(worldBookPreview.summary.worldBookCount, 1);
+
+  const characterBytes = Buffer.from(JSON.stringify(createV2CardPayload()), 'utf8');
+  const characterPreview = previewImportPayload({
+    fileName: 'binary-character.json',
+    mimeType: 'application/json',
+    data: characterBytes.buffer.slice(
+      characterBytes.byteOffset,
+      characterBytes.byteOffset + characterBytes.byteLength
+    )
+  });
+  assert.equal(characterPreview.kind, 'character-card');
+  assert.equal(characterPreview.summary.characterName, '沈观澜');
+});
+
+test('previews standalone SillyTavern regex presets as safe runtime companions', () => {
+  const preview = previewImportPayload({
+    fileName: 'tg-regex.json',
+    mimeType: 'application/json',
+    data: JSON.stringify([
+      {
+        id: 'prompt-user',
+        scriptName: '用户输入清理',
+        findRegex: '/秘密/g',
+        replaceString: '{{user}}的隐情',
+        placement: [1],
+        promptOnly: true
+      },
+      {
+        id: 'display-panel',
+        scriptName: '静态状态框',
+        findRegex: '/<status\\/>/g',
+        replaceString: '<div><strong>状态</strong></div>',
+        placement: [2],
+        markdownOnly: true
+      },
+      {
+        id: 'blocked-script',
+        scriptName: '动态脚本',
+        findRegex: '/<widget\\/>/g',
+        replaceString: '<script>window.run()</script>',
+        placement: [2],
+        markdownOnly: true
+      }
+    ])
+  });
+
+  assert.equal(preview.kind, 'regex-preset');
+  assert.equal(preview.summary.regexScriptCount, 3);
+  assert.equal(preview.summary.safeRegexScriptCount, 2);
+  assert.equal(preview.summary.degradedRegexScriptCount, 1);
+  assert.equal(preview.summary.sandboxedRegexScriptCount, 1);
+  assert.equal(preview.summary.blockedRegexScriptCount, 0);
+  assert.equal(preview.summary.truncatedRegexScriptCount, 0);
+  assert.equal(preview.importData.promptModules.length, 1);
+  assert.equal(preview.importData.promptModules[0].enabled, false);
+  assert.equal(
+    preview.importData.promptModules[0].extensions.sillyTavernRuntimeCompanion.ruleCount,
+    3
+  );
+});
+
+test('previews a single exported SillyTavern regex rule as a one-rule preset', () => {
+  const preview = previewImportPayload({
+    fileName: 'REGEX_JX16_HIDE_PRIVATE_CALIBRATION.json',
+    mimeType: 'application/json',
+    data: JSON.stringify({
+      id: 'single-rule',
+      scriptName: 'JX16｜隐藏泄漏的后台校准',
+      findRegex: '/【后台校准】[\\s\\S]*?【后台校准结束】/g',
+      replaceString: '',
+      placement: [2],
+      markdownOnly: true,
+      promptOnly: true,
+      disabled: false
+    })
+  });
+
+  assert.equal(preview.kind, 'regex-preset');
+  assert.equal(preview.title, 'JX16｜隐藏泄漏的后台校准');
+  assert.equal(preview.summary.regexScriptCount, 1);
+  assert.equal(preview.importData.promptModules[0].extensions.sillyTavernRuntimeCompanion.ruleCount, 1);
+});
+
+test('reports truncated regex rules when count exceeds runtime limit (32)', () => {
+  const rules = [];
+  for (let index = 0; index < 40; index += 1) {
+    rules.push({
+      id: `rule-${index}`,
+      scriptName: `规则 ${index}`,
+      findRegex: `/pattern${index}/g`,
+      replaceString: `替换${index}`
+    });
+  }
+  const preview = previewImportPayload({
+    fileName: 'many-rules.json',
+    mimeType: 'application/json',
+    data: JSON.stringify(rules)
+  });
+  assert.equal(preview.kind, 'regex-preset');
+  assert.equal(preview.summary.regexScriptCount, 40);
+  assert.equal(preview.summary.truncatedRegexScriptCount, 8);
+  const classified = preview.summary.safeRegexScriptCount
+    + preview.summary.degradedRegexScriptCount
+    + preview.summary.sandboxedRegexScriptCount
+    + preview.summary.blockedRegexScriptCount
+    + preview.summary.truncatedRegexScriptCount;
+  assert.equal(classified, 40);
+});
+
+test('world book import preserves activation fields separately from insertion depth', () => {
+  const [entry] = importWorldBookFromPayload({
+    data: JSON.stringify({
+      scan_depth: 6,
+      entries: [{
+        uid: 7,
+        key: ['镇武司'],
+        comment: '镇武司暗线',
+        content: '镇武司旧案背后另有朝堂暗线。',
+        enabled: true,
+        probability: 35,
+        useProbability: true,
+        group: '暗线事件',
+        group_override: true,
+        group_weight: 80,
+        sticky: 3,
+        cooldown: 2,
+        delay: 1,
+        delay_until_recursion: 2,
+        case_sensitive: false,
+        match_whole_words: true
+      }]
+    })
+  });
+
+  assert.equal(entry.depth, 4);
+  assert.equal(entry.extensions.scan_depth, 6);
+  assert.equal(entry.extensions.probability, 35);
+  assert.equal(entry.extensions.useProbability, true);
+  assert.equal(entry.extensions.group, '暗线事件');
+  assert.equal(entry.extensions.group_override, true);
+  assert.equal(entry.extensions.group_weight, 80);
+  assert.equal(entry.extensions.sticky, 3);
+  assert.equal(entry.extensions.cooldown, 2);
+  assert.equal(entry.extensions.delay, 1);
+  assert.equal(entry.extensions.delay_until_recursion, 2);
+  assert.equal(entry.extensions.case_sensitive, false);
+  assert.equal(entry.extensions.match_whole_words, true);
+  assert.equal(entry.extensions.scan_depth_inherited, true);
+  assert.equal(entry.caseSensitive, false);
+  assert.equal(entry.matchWholeWords, true);
 });
 
 function createV2CardPayload() {

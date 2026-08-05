@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createApp } from '../server/app.js';
 import { migrateData } from '../server/data/migrations.js';
 import { exportCharacterCardPng } from '../server/character/characterCardExport.js';
+import { extractCharacterCardImage } from '../server/character/characterCardImport.js';
 
 test('GET /api/state returns config and session', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
@@ -20,6 +21,182 @@ test('GET /api/state returns config and session', async () => {
   assert.equal(payload.config.characterCard.name, '未命名主角');
   assert.equal(payload.session.authoring.spec, 'lra.authoring-ledger/v1');
   assert.equal(payload.session.settings.activeAgentProfileId, 'story-director');
+});
+
+test('GET /api/sessions/:id/knowledge-graph exposes a bounded local projection and audit', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, { url: '/api/state' });
+
+  const graphResponse = await request(app, { url: '/api/sessions/main/knowledge-graph?depth=2' });
+  const mutationResponse = await request(app, { url: '/api/sessions/main/knowledge-graph/mutations' });
+
+  assert.equal(graphResponse.status, 200);
+  assert.equal(graphResponse.json().graph.storage, 'sqlite');
+  assert.equal(graphResponse.json().graph.schemaVersion, 1);
+  assert.equal(graphResponse.json().graph.view, 'player');
+  assert.equal(mutationResponse.status, 200);
+  assert.ok(mutationResponse.json().mutations.length >= 1);
+});
+
+test('GET /api/sessions/:id/health returns a read-only session health report', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, { url: '/api/sessions/main/health' });
+  const payload = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.health.spec, 'lra.session-health/v1');
+  assert.equal(payload.health.sessionId, 'main');
+  assert.equal(Array.isArray(payload.health.checks), true);
+  assert.equal(payload.health.checks.some((item) => item.id === 'session-config-boundary'), true);
+});
+
+test('reference repair API previews, fingerprints, backs up, and repairs orphan bindings without deleting content', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'POST',
+    url: '/api/sessions/import',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      id: 'orphan-session',
+      session: {
+        title: '旧存档',
+        storyProjectId: 'missing-project',
+        basePackId: 'missing-pack',
+        messages: [{ id: 'm1', role: 'assistant', content: '正文保留' }],
+        config: {
+          contentPackId: 'missing-pack',
+          characterCard: { name: '阿月', description: '角色内容保留' },
+          worldBook: [{ id: 'w1', content: '世界内容保留' }],
+          promptModules: [{ id: 'p1', text: 'Prompt 保留' }]
+        },
+        memory: {
+          resourcePackId: 'missing-pack',
+          ruleSystem: { contentPackId: 'missing-pack', rules: [{ id: 'r1' }] },
+          factCards: [{ id: 'f1', text: '事实保留' }]
+        }
+      }
+    }
+  });
+
+  const previewResponse = await request(app, { url: '/api/reference-repairs/orphans' });
+  const plan = previewResponse.json().plan;
+  const unconfirmedResponse = await request(app, {
+    method: 'POST',
+    url: '/api/reference-repairs/orphans/repair',
+    headers: { 'content-type': 'application/json' },
+    body: { expectedPlanId: plan.planId }
+  });
+  const staleResponse = await request(app, {
+    method: 'POST',
+    url: '/api/reference-repairs/orphans/repair',
+    headers: { 'content-type': 'application/json' },
+    body: { expectedPlanId: 'stale-plan', confirmRepair: true }
+  });
+  const repairResponse = await request(app, {
+    method: 'POST',
+    url: '/api/reference-repairs/orphans/repair',
+    headers: { 'content-type': 'application/json' },
+    body: { expectedPlanId: plan.planId, confirmRepair: true }
+  });
+  const repaired = (await request(app, {
+    url: '/api/state?sessionId=orphan-session'
+  })).json().session;
+  const finalPlan = (await request(app, { url: '/api/reference-repairs/orphans' })).json().plan;
+
+  assert.equal(previewResponse.status, 200);
+  assert.equal(plan.summary.sessionUpdates, 1);
+  assert.equal(plan.summary.referenceChanges, 5);
+  assert.equal(unconfirmedResponse.status, 409);
+  assert.equal(unconfirmedResponse.json().error, 'REFERENCE_REPAIR_CONFIRMATION_REQUIRED');
+  assert.equal(staleResponse.status, 409);
+  assert.equal(staleResponse.json().error, 'REFERENCE_REPAIR_PLAN_CHANGED');
+  assert.equal(repairResponse.status, 200);
+  assert.ok(repairResponse.json().backup.id);
+  assert.deepEqual(repairResponse.json().repairedSessionIds, ['orphan-session']);
+  assert.equal(repaired.storyProjectId, '');
+  assert.equal(repaired.basePackId, '');
+  assert.equal(repaired.config.contentPackId, '');
+  assert.equal(repaired.memory.resourcePackId, '');
+  assert.equal(repaired.memory.ruleSystem.contentPackId, '');
+  assert.equal(repaired.config.characterCard.description, '角色内容保留');
+  assert.equal(repaired.config.worldBook[0].content, '世界内容保留');
+  assert.equal(repaired.config.promptModules[0].text, 'Prompt 保留');
+  assert.equal(repaired.memory.factCards[0].text, '事实保留');
+  assert.equal(repaired.messages[0].content, '正文保留');
+  assert.equal(repaired.provenance.bindingHistory.at(-1).reason, 'historical-reference-repair');
+  assert.equal(finalPlan.requiresConfirmation, false);
+  assert.equal(finalPlan.summary.referenceChanges, 0);
+});
+
+test('session config migration API materializes only missing session-owned empty config', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'POST',
+    url: '/api/sessions/import',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      id: 'legacy-config-session',
+      session: {
+        title: '旧配置存档',
+        messages: [{ id: 'm1', role: 'assistant', content: '正文保留' }],
+        config: {
+          characterCard: { name: '阿月', description: '角色内容保留' },
+          worldBook: [{ id: 'w1', content: '世界内容保留' }],
+          promptModules: [{ id: 'p1', text: 'Prompt 保留' }]
+        },
+        memory: { factCards: [{ id: 'f1', text: '事实保留' }] }
+      }
+    }
+  });
+
+  const previewResponse = await request(app, { url: '/api/session-config-migrations/incomplete' });
+  const plan = previewResponse.json().plan;
+  const unconfirmedResponse = await request(app, {
+    method: 'POST',
+    url: '/api/session-config-migrations/incomplete/migrate',
+    headers: { 'content-type': 'application/json' },
+    body: { expectedPlanId: plan.planId }
+  });
+  const staleResponse = await request(app, {
+    method: 'POST',
+    url: '/api/session-config-migrations/incomplete/migrate',
+    headers: { 'content-type': 'application/json' },
+    body: { expectedPlanId: 'stale-plan', confirmMigration: true }
+  });
+  const migrationResponse = await request(app, {
+    method: 'POST',
+    url: '/api/session-config-migrations/incomplete/migrate',
+    headers: { 'content-type': 'application/json' },
+    body: { expectedPlanId: plan.planId, confirmMigration: true }
+  });
+  const migrated = (await request(app, {
+    url: '/api/state?sessionId=legacy-config-session'
+  })).json().session;
+  const finalPlan = (await request(app, {
+    url: '/api/session-config-migrations/incomplete'
+  })).json().plan;
+
+  assert.equal(previewResponse.status, 200);
+  assert.equal(plan.summary.sessionUpdates, 1);
+  assert.equal(plan.summary.fieldChanges, 2);
+  assert.equal(plan.summary.manualReviewSessions, 0);
+  assert.equal(unconfirmedResponse.status, 409);
+  assert.equal(unconfirmedResponse.json().error, 'SESSION_CONFIG_MIGRATION_CONFIRMATION_REQUIRED');
+  assert.equal(staleResponse.status, 409);
+  assert.equal(staleResponse.json().error, 'SESSION_CONFIG_MIGRATION_PLAN_CHANGED');
+  assert.equal(migrationResponse.status, 200);
+  assert.ok(migrationResponse.json().backup.id);
+  assert.deepEqual(migrationResponse.json().migratedSessionIds, ['legacy-config-session']);
+  assert.deepEqual(migrated.config.persona, {});
+  assert.deepEqual(migrated.config.lightFrontend, {});
+  assert.equal(migrated.config.characterCard.description, '角色内容保留');
+  assert.equal(migrated.config.worldBook[0].content, '世界内容保留');
+  assert.equal(migrated.config.promptModules[0].text, 'Prompt 保留');
+  assert.equal(migrated.memory.factCards[0].text, '事实保留');
+  assert.equal(migrated.messages[0].content, '正文保留');
+  assert.equal(migrated.provenance.configMigrationHistory.at(-1).reason, 'materialize-session-owned-config');
+  assert.equal(finalPlan.summary.incompleteSessions, 0);
 });
 
 test('light frontend MVU API applies revisioned declarative patches', async () => {
@@ -55,6 +232,146 @@ test('light frontend MVU API applies revisioned declarative patches', async () =
   });
   assert.equal(conflict.status, 409);
   assert.equal(conflict.json().error, 'MVU_REVISION_CONFLICT');
+});
+
+test('third-party scripts require hash-bound review and keep a local execution audit', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const initialRule = {
+    id: 'community-status-script',
+    scriptName: '社区状态面板',
+    findRegex: '<status>([\\s\\S]*?)</status>',
+    replaceString: '<script>document.body.textContent = "ready"</script>',
+    placement: [1],
+    markdownOnly: true
+  };
+
+  const applyResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/regex-runtime',
+    headers: { 'content-type': 'application/json' },
+    body: { rules: [initialRule], replace: true }
+  });
+  const appliedRule = applyResponse.json().session.config.lightFrontend.regexTransforms[0];
+  const unreviewedExecution = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/script-executions',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      scriptId: appliedRule.id,
+      contentHash: appliedRule.contentHash,
+      status: 'launched',
+      messageId: 'message-before-review'
+    }
+  });
+  const reviewResponse = await request(app, {
+    method: 'PUT',
+    url: '/api/sessions/main/script-reviews',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      scriptId: appliedRule.id,
+      decision: 'approved',
+      reviewer: 'http-test'
+    }
+  });
+  const reviewed = reviewResponse.json();
+  const executionResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/script-executions',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      scriptId: appliedRule.id,
+      contentHash: appliedRule.contentHash,
+      status: 'launched',
+      messageId: 'message-after-review'
+    }
+  });
+  const auditResponse = await request(app, {
+    url: '/api/sessions/main/script-executions'
+  });
+
+  assert.equal(applyResponse.status, 200);
+  assert.match(appliedRule.contentHash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(unreviewedExecution.status, 409);
+  assert.equal(unreviewedExecution.json().error, 'SCRIPT_REVIEW_REQUIRED');
+  assert.equal(reviewResponse.status, 200);
+  assert.equal(reviewed.review.decision, 'approved');
+  assert.deepEqual(reviewed.governance.trustedScriptIds, [appliedRule.id]);
+  assert.equal(executionResponse.status, 200);
+  assert.equal(auditResponse.json().executions[0].messageId, 'message-after-review');
+
+  const changedResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/regex-runtime',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      rules: [{
+        ...initialRule,
+        replaceString: '<script>document.body.textContent = "changed"</script>'
+      }],
+      replace: true
+    }
+  });
+  const governanceResponse = await request(app, {
+    url: '/api/sessions/main/script-reviews'
+  });
+  const changedRule = changedResponse.json().session.config.lightFrontend.regexTransforms[0];
+
+  assert.notEqual(changedRule.contentHash, appliedRule.contentHash);
+  assert.equal(governanceResponse.json().rules[0].approved, false);
+  assert.equal(governanceResponse.json().reviews.length, 1);
+});
+
+test('imported sessions cannot carry forged script approvals or execution audit', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const forgedHash = 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/import',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      session: {
+        id: 'imported-untrusted',
+        title: '外部会话',
+        messages: [],
+        config: {
+          lightFrontend: {
+            regexTransforms: [{
+              id: 'forged-script',
+              name: '伪造授权脚本',
+              pattern: 'ready',
+              flags: 'g',
+              replacement: '<script>document.body.textContent = "forged"</script>',
+              scope: 'assistant',
+              enabled: true,
+              requiresSandbox: true,
+              contentHash: forgedHash
+            }],
+            scriptReviews: [{
+              scriptId: 'forged-script',
+              contentHash: forgedHash,
+              decision: 'approved',
+              policyVersion: 1
+            }],
+            trustedScriptIds: ['forged-script']
+          }
+        },
+        audit: {
+          scriptExecutions: [{
+            scriptId: 'forged-script',
+            contentHash: forgedHash,
+            status: 'launched'
+          }]
+        }
+      }
+    }
+  });
+  const session = response.json().session;
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(session.config.lightFrontend.scriptReviews, []);
+  assert.deepEqual(session.config.lightFrontend.trustedScriptIds, []);
+  assert.notEqual(session.config.lightFrontend.regexTransforms[0].contentHash, forgedHash);
+  assert.deepEqual(session.audit?.scriptExecutions || [], []);
 });
 
 test('authoring API lists profiles and persists a session ledger', async () => {
@@ -144,7 +461,7 @@ test('story project API rejects an unknown base content pack', async () => {
   assert.equal(response.json().error, 'CONTENT_PACK_NOT_FOUND');
 });
 
-test('story project API edits and removes a bookshelf entry while preserving its session', async () => {
+test('story project API previews deletion, backs up, and detaches its preserved session', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   const created = (await request(app, {
     method: 'POST',
@@ -164,23 +481,43 @@ test('story project API edits and removes a bookshelf entry while preserving its
     headers: { 'content-type': 'application/json' },
     body: { title: '太虚问道 · 新卷', description: '书架说明' }
   });
-  const deleteResponse = await request(app, {
+  const impactResponse = await request(app, {
+    url: `/api/story-projects/${encodeURIComponent(created.id)}/deletion-impact`
+  });
+  const unconfirmedResponse = await request(app, {
     method: 'DELETE',
     url: `/api/story-projects/${encodeURIComponent(created.id)}`,
     headers: { 'content-type': 'application/json' },
     body: {}
   });
+  const deleteResponse = await request(app, {
+    method: 'DELETE',
+    url: `/api/story-projects/${encodeURIComponent(created.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: { confirmDetach: true }
+  });
   const readAfterDelete = await request(app, {
     url: `/api/story-projects/${encodeURIComponent(created.id)}`
   });
   const sessions = (await request(app, { url: '/api/sessions' })).json().sessions;
+  const detachedState = (await request(app, {
+    url: `/api/state?sessionId=${encodeURIComponent(session.id)}`
+  })).json().session;
 
   assert.equal(updatedResponse.status, 200);
   assert.equal(updatedResponse.json().summary.title, '太虚问道 · 新卷');
+  assert.equal(impactResponse.status, 200);
+  assert.deepEqual(impactResponse.json().impact.sessions.map((item) => item.id), [session.id]);
+  assert.equal(unconfirmedResponse.status, 409);
+  assert.equal(unconfirmedResponse.json().error, 'CONTENT_DELETE_CONFIRMATION_REQUIRED');
   assert.equal(deleteResponse.status, 200);
   assert.deepEqual(deleteResponse.json().preservedSessionIds, [session.id]);
+  assert.ok(deleteResponse.json().backup.id);
   assert.equal(readAfterDelete.status, 404);
   assert.ok(sessions.includes(session.id));
+  assert.equal(detachedState.storyProjectId, '');
+  assert.equal(detachedState.basePackId, 'xianxia');
+  assert.equal(detachedState.provenance.bindingHistory.at(-1).reason, 'story-project-deleted');
 });
 
 test('PUT /api/character-card saves character card', async () => {
@@ -271,6 +608,146 @@ test('preset creation routes use UUID-backed ids', async () => {
   assert.match(promptResponse.json().preset.id, /^prompt-preset-[0-9a-f-]{36}$/);
 });
 
+test('POST /api/prompt-presets rejects non-array prompt modules', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-presets',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      name: '无效预设',
+      promptModules: { id: 'not-an-array' }
+    }
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_PROMPT_MODULES' });
+});
+
+test('POST /api/prompt-presets/apply updates only the selected session config', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const presetResponse = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-presets',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      name: '会话专属预设',
+      promptModules: [{
+        id: 'session-preset-only',
+        title: '会话专属规则',
+        content: '只应用到目标会话。',
+        enabled: true
+      }]
+    }
+  });
+  const presetId = presetResponse.json().preset.id;
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      id: 'prompt_preset_target',
+      title: 'Prompt 预设目标',
+      packId: 'lingyi'
+    }
+  });
+  const applyResponse = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-presets/apply',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      id: presetId,
+      sessionId: 'prompt_preset_target'
+    }
+  });
+  const targetState = (await request(app, {
+    url: '/api/state?sessionId=prompt_preset_target'
+  })).json();
+  const mainState = (await request(app, { url: '/api/state?sessionId=main' })).json();
+
+  assert.equal(presetResponse.status, 200);
+  assert.equal(createResponse.status, 200);
+  assert.equal(applyResponse.status, 200);
+  assert.equal(applyResponse.json().promptModules[0].id, 'session-preset-only');
+  assert.equal(targetState.config.promptModules[0].id, 'session-preset-only');
+  assert.equal(mainState.config.promptModules.some((module) => module.id === 'session-preset-only'), false);
+});
+
+test('prompt template routes assess, preview and idempotently apply to the selected session', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions',
+    headers: { 'content-type': 'application/json' },
+    body: { id: 'template_target', title: '模板目标', packId: 'lingyi' }
+  });
+  const catalogResponse = await request(app, {
+    url: '/api/prompt-templates?sessionId=template_target'
+  });
+  const previewResponse = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-templates/preview',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'template_target',
+      templateId: 'role-fidelity',
+      parameters: { strictness: 'strict' },
+      mode: 'append'
+    }
+  });
+  const firstApply = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-templates/apply',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'template_target',
+      templateId: 'role-fidelity',
+      parameters: { strictness: 'strict' },
+      mode: 'append'
+    }
+  });
+  const secondApply = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-templates/apply',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'template_target',
+      templateId: 'role-fidelity',
+      parameters: { strictness: 'balanced' },
+      mode: 'append'
+    }
+  });
+  const state = (await request(app, { url: '/api/state?sessionId=template_target' })).json();
+
+  assert.equal(createResponse.status, 200);
+  assert.equal(catalogResponse.status, 200);
+  assert.equal(catalogResponse.json().spec, 'narrative-engine.prompt-template/v1');
+  assert.ok(catalogResponse.json().templates.length >= 6);
+  assert.equal(previewResponse.status, 200);
+  assert.equal(previewResponse.json().changes.added, 1);
+  assert.equal(firstApply.status, 200);
+  assert.equal(secondApply.status, 200);
+  assert.equal(secondApply.json().preview.changes.updated, 1);
+  assert.equal(state.config.promptModules.filter((module) => module.id === 'prompt-template:role-fidelity:anchor').length, 1);
+});
+
+test('prompt template preview rejects unknown templates without changing state', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const before = (await request(app, { url: '/api/state' })).json().config.promptModules;
+  const response = await request(app, {
+    method: 'POST',
+    url: '/api/prompt-templates/preview',
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main', templateId: 'does-not-exist' }
+  });
+  const after = (await request(app, { url: '/api/state' })).json().config.promptModules;
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(response.json(), { error: 'PROMPT_TEMPLATE_NOT_FOUND' });
+  assert.deepEqual(after, before);
+});
+
 test('POST /api/import/preview parses Character Card V2 without saving state', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
 
@@ -325,6 +802,107 @@ test('POST /api/import/commit can store a resource without changing active creat
   assert.equal(payload.libraryResources.length, 2);
   assert.equal(library.resources.length, 2);
   assert.equal(state.config.characterCard.name, '未命名主角');
+});
+
+test('character-card import preserves other session-scoped configuration', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const regexResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions/main/regex-runtime',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      rules: [{
+        id: 'preserved-script',
+        scriptName: '保留的状态脚本',
+        findRegex: '<status>([\\s\\S]*?)</status>',
+        replaceString: '<script>document.body.textContent = "status"</script>',
+        markdownOnly: true
+      }],
+      replace: true
+    }
+  });
+  const importResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'shen.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(createV2CardPayload())
+      },
+      source: { site: 'local-file', fileName: 'shen.json' },
+      applyToActiveConfig: true,
+      sessionId: 'main'
+    }
+  });
+  const state = (await request(app, { url: '/api/state?sessionId=main' })).json();
+
+  assert.equal(regexResponse.status, 200);
+  assert.equal(importResponse.status, 200);
+  assert.equal(state.config.characterCard.name, '沈观澜');
+  assert.equal(state.session.config.characterCard.name, '沈观澜');
+  assert.equal(state.session.config.lightFrontend.regexTransforms[0].id, 'preserved-script');
+  assert.equal(state.config.lightFrontend.regexTransforms[0].id, 'preserved-script');
+  assert.equal(typeof state.session.config.persona, 'object');
+});
+
+test('binary import upload previews and commits a PNG card without returning its embedded payload', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const png = exportCharacterCardPng({
+    name: '九渊行者',
+    role: '边境散修',
+    description: '在十二国之间求生的修行者。',
+    scenario: '渊息升腾，边境封锁。',
+    firstMessage: '城门税吏敲了敲桌面。',
+    tags: ['玄幻', '动态世界']
+  }, [{
+    id: 'border-market',
+    title: '边境墟市',
+    keywords: ['墟市'],
+    content: '墟市物价受边境封锁与当前渊候影响。',
+    enabled: true
+  }]);
+
+  const uploadResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/upload?fileName=jiuyuan.png&mimeType=image%2Fpng',
+    headers: { 'content-type': 'image/png' },
+    body: png
+  });
+  const uploaded = uploadResponse.json();
+
+  assert.equal(uploadResponse.status, 200);
+  assert.equal(uploaded.upload.size, png.length);
+  assert.equal(uploaded.preview.kind, 'character-card');
+  assert.equal(uploaded.preview.summary.characterName, '九渊行者');
+  assert.equal(uploaded.preview.importData, undefined);
+
+  const commitResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: { uploadId: uploaded.upload.uploadId },
+      source: { site: 'local-file', fileName: 'jiuyuan.png' },
+      applyToActiveConfig: false
+    }
+  });
+  const committed = commitResponse.json();
+
+  assert.equal(commitResponse.status, 200);
+  assert.equal(committed.libraryResources.length, 2);
+  assert.ok(committed.libraryResources.find((item) => item.kind === 'character'));
+  assert.ok(committed.libraryResources.find((item) => item.kind === 'worldbook'));
+
+  const expiredResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: { payload: { uploadId: uploaded.upload.uploadId } }
+  });
+  assert.equal(expiredResponse.status, 410);
+  assert.equal(expiredResponse.json().error, 'IMPORT_UPLOAD_EXPIRED');
 });
 
 test('POST /api/import/commit stores SillyTavern prompt presets without executing helper scripts', async () => {
@@ -394,10 +972,16 @@ test('POST /api/import/commit stores SillyTavern prompt presets without executin
   assert.equal(committed.applyMode, 'prompt-library');
   assert.equal(committed.promptModuleCount, 2);
   assert.equal(committed.generationSettings.maxContext, 32768);
-  assert.equal(committed.libraryResources[1].payload.position, 'in_chat');
+  assert.equal(committed.libraryResources.length, 1);
+  assert.equal(committed.libraryResources[0].kind, 'prompt-bundle');
+  assert.equal(committed.libraryResources[0].payload.promptModules[1].position, 'in_chat');
   assert.equal(
-    committed.libraryResources[0].payload.extensions.sillyTavernPreset.dependencySignals.tavern_helper.execution,
+    committed.libraryResources[0].payload.dependencySignals.tavern_helper.execution,
     'disabled'
+  );
+  assert.equal(
+    committed.libraryResources[0].payload.promptModules[0].extensions.sillyTavernPreset.dependencySignals,
+    undefined
   );
   assert.equal(state.config.promptModules.some((item) => item.title === '主提示'), false);
 });
@@ -413,6 +997,12 @@ test('PNG character import persists its portrait through the session, library an
     firstMessage: '山门外的雪没有停。',
     tags: ['仙侠']
   });
+  const expectedPortrait = extractCharacterCardImage({
+    fileName: 'xie-tingyun.png',
+    mimeType: 'image/png',
+    data: png.toString('base64'),
+    encoding: 'base64'
+  }).bytes;
 
   const committed = await request(app, {
     method: 'POST',
@@ -469,7 +1059,8 @@ test('PNG character import persists its portrait through the session, library an
   assert.equal(characterResource.payload.portrait.url, portrait.url);
   assert.equal(portraitResponse.status, 200);
   assert.equal(portraitResponse.headers['content-type'], 'image/png');
-  assert.deepEqual(portraitResponse.buffer, png);
+  assert.deepEqual(portraitResponse.buffer, expectedPortrait);
+  assert.ok(portraitResponse.buffer.length < png.length);
   assert.equal(packResponse.status, 200);
   assert.equal(pack.characterCard.portrait.url, portrait.url);
   assert.equal(pack.stageBackground.url, portrait.url);
@@ -786,6 +1377,121 @@ test('PATCH /api/resource-library/resources/:id/content manages world books and 
   assert.equal(unsupported.json().error, 'RESOURCE_CONTENT_KIND_UNSUPPORTED');
 });
 
+test('POST /api/resource-library/resources/:id/tag-registry resolves sidecar ids as an audited revision', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const tagId = '31f7b74e-9828-4cd2-b7ac-3d93840d471c';
+  await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'private-filter-world.json',
+        mimeType: 'application/json',
+        data: JSON.stringify({
+          entries: [{
+            uid: 11,
+            comment: '仅限武侠角色',
+            content: '门派只接待武林中人。',
+            character_filter: { tags: [tagId], isExclude: false }
+          }]
+        })
+      },
+      source: { site: 'local-file' },
+      applyToActiveConfig: false
+    }
+  });
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const worldBook = resources.find((item) => item.kind === 'worldbook');
+  const response = await request(app, {
+    method: 'POST',
+    url: `/api/resource-library/resources/${encodeURIComponent(worldBook.id)}/tag-registry`,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      registryDocument: { settings: { tags: [{ id: tagId, name: '武侠' }] } }
+    }
+  });
+  const revisions = await request(app, {
+    url: `/api/resource-library/resources/${encodeURIComponent(worldBook.id)}/revisions`
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json().report.appliedMappings, [{ id: tagId, name: '武侠' }]);
+  const filter = response.json().resource.payload.entries[0].extensions.character_filter;
+  assert.deepEqual(filter.tags, [tagId]);
+  assert.deepEqual(filter.tagNames, ['武侠']);
+  assert.deepEqual(filter.unresolvedTagIds, []);
+  assert.equal(revisions.json().revisions[0].changeType, 'tag-registry-mapping');
+});
+
+test('resource revision endpoints list history and roll back without changing resource identity', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'shen.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(createV2CardPayload())
+      },
+      source: { site: 'local-file' },
+      applyToActiveConfig: false
+    }
+  });
+  const resources = (await request(app, { url: '/api/resource-library/resources' })).json().resources;
+  const worldBook = resources.find((item) => item.kind === 'worldbook');
+  const originalTitle = worldBook.payload.entries[0].title;
+
+  const updateResponse = await request(app, {
+    method: 'PATCH',
+    url: `/api/resource-library/resources/${encodeURIComponent(worldBook.id)}/content`,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        entries: [{
+          id: 'revision-http-test',
+          title: 'HTTP 修订设定',
+          keywords: ['修订'],
+          content: '用于验证素材修订接口。',
+          enabled: true
+        }]
+      }
+    }
+  });
+  const historyResponse = await request(app, {
+    url: `/api/resource-library/resources/${encodeURIComponent(worldBook.id)}/revisions`
+  });
+  const history = historyResponse.json();
+  const originalRevision = history.revisions.find((item) => item.number === 1);
+
+  const rollbackResponse = await request(app, {
+    method: 'POST',
+    url: `/api/resource-library/resources/${encodeURIComponent(worldBook.id)}/revisions/${encodeURIComponent(originalRevision.id)}/rollback`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+  const rollbackHistory = (await request(app, {
+    url: `/api/resource-library/resources/${encodeURIComponent(worldBook.id)}/revisions`
+  })).json();
+
+  assert.equal(updateResponse.status, 200);
+  assert.equal(updateResponse.json().resource.id, worldBook.id);
+  assert.equal(updateResponse.json().resource.revision.number, 2);
+  assert.equal(historyResponse.status, 200);
+  assert.equal(history.revisions.length, 2);
+  assert.equal(history.revisions[0].current, true);
+  assert.ok(originalRevision?.id);
+  assert.equal(rollbackResponse.status, 200);
+  assert.equal(rollbackResponse.json().resource.id, worldBook.id);
+  assert.equal(rollbackResponse.json().resource.payload.entries[0].title, originalTitle);
+  assert.equal(rollbackResponse.json().resource.revision.number, 3);
+  assert.equal(rollbackResponse.json().resource.revision.restoredFromRevisionId, originalRevision.id);
+  assert.equal(rollbackHistory.revisions.length, 3);
+  assert.equal(rollbackHistory.revisions[0].current, true);
+});
+
 test('POST /api/resource-library/resources/:id/reevaluate refreshes legacy diagnostics', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   await request(app, {
@@ -816,7 +1522,7 @@ test('POST /api/resource-library/resources/:id/reevaluate refreshes legacy diagn
   assert.equal(response.json().resource.id, character.id);
   assert.ok(response.json().resource.diagnostics.score > 0);
   assert.ok(response.json().resource.diagnostics.communityCompatibility);
-  assert.equal(response.json().resource.payload.extensions.local_roleplay_agent.enrichment.version, 1);
+  assert.equal(response.json().resource.payload.extensions.local_roleplay_agent.enrichment.version, 2);
 });
 
 test('PATCH /api/resource-library/resources/:id rejects non-object metadata', async () => {
@@ -923,6 +1629,276 @@ test('custom story composition endpoint previews conflicts and creates an origin
   assert.equal(projectResponse.json().project.basePackId, pack.id);
 });
 
+test('custom story composition API blocks the source runtime and records an approved safe derivative', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const preset = {
+    name: '需宿主的社区预设',
+    settings: { max_context: 32768, max_completion_tokens: 4096 },
+    prompts: [{
+      id: 'main',
+      name: '主提示',
+      enabled: true,
+      role: 'system',
+      content: '静态 Prompt 可以安全保留。',
+      position: { type: 'relative' }
+    }],
+    extensions: {
+      tavern_helper: { scripts: [{ id: 'host-only-hook' }] }
+    }
+  };
+  const importResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: {
+        fileName: 'host-runtime-preset.json',
+        mimeType: 'application/json',
+        data: JSON.stringify(preset)
+      },
+      source: { site: 'local-file', fileName: 'host-runtime-preset.json' },
+      applyToActiveConfig: false
+    }
+  });
+  const imported = importResponse.json();
+  assert.equal(importResponse.status, 200);
+  assert.equal(imported.libraryResources.length, 1);
+  const input = {
+    title: '安全派生接口测试卷',
+    promptResourceIds: [imported.libraryResources[0].id],
+    customBaseline: {
+      worldName: '安全派生接口测试卷',
+      premise: '验证服务端组装门禁不能被客户端绕过。'
+    }
+  };
+  const inspectionResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs/inspect',
+    headers: { 'content-type': 'application/json' },
+    body: input
+  });
+  const review = inspectionResponse.json().composition.compatibilityReview;
+  const unapprovedResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: input
+  });
+  const approvedResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      ...input,
+      compatibilityReview: {
+        fingerprint: review.fingerprint,
+        approvedScriptHashes: [],
+        acknowledgeCompatibility: true
+      }
+    }
+  });
+  const approvedPack = approvedResponse.json().pack;
+  const record = approvedPack.resourceManifest.composition.compatibilityReview;
+  const project = (await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: approvedPack.id, title: '安全派生接口测试卷' }
+  })).json().project;
+  const session = (await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  })).json().session;
+  const healthResponse = await request(app, {
+    url: `/api/sessions/${encodeURIComponent(session.id)}/health`
+  });
+  const compatibilityHealth = healthResponse.json().health.checks
+    .find((item) => item.id === 'resource-compatibility');
+
+  assert.equal(inspectionResponse.status, 200);
+  assert.equal(review.contractVersion, 2);
+  assert.equal(review.sourceRuntimeBlocked, true);
+  assert.equal(review.safeDerivativeAvailable, true);
+  assert.ok(review.blockers.some((item) => item.id === 'tavern-helper'));
+  assert.equal(unapprovedResponse.status, 409);
+  assert.equal(unapprovedResponse.json().error, 'RESOURCE_PACK_REVIEW_REQUIRED');
+  assert.equal(approvedResponse.status, 200);
+  assert.equal(record.contractVersion, 2);
+  assert.equal(record.status, 'safe-derivative-approved');
+  assert.ok(record.disabledCapabilities.some((item) => item.id === 'tavern-helper'));
+  assert.equal(healthResponse.status, 200);
+  assert.equal(compatibilityHealth.status, 'warning');
+  assert.match(compatibilityHealth.title, /安全派生版/);
+  assert.ok(compatibilityHealth.evidence.some((item) => /酒馆助手运行时/u.test(item)));
+});
+
+test('legacy compatibility upgrade creates a new pack without migrating its project or session', async () => {
+  const rootDir = await createTestRoot();
+  const app = createApp({ rootDir });
+  const sourcePack = (await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '历史原创卷',
+      customBaseline: {
+        worldName: '历史原创卷',
+        genre: '悬疑',
+        premise: '失踪档案在十年后重新出现。',
+        proseStyle: '重视证据链。'
+      }
+    }
+  })).json().pack;
+  const project = (await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: sourcePack.id, title: '历史原创卷' }
+  })).json().project;
+  const session = (await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  })).json().session;
+  const sourcePath = path.join(rootDir, 'data', 'library', 'packs', `${sourcePack.id}.json`);
+  const legacy = JSON.parse(await readFile(sourcePath, 'utf8'));
+  delete legacy.resourceManifest.composition.compatibilityReview;
+  delete legacy.resourceManifest.customBaseline;
+  await writeFile(sourcePath, `${JSON.stringify(legacy, null, 2)}\n`, 'utf8');
+
+  const overviewBefore = await request(app, {
+    url: '/api/resource-library/packs/compatibility-overview'
+  });
+  const sourceOverview = overviewBefore.json().packs.find((item) => item.packId === sourcePack.id);
+
+  const blockedProjectResponse = await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: sourcePack.id, title: '不应创建的新故事' }
+  });
+  const blockedSessionResponse = await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+  const blockedApplyResponse = await request(app, {
+    method: 'POST',
+    url: `/api/content-packs/${encodeURIComponent(sourcePack.id)}/apply`,
+    headers: { 'content-type': 'application/json' },
+    body: { sessionId: 'main' }
+  });
+
+  const previewResponse = await request(app, {
+    url: `/api/resource-library/packs/${encodeURIComponent(sourcePack.id)}/compatibility-upgrade`
+  });
+  const preview = previewResponse.json().preview;
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: `/api/resource-library/packs/${encodeURIComponent(sourcePack.id)}/compatibility-upgrade`,
+    headers: { 'content-type': 'application/json' },
+    body: {
+      compatibilityReview: {
+        fingerprint: preview.compatibilityReview.fingerprint,
+        approvedScriptHashes: [],
+        acknowledgeCompatibility: preview.compatibilityReview.requiresCompatibilityAcknowledgement
+      }
+    }
+  });
+  const upgraded = createResponse.json().pack;
+  const upgradedProjectResponse = await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: upgraded.id, title: '兼容新版故事' }
+  });
+  const storedSource = JSON.parse(await readFile(sourcePath, 'utf8'));
+  const projects = (await request(app, { url: '/api/story-projects' })).json().projects;
+  const storedSession = (await request(app, {
+    url: `/api/state?sessionId=${encodeURIComponent(session.id)}`
+  })).json().session;
+
+  assert.equal(previewResponse.status, 200);
+  assert.equal(overviewBefore.status, 200);
+  assert.equal(overviewBefore.json().spec, 'lra.pack-compatibility-overview/v1');
+  assert.equal(sourceOverview.status, 'upgrade-available');
+  assert.equal(sourceOverview.canStartNewStory, false);
+  assert.equal(blockedProjectResponse.status, 409);
+  assert.equal(blockedProjectResponse.json().error, 'CONTENT_PACK_COMPATIBILITY_REVIEW_REQUIRED');
+  assert.equal(blockedSessionResponse.status, 409);
+  assert.equal(blockedSessionResponse.json().error, 'CONTENT_PACK_COMPATIBILITY_REVIEW_REQUIRED');
+  assert.equal(blockedApplyResponse.status, 409);
+  assert.equal(blockedApplyResponse.json().error, 'CONTENT_PACK_COMPATIBILITY_REVIEW_REQUIRED');
+  assert.equal(preview.rebuildable, true);
+  assert.equal(preview.assemblyInput.customBaseline.worldName, '历史原创卷');
+  assert.equal(createResponse.status, 200);
+  assert.equal(upgradedProjectResponse.status, 200);
+  assert.notEqual(upgraded.id, sourcePack.id);
+  assert.equal(upgraded.resourceManifest.compatibilityUpgrade.sourcePackId, sourcePack.id);
+  assert.equal(upgraded.resourceManifest.compatibilityUpgrade.contractVersion, 2);
+  assert.equal(storedSource.resourceManifest.composition.compatibilityReview, undefined);
+  assert.equal(projects.find((item) => item.id === project.id).basePackId, sourcePack.id);
+  assert.equal(storedSession.basePackId, sourcePack.id);
+  assert.ok(upgraded.worldBook.some((item) => /失踪档案/u.test(item.content)));
+});
+
+test('genre-derived custom story excludes built-in actors lore and fixed routes end to end', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const imported = (await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload: { fileName: 'shen.json', mimeType: 'application/json', data: JSON.stringify(createV2CardPayload()) },
+      source: { site: 'local-file', fileName: 'shen.json' },
+      applyToActiveConfig: false
+    }
+  })).json();
+  const character = imported.libraryResources.find((item) => item.kind === 'character');
+  const packResponse = await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '沈观澜仙侠派生卷',
+      basePackId: 'xianxia',
+      baseInheritanceMode: 'genre',
+      characterResourceId: character.id
+    }
+  });
+  const pack = packResponse.json().pack;
+  const project = (await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: pack.id, title: '沈观澜仙侠派生卷' }
+  })).json().project;
+  const sessionResponse = await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+  const session = sessionResponse.json().session;
+
+  assert.equal(packResponse.status, 200);
+  assert.equal(sessionResponse.status, 200);
+  assert.equal(pack.characterCard.name, '沈观澜');
+  assert.deepEqual(pack.characterPresets, []);
+  assert.deepEqual(pack.groupMembers, []);
+  assert.equal(pack.worldBook.some((entry) => /闻雪照|赤松子|太虚界|断魂灯/.test(JSON.stringify(entry))), false);
+  assert.equal(pack.promptModules.some((module) => module.id === 'xianxia-core-route-contract'), false);
+  assert.equal(pack.promptModules.some((module) => module.id === 'world-premise'), false);
+  assert.ok(pack.promptModules.some((module) => module.id === 'core-rules'));
+  assert.equal(session.config.contentPackId, pack.id);
+  assert.deepEqual(session.config.characterPresets, []);
+  assert.deepEqual(session.config.groupMembers, []);
+});
+
 test('custom pack API edits bookshelf metadata and removes only the stored pack', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
   const created = (await request(app, {
@@ -944,7 +1920,7 @@ test('custom pack API edits bookshelf metadata and removes only the stored pack'
     method: 'DELETE',
     url: `/api/resource-library/packs/${encodeURIComponent(created.id)}`,
     headers: { 'content-type': 'application/json' },
-    body: {}
+    body: { confirmDetach: true }
   });
   const packs = (await request(app, { url: '/api/content-packs' })).json().contentPacks;
 
@@ -953,6 +1929,77 @@ test('custom pack API edits bookshelf metadata and removes only the stored pack'
   assert.equal(updatedResponse.json().pack.manifest.title, '九州残卷 · 新卷');
   assert.equal(deleteResponse.status, 200);
   assert.equal(packs.some((pack) => pack.id === created.id), false);
+});
+
+test('custom pack deletion previews dependencies and archives projects while preserving session snapshots', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const pack = (await request(app, {
+    method: 'POST',
+    url: '/api/resource-library/packs',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      title: '月下山门',
+      customBaseline: { worldName: '月下山门', genre: '仙侠日常' }
+    }
+  })).json().pack;
+  const project = (await request(app, {
+    method: 'POST',
+    url: '/api/story-projects',
+    headers: { 'content-type': 'application/json' },
+    body: { basePackId: pack.id, title: '月下旧卷' }
+  })).json().project;
+  const session = (await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  })).json().session;
+
+  const impactResponse = await request(app, {
+    url: `/api/resource-library/packs/${encodeURIComponent(pack.id)}/deletion-impact`
+  });
+  const unconfirmedResponse = await request(app, {
+    method: 'DELETE',
+    url: `/api/resource-library/packs/${encodeURIComponent(pack.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+  const deleteResponse = await request(app, {
+    method: 'DELETE',
+    url: `/api/resource-library/packs/${encodeURIComponent(pack.id)}`,
+    headers: { 'content-type': 'application/json' },
+    body: { confirmDetach: true }
+  });
+  const projects = (await request(app, { url: '/api/story-projects' })).json().projects;
+  const detachedProject = projects.find((item) => item.id === project.id);
+  const detachedSession = (await request(app, {
+    url: `/api/state?sessionId=${encodeURIComponent(session.id)}`
+  })).json().session;
+  const createAnotherResponse = await request(app, {
+    method: 'POST',
+    url: `/api/story-projects/${encodeURIComponent(project.id)}/sessions`,
+    headers: { 'content-type': 'application/json' },
+    body: {}
+  });
+
+  assert.equal(impactResponse.status, 200);
+  assert.deepEqual(impactResponse.json().impact.projects.map((item) => item.id), [project.id]);
+  assert.deepEqual(impactResponse.json().impact.sessions.map((item) => item.id), [session.id]);
+  assert.equal(unconfirmedResponse.status, 409);
+  assert.equal(unconfirmedResponse.json().error, 'CONTENT_DELETE_CONFIRMATION_REQUIRED');
+  assert.equal(deleteResponse.status, 200);
+  assert.ok(deleteResponse.json().backup.id);
+  assert.equal(detachedProject.basePackId, '');
+  assert.equal(detachedProject.lifecycleState, 'detached');
+  assert.equal(detachedProject.canCreateSession, false);
+  assert.equal(detachedSession.storyProjectId, '');
+  assert.equal(detachedSession.basePackId, '');
+  assert.equal(detachedSession.config.contentPackId, '');
+  assert.ok(detachedSession.config.characterCard);
+  assert.ok(Array.isArray(detachedSession.config.worldBook));
+  assert.equal(detachedSession.provenance.bindingHistory.at(-1).reason, 'content-pack-deleted');
+  assert.equal(createAnotherResponse.status, 409);
+  assert.equal(createAnotherResponse.json().error, 'STORY_PROJECT_DETACHED');
 });
 
 test('v0.2.2 plugin manifest preview installs declarative adapters and blocks executable plugins', async () => {
@@ -1033,14 +2080,81 @@ test('v0.2.2 imports, exports and applies a versioned content pack bundle', asyn
   assert.equal(preview.status, 200);
   assert.equal(preview.json().preview.inspection.adapter.id, 'lra-content-pack-v1');
   assert.equal(preview.json().preview.inspection.canImport, true);
+  assert.equal(preview.json().preview.inspection.compatibilityReview.requiresScriptApproval, false);
   assert.equal(committed.status, 200);
   assert.equal(committed.json().applyMode, 'content-pack-library');
   assert.equal(committed.json().installStatus, 'created');
+  assert.equal(installed.resourceManifest.composition.compatibilityReview.contractVersion, 2);
+  assert.equal(installed.resourceManifest.composition.compatibilityReview.status, 'not-required');
   assert.ok(listed.find((pack) => pack.id === installed.id && pack.version === '1.1.0'));
   assert.equal(exported.status, 200);
   assert.equal(exported.json().manifest.id, 'community.rain-night');
   assert.equal(applied.status, 200);
   assert.equal(applied.json().characterCard.name, '沈观澜');
+});
+
+test('content pack bundle scripts require hash-bound review before installation', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const bundle = createContentPackBundlePayload();
+  bundle.manifest.id = 'community.reviewed-panel';
+  bundle.manifest.title = '待审核面板包';
+  bundle.content.lightFrontend = {
+    regexTransforms: [{
+      id: 'reviewed-panel-script',
+      name: '待审核状态面板',
+      pattern: '<state>([\\s\\S]*?)</state>',
+      flags: 'g',
+      replacement: '<script>document.body.dataset.state = "ready"</script>',
+      scope: 'assistant',
+      enabled: true,
+      requiresSandbox: true
+    }]
+  };
+  const payload = { mimeType: 'application/json', data: JSON.stringify(bundle) };
+  const previewResponse = await request(app, {
+    method: 'POST',
+    url: '/api/import/preview',
+    headers: { 'content-type': 'application/json' },
+    body: { payload }
+  });
+  const review = previewResponse.json().preview.inspection.compatibilityReview;
+  const rejected = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: { payload }
+  });
+  const approved = await request(app, {
+    method: 'POST',
+    url: '/api/import/commit',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      payload,
+      compatibilityReview: {
+        fingerprint: review.fingerprint,
+        approvedScriptHashes: review.rules.map((rule) => rule.contentHash),
+        acknowledgeCompatibility: review.requiresCompatibilityAcknowledgement
+      }
+    }
+  });
+
+  assert.equal(previewResponse.status, 200);
+  assert.equal(review.requiresScriptApproval, true);
+  assert.equal(review.rules.length, 1);
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.json().error, 'RESOURCE_PACK_REVIEW_REQUIRED');
+  assert.equal(approved.status, 200);
+  assert.equal(
+    approved.json().pack.resourceManifest.composition.compatibilityReview.status,
+    'safe-derivative-approved'
+  );
+  assert.ok(
+    approved.json().pack.resourceManifest.composition.compatibilityReview.disabledCapabilities.length > 0
+  );
+  assert.deepEqual(
+    approved.json().pack.lightFrontend.trustedScriptIds,
+    ['reviewed-panel-script']
+  );
 });
 
 test('GET /api/content-packs lists linked genre packs', async () => {
@@ -1291,6 +2405,78 @@ test('session scoped editors initialize config for legacy sessions', async () =>
   assert.equal(state.config.promptModules[0].title, '本会话规则');
 });
 
+test('PUT /api/persona updates only the selected session and normalizes the draft', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      id: 'persona_target',
+      title: '人设目标会话',
+      packId: 'lingyi'
+    }
+  });
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/persona',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'persona_target',
+      persona: {
+        enabled: true,
+        name: '  林渡  ',
+        description: ' 走阴人 ',
+        background: ' 江南 ',
+        personality: ' 克制 '
+      }
+    }
+  });
+  const targetState = (await request(app, {
+    url: '/api/state?sessionId=persona_target'
+  })).json();
+  const mainState = (await request(app, { url: '/api/state?sessionId=main' })).json();
+
+  assert.equal(createResponse.status, 200);
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json().persona, {
+    enabled: true,
+    name: '林渡',
+    description: '走阴人',
+    background: '江南',
+    personality: '克制'
+  });
+  assert.equal(targetState.config.persona.name, '林渡');
+  assert.equal(targetState.session.config.persona.name, '林渡');
+  assert.equal(mainState.config.persona.name === '林渡', false);
+});
+
+test('PUT /api/persona keeps the legacy global save contract when sessionId is absent', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/persona',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      persona: {
+        enabled: true,
+        name: '  旧版用户  ',
+        description: ' 全局人设 '
+      }
+    }
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json().persona, {
+    enabled: true,
+    name: '旧版用户',
+    description: '全局人设',
+    background: '',
+    personality: ''
+  });
+});
+
 test('PUT /api/session/settings saves per-session provider settings', async () => {
   const app = createApp({ rootDir: await createTestRoot() });
 
@@ -1306,9 +2492,18 @@ test('PUT /api/session/settings saves per-session provider settings', async () =
         maxInjectedCards: 7,
         maxPromptTokens: 12000,
         narrativeMode: 'strict',
+        roleplayMode: 'director',
+        responseLength: 'long',
+        worldBookIncludeNames: false,
+        worldBookCaseSensitive: true,
+        worldBookMatchWholeWords: true,
+        worldBookMinActivations: 3,
+        worldBookMinActivationsDepthMax: 24,
         taskProviderOverrides: { fact: 'fact-local', unknown: 'ignored' },
         taskFallbackOverrides: { summary: ['summary-backup'], unknown: ['ignored'] },
         backgroundImage: '/assets/wuxia-stage.png',
+        backgroundFit: 'portrait',
+        backgroundSource: 'character-portrait',
         theme: 'default-dark',
         visualContentPack: 'yingxiongzhi'
       }
@@ -1323,9 +2518,18 @@ test('PUT /api/session/settings saves per-session provider settings', async () =
   assert.equal(payload.session.settings.maxInjectedCards, 7);
   assert.equal(payload.session.settings.maxPromptTokens, 12000);
   assert.equal(payload.session.settings.narrativeMode, 'strict');
+  assert.equal(payload.session.settings.roleplayMode, 'director');
+  assert.equal(payload.session.settings.responseLength, 'long');
+  assert.equal(payload.session.settings.worldBookIncludeNames, false);
+  assert.equal(payload.session.settings.worldBookCaseSensitive, true);
+  assert.equal(payload.session.settings.worldBookMatchWholeWords, true);
+  assert.equal(payload.session.settings.worldBookMinActivations, 3);
+  assert.equal(payload.session.settings.worldBookMinActivationsDepthMax, 24);
   assert.deepEqual(payload.session.settings.taskProviderOverrides, { fact: 'fact-local' });
   assert.deepEqual(payload.session.settings.taskFallbackOverrides, { summary: ['summary-backup'] });
   assert.equal(payload.session.settings.backgroundImage, '/assets/wuxia-stage.png');
+  assert.equal(payload.session.settings.backgroundFit, 'portrait');
+  assert.equal(payload.session.settings.backgroundSource, 'character-portrait');
   assert.equal(payload.session.settings.theme, 'default-dark');
   assert.equal(payload.session.settings.visualContentPack, 'yingxiongzhi');
   assert.equal(state.session.settings.narrativeMode, 'strict');
@@ -1593,8 +2797,8 @@ test('GET /api/health returns ok', async () => {
   assert.deepEqual(payload, {
     ok: true,
     app: 'local-roleplay-agent',
-    version: '0.5.0',
-    releaseChannel: 'stable-local',
+    version: '0.6.0-rc.1',
+    releaseChannel: 'release-candidate-local',
     dataSchemaVersion: 3,
     targetDataSchemaVersion: 3
   });
@@ -1778,6 +2982,61 @@ test('PUT /api/world-book rejects non-array payload', async () => {
 
   assert.equal(response.status, 400);
   assert.deepEqual(payload, { error: 'INVALID_WORLD_BOOK' });
+});
+
+test('PUT /api/persona rejects non-object payload', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/persona',
+    headers: { 'content-type': 'application/json' },
+    body: { persona: ['not-an-object'] }
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_PERSONA' });
+});
+
+test('PUT /api/group-members rejects non-array payload', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/group-members',
+    headers: { 'content-type': 'application/json' },
+    body: { groupMembers: { name: 'not-an-array' } }
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.json(), { error: 'INVALID_GROUP_MEMBERS' });
+});
+
+test('PUT /api/group-members updates only the selected story session', async () => {
+  const app = createApp({ rootDir: await createTestRoot() });
+  const createResponse = await request(app, {
+    method: 'POST',
+    url: '/api/sessions',
+    headers: { 'content-type': 'application/json' },
+    body: { id: 'group_target', title: '群聊目标会话', packId: 'lingyi' }
+  });
+  const response = await request(app, {
+    method: 'PUT',
+    url: '/api/group-members',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      sessionId: 'group_target',
+      groupMembers: [{ id: 'local-member', name: '本剧本成员', enabled: true }]
+    }
+  });
+  const targetState = (await request(app, { url: '/api/state?sessionId=group_target' })).json();
+  const mainState = (await request(app, { url: '/api/state?sessionId=main' })).json();
+
+  assert.equal(createResponse.status, 200);
+  assert.equal(response.status, 200);
+  assert.equal(targetState.config.groupMembers[0].name, '本剧本成员');
+  assert.equal(targetState.session.config.groupMembers[0].name, '本剧本成员');
+  assert.equal(mainState.config.groupMembers.some((item) => item.name === '本剧本成员'), false);
 });
 
 test('POST /api/chat without active provider returns NO_ACTIVE_PROVIDER', async () => {
@@ -2307,8 +3566,14 @@ test('static path traversal attempt returns non-200 and does not expose files', 
 });
 
 async function request(app, { method = 'GET', url = '/', body, headers = {} } = {}) {
-  const rawBody = body === undefined ? '' : typeof body === 'string' ? body : JSON.stringify(body);
-  const req = Readable.from(rawBody ? [Buffer.from(rawBody)] : []);
+  const rawBody = body === undefined
+    ? Buffer.alloc(0)
+    : Buffer.isBuffer(body)
+      ? body
+      : typeof body === 'string'
+        ? Buffer.from(body)
+        : Buffer.from(JSON.stringify(body));
+  const req = Readable.from(rawBody.length ? [rawBody] : []);
   req.method = method;
   req.url = url;
   req.headers = headers;

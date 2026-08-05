@@ -4,7 +4,24 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 
 export function importCharacterCardFromPayload(payload = {}) {
   const rawCard = readCardJson(payload);
-  return normalizeImportedCard(rawCard);
+  const imported = normalizeImportedCard(rawCard);
+  const sourceFileName = String(payload.fileName || '').trim().split(/[\\/]/).at(-1) || '';
+  if (sourceFileName) {
+    const extensions = isPlainObject(imported.characterCard.extensions)
+      ? imported.characterCard.extensions
+      : {};
+    const localMetadata = isPlainObject(extensions.local_roleplay_agent)
+      ? extensions.local_roleplay_agent
+      : {};
+    imported.characterCard.extensions = {
+      ...extensions,
+      local_roleplay_agent: {
+        ...localMetadata,
+        sourceFileName
+      }
+    };
+  }
+  return imported;
 }
 
 export function extractCharacterCardImage(payload = {}) {
@@ -13,7 +30,7 @@ export function extractCharacterCardImage(payload = {}) {
 
   const dimensions = readPngDimensions(bytes);
   return {
-    bytes: Buffer.from(bytes),
+    bytes: stripCharacterCardMetadata(bytes),
     mimeType: 'image/png',
     width: dimensions.width,
     height: dimensions.height
@@ -21,7 +38,7 @@ export function extractCharacterCardImage(payload = {}) {
 }
 
 function readCardJson(payload) {
-  const data = String(payload.data || '');
+  const data = typeof payload.data === 'string' ? payload.data : '';
   const bytes = decodePayloadBytes(payload);
   const isPng = String(payload.mimeType || '').includes('png') || PNG_SIGNATURE.equals(bytes.subarray(0, PNG_SIGNATURE.length));
   const text = isPng ? readPngCharacterText(bytes) : bytes.toString('utf8') || data;
@@ -39,6 +56,8 @@ function readCardJson(payload) {
 }
 
 function decodePayloadBytes(payload) {
+  if (Buffer.isBuffer(payload.data)) return Buffer.from(payload.data);
+  if (payload.data instanceof Uint8Array) return Buffer.from(payload.data);
   const data = String(payload.data || '');
   if (data.startsWith('data:')) {
     const [, base64 = ''] = data.split(',', 2);
@@ -63,6 +82,40 @@ function readPngDimensions(buffer) {
     width: buffer.readUInt32BE(16),
     height: buffer.readUInt32BE(20)
   };
+}
+
+function stripCharacterCardMetadata(buffer) {
+  const chunks = [PNG_SIGNATURE];
+  let offset = PNG_SIGNATURE.length;
+  let hasIend = false;
+
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const end = offset + 12 + length;
+    if (end > buffer.length) return Buffer.from(buffer);
+
+    const type = buffer.subarray(offset + 4, offset + 8).toString('ascii');
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (!isCharacterTextChunk(type, data)) {
+      chunks.push(buffer.subarray(offset, end));
+    }
+
+    offset = end;
+    if (type === 'IEND') {
+      hasIend = true;
+      break;
+    }
+  }
+
+  return hasIend ? Buffer.concat(chunks) : Buffer.from(buffer);
+}
+
+function isCharacterTextChunk(type, data) {
+  if (!['tEXt', 'zTXt', 'iTXt'].includes(type)) return false;
+  const separator = data.indexOf(0);
+  if (separator < 0) return false;
+  const encoding = type === 'iTXt' ? 'utf8' : 'latin1';
+  return data.subarray(0, separator).toString(encoding).toLowerCase() === 'chara';
 }
 
 function readPngCharacterText(buffer) {
@@ -230,6 +283,15 @@ function parseYamlLikeCharacterCard(text) {
   ]);
   const meta = extractNamedBlock(normalized, ['anti_ooc', 'meta', '元控制'], []);
   const firstMessage = extractScalar(normalized, ['first_message', 'first_mes', 'firstMessage', '开场白']);
+  const scenario = extractNamedBlock(normalized, ['scenario', '场景', '背景'], [
+    'speech',
+    'language',
+    '语言',
+    '语言层',
+    'anti_ooc',
+    'meta',
+    '元控制'
+  ]);
 
   return {
     spec: 'yaml-character-card',
@@ -237,7 +299,7 @@ function parseYamlLikeCharacterCard(text) {
       name,
       description: identity || normalized,
       personality: [psychology, behavior].filter(Boolean).join('\n\n'),
-      scenario: relationships,
+      scenario: scenario || relationships,
       first_mes: firstMessage,
       system_prompt: meta,
       post_history_instructions: extractNamedBlock(normalized, ['unknown_handling', '未知情况处理'], []),
@@ -258,7 +320,7 @@ function normalizeCharacterBook(book, sourceSpec = 'chara_card_v2') {
   const bookExtensions = isPlainObject(book.extensions) ? book.extensions : {};
   const fallbackDepth = normalizePositiveNumber(book.scan_depth ?? bookExtensions.scan_depth, 4);
   return book.entries
-    .filter((entry) => entry && entry.enabled !== false && stringValue(entry.content))
+    .filter((entry) => entry && entry.enabled !== false && entry.disable !== true && stringValue(entry.content))
     .map((entry, index) => normalizeCharacterBookEntry(entry, index, fallbackDepth, sourceSpec));
 }
 
@@ -300,8 +362,15 @@ function normalizeSelectiveLogic(value) {
 }
 
 function normalizeCharacterBookPosition(position) {
-  if (typeof position === 'number') return position === 1 ? 'after_char' : 'before_char';
-  return stringValue(position || 'after_character');
+  if (typeof position === 'number') {
+    // SillyTavern 规范：0 = before_char（角色描述前）、1 = after_char（角色描述后）
+    return position === 1 ? 'after_character' : 'before_character';
+  }
+  const value = stringValue(position || 'after_character');
+  // 归一化历史值 after_char/before_char 到全局统一的 after_character/before_character
+  if (value === 'after_char') return 'after_character';
+  if (value === 'before_char') return 'before_character';
+  return value;
 }
 
 function normalizeExampleDialog(value) {

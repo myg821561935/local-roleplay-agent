@@ -3,6 +3,7 @@ import { normalizeActionEnvelope } from '../simulation/actionProtocol.js';
 import { appendLedgerEvent, createManualLedgerEvent, projectEventLedger } from '../simulation/eventLedger.js';
 import { ensureSimulationMemory, normalizeActors, projectSimulation } from '../simulation/npcSimulation.js';
 import { adjudicateActionEnvelope } from '../simulation/worldStateArbiter.js';
+import { compileStructuredWorldSystems } from '../resources/playableResourceCompiler.js';
 
 export class WorldSimulationService {
   constructor({ sessionService, resolveCharacterPresets }) {
@@ -49,6 +50,7 @@ export class WorldSimulationService {
       adjudication: assistantMessage.adjudication ? structuredClone(assistantMessage.adjudication) : null,
       recommendedActions: Array.isArray(assistantMessage.recommendedActions) ? structuredClone(assistantMessage.recommendedActions) : [],
       roleplayPanels: assistantMessage.roleplayPanels ? structuredClone(assistantMessage.roleplayPanels) : null,
+      worldBookActivation: assistantMessage.worldBookActivation ? structuredClone(assistantMessage.worldBookActivation) : null,
       speaker: assistantMessage.speaker ? String(assistantMessage.speaker).slice(0, 30) : ''
     };
     assistantMessage.swipeMetadata = swipeMetadata;
@@ -178,6 +180,7 @@ function sessionSeedFromSession(session) {
   return {
     characterCard: session.config?.characterCard,
     groupMembers: session.config?.groupMembers || [],
+    worldSystems: session.config?.worldSystems,
     ...(Object.hasOwn(session.config || {}, 'characterPresets')
       ? { characterPresets: session.config.characterPresets }
       : {})
@@ -200,10 +203,14 @@ function resolveSessionSeeds(session, seeds, resolveCharacterPresets) {
     : hasConfigPresets
       ? config.characterPresets
       : resolveCharacterPresets(packId);
+  const worldSystems = seeds.worldSystems
+    || config.worldSystems
+    || compileStructuredWorldSystems(config.worldBook);
   return {
     characterCard: seeds.characterCard || config.characterCard,
     groupMembers: Array.isArray(seeds.groupMembers) ? seeds.groupMembers : config.groupMembers,
-    characterPresets: Array.isArray(resolvedPresets) ? resolvedPresets : []
+    characterPresets: Array.isArray(resolvedPresets) ? resolvedPresets : [],
+    worldSystems
   };
 }
 

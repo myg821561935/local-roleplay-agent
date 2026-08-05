@@ -1,8 +1,11 @@
 @import url('./styles/foundation.css');
 @import url('./styles/asset-center.css');
+@import url('./styles/heavy-frontend.css');
 @import url('./styles/themes.css');
 @import url('./styles/workbench-header.css');
 @import url('./styles/bookshelf.css');
 @import url('./styles/workbench-shell.css');
 @import url('./styles/immersive.css');
 @import url('./styles/workbench.css');
+@import url('./styles/prompt-template-center.css');
+@import url('./styles/reading-modes.css');

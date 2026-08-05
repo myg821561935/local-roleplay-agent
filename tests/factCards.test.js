@@ -51,6 +51,16 @@ test('normalizeFactCards validates type and preserves provided timestamps', () =
   assert.equal(facts[0].updatedAt, '2026-02-02T00:00:00.000Z');
 });
 
+test('normalizeFactCards preserves supported rule facts from built-in content packs', () => {
+  const [fact] = normalizeFactCards([{
+    title: '叙事规则',
+    content: '不得替主角决定核心行动。',
+    type: 'rule'
+  }], { now: '2026-06-29T00:00:00.000Z' });
+
+  assert.equal(fact.type, 'rule');
+});
+
 test('createWorldBookEntryFromFact maps review facts into dynamic lore entries', () => {
   const entry = createWorldBookEntryFromFact({
     id: 'fact-sword',

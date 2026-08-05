@@ -21,7 +21,7 @@ export function evaluateResourceCandidate(candidate, {
   const blockingIssues = [];
   const riskFlags = detectExecutionRisks(candidate?.payload);
   const communityCompatibility = scanCommunityDependencies(candidate?.payload, { kind: candidate?.kind });
-  const estimatedTokens = estimateResourceTokens(candidate?.payload);
+  const estimatedTokens = estimateResourceTokens(candidate?.payload, { kind: candidate?.kind });
   const context = {
     candidate,
     conflicts,
@@ -42,6 +42,8 @@ export function evaluateResourceCandidate(candidate, {
     ({ scores, stats } = evaluateWorldBook(context));
   } else if (candidate?.kind === 'prompt') {
     ({ scores, stats } = evaluatePrompt(context));
+  } else if (candidate?.kind === 'prompt-bundle') {
+    ({ scores, stats } = evaluatePromptBundle(context));
   } else {
     blockingIssues.push({ code: 'UNSUPPORTED_RESOURCE_KIND', message: '无法识别素材类型。' });
     scores = { structure: 0, activation: 0, consistency: 0, efficiency: 0, provenance: 0 };
@@ -148,12 +150,35 @@ export function detectExecutionRisks(payload) {
     .map(([code, , message]) => ({ code, message }));
 }
 
-export function estimateResourceTokens(payload) {
-  const text = JSON.stringify(payload || {});
+export function estimateResourceTokens(payload, { kind = '' } = {}) {
+  const contextPayload = kind === 'character'
+    ? selectCharacterContextPayload(payload)
+    : payload;
+  const text = JSON.stringify(contextPayload || {});
   if (!text || text === '{}') return 0;
   const cjkCount = (text.match(/[\u3400-\u9fff\uf900-\ufaff]/g) || []).length;
   const remainingLength = Math.max(0, text.length - cjkCount);
   return Math.max(1, Math.ceil(cjkCount + remainingLength / 4));
+}
+
+function selectCharacterContextPayload(payload = {}) {
+  return {
+    name: payload.name,
+    role: payload.role,
+    description: payload.description,
+    personality: payload.personality,
+    scenario: payload.scenario,
+    firstMessage: payload.firstMessage,
+    exampleDialog: payload.exampleDialog,
+    creatorNotes: payload.creatorNotes,
+    systemPrompt: payload.systemPrompt,
+    postHistoryInstructions: payload.postHistoryInstructions,
+    alternateGreetings: payload.alternateGreetings,
+    tags: payload.tags,
+    creator: payload.creator,
+    characterVersion: payload.characterVersion,
+    sourceSpec: payload.sourceSpec
+  };
 }
 
 function evaluateCharacter(context) {
@@ -301,6 +326,38 @@ function evaluatePrompt(context) {
   };
 }
 
+function evaluatePromptBundle(context) {
+  const bundle = context.candidate.payload || {};
+  const modules = Array.isArray(bundle.promptModules) ? bundle.promptModules : [];
+  const contentModules = modules.filter((module) => String(module?.content || '').trim());
+  const runtimeCompanions = modules.filter((module) => module?.extensions?.sillyTavernRuntimeCompanion);
+  const title = String(bundle.title || context.candidate.title || '').trim();
+  if (!title) context.missingFields.push({ field: 'title', label: '预设标题' });
+  if (!modules.length) {
+    context.missingFields.push({ field: 'promptModules', label: '预设模块' });
+    context.blockingIssues.push({ code: 'PROMPT_BUNDLE_WITHOUT_MODULES', message: '预设包没有可导入模块。' });
+  } else if (!contentModules.length && !runtimeCompanions.length) {
+    context.blockingIssues.push({ code: 'PROMPT_BUNDLE_WITHOUT_CONTENT', message: '预设包没有可运行的 Prompt 或配套规则。' });
+  }
+  const enabledModules = contentModules.filter((module) => module.enabled !== false);
+  const contentCharacters = contentModules.reduce((sum, module) => sum + String(module.content || '').length, 0);
+  return {
+    scores: {
+      structure: Math.round((title ? 20 : 0) + (modules.length ? 80 : 0)),
+      activation: modules.length ? Math.min(100, 55 + Math.min(45, enabledModules.length * 3)) : 0,
+      consistency: 100,
+      efficiency: scoreTokenEfficiency(context.estimatedTokens, [12000, 50000, 180000]),
+      provenance: 0
+    },
+    stats: {
+      moduleCount: modules.length,
+      enabledModuleCount: enabledModules.length,
+      runtimeCompanionCount: runtimeCompanions.length,
+      contentCharacters
+    }
+  };
+}
+
 function scoreProvenance(source, adapter) {
   let score = 0;
   if (adapter?.id && !String(adapter.id).includes('generic')) score += 35;
@@ -369,6 +426,7 @@ function dimensionSummary(id, score, kind, stats = {}) {
   if (id === 'structure') {
     if (kind === 'worldbook') return `${stats.entryCount || 0} 条设定，${stats.triggerableCount || 0} 条可触发`;
     if (kind === 'character') return `${stats.fieldCount || 0}/${stats.requiredFieldCount || 0} 个核心字段`;
+    if (kind === 'prompt-bundle') return `${stats.moduleCount || 0} 个模块，${stats.enabledModuleCount || 0} 个启用`;
     return `${stats.contentCharacters || 0} 字内容`;
   }
   if (id === 'activation') {

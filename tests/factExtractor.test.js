@@ -18,6 +18,20 @@ test('buildFactExtractionPrompt tells the model to emit dynamic world book entri
   assert.match(systemPrompt, /keywords/);
   assert.match(systemPrompt, /depth/);
   assert.match(systemPrompt, /动态世界书/);
+  assert.match(systemPrompt, /角色卡与已启用世界书/);
+  assert.match(systemPrompt, /characters/);
+});
+
+test('fact extraction receives canonical role card and world-book context', () => {
+  const prompt = buildFactExtractionPrompt({
+    worldState: {},
+    messages: [{ role: 'assistant', content: '模型候选版本' }],
+    canonicalContext: '【角色卡】江小鲤\n【世界书】凌霄山庄'
+  });
+
+  assert.match(prompt[1].content, /角色卡与世界书事实源/);
+  assert.match(prompt[1].content, /江小鲤/);
+  assert.match(prompt[1].content, /先用事实源消解冲突/);
 });
 
 test('buildFactExtractionPrompt includes route and institutional ledgers', () => {
@@ -146,4 +160,52 @@ test('stable route rejects drift world-book entries and preserves the locked gen
   assert.equal(next.worldState.flags.genre, 'xianxia');
   assert.equal(next.worldState.flags.weather, '暴雨');
   assert.deepEqual(entries.map((entry) => entry.title), ['落雷秘境所得归属']);
+});
+
+test('fact extraction updates stable world-state entities instead of appending revisions', () => {
+  const memory = {
+    worldState: {
+      relationships: [{ name: '沈观澜', trust: 2, note: '仍在试探' }],
+      quests: [{ id: 'old-case', title: '镇武司旧案', status: 'active', clue: '残页' }],
+      resourceLedger: [{ id: 'snow-blade', item: '雪照刀', owner: '沈观澜', restriction: '不可离身' }],
+      obligations: [{ id: 'tea-debt', type: '人情', debtor: '沈观澜', creditor: '掌柜', status: 'open' }]
+    },
+    memoryCards: []
+  };
+  const next = applyFactExtractionResult(memory, JSON.stringify({
+    worldState: {
+      relationships: [{ name: '沈观澜', trust: 4 }],
+      quests: [{ id: 'old-case', status: 'resolved' }],
+      resourceLedger: [{ id: 'snow-blade', owner: '林青阳' }],
+      obligations: [{ id: 'tea-debt', status: 'paid' }]
+    }
+  }));
+
+  assert.deepEqual(next.worldState.relationships, [{ name: '沈观澜', trust: 4, note: '仍在试探' }]);
+  assert.deepEqual(next.worldState.quests, [{ id: 'old-case', title: '镇武司旧案', status: 'resolved', clue: '残页' }]);
+  assert.deepEqual(next.worldState.resourceLedger, [{ id: 'snow-blade', item: '雪照刀', owner: '林青阳', restriction: '不可离身' }]);
+  assert.deepEqual(next.worldState.obligations, [{ id: 'tea-debt', type: '人情', debtor: '沈观澜', creditor: '掌柜', status: 'paid' }]);
+});
+
+test('fact extraction merges named quests and encountered characters by canonical name', () => {
+  const next = applyFactExtractionResult({
+    worldState: {
+      characters: [{ name: '江小鲤', encountered: true, role: '庄主之女' }],
+      quests: [{ name: '西门调查', status: 'active', clue: '旧脚印' }]
+    },
+    memoryCards: []
+  }, JSON.stringify({
+    worldState: {
+      characters: [{ name: '江小鲤', status: '留在住处' }],
+      quests: [{ name: '西门调查', status: 'resolved' }]
+    }
+  }));
+
+  assert.deepEqual(next.worldState.characters, [{
+    name: '江小鲤',
+    encountered: true,
+    role: '庄主之女',
+    status: '留在住处'
+  }]);
+  assert.deepEqual(next.worldState.quests, [{ name: '西门调查', status: 'resolved', clue: '旧脚印' }]);
 });

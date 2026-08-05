@@ -31,6 +31,22 @@ test('resource evaluator produces a readable five-dimension character assessment
   assert.equal(diagnostics.communityCompatibility.level, 'native');
 });
 
+test('character context estimates exclude the archival raw card copy', () => {
+  const payload = {
+    name: '九渊',
+    description: '一名被旧案牵引的修行者。',
+    firstMessage: '夜雨落在山门前。',
+    raw: { duplicatedArchive: '重复存档'.repeat(10000) }
+  };
+
+  const fullPayloadEstimate = estimateResourceTokens(payload);
+  const contextEstimate = estimateResourceTokens(payload, { kind: 'character' });
+  const diagnostics = evaluateResourceCandidate({ kind: 'character', payload });
+
+  assert.ok(fullPayloadEstimate > contextEstimate * 100);
+  assert.equal(diagnostics.estimatedTokens, contextEstimate);
+});
+
 test('resource evaluator identifies inert lore, overlapping triggers and invalid regex', () => {
   const diagnostics = evaluateResourceCandidate({
     kind: 'worldbook',

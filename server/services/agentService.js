@@ -1,6 +1,5 @@
 import { assemblePrompt } from '../agent/promptAssembler.js';
-import { rebuildMemoryFromMessages } from '../agent/memoryUpdater.js';
-import { buildSummaryPrompt, shouldSummarize } from '../agent/summaryScheduler.js';
+import { buildSummaryPrompt, parseSummaryResult, shouldSummarize } from '../agent/summaryScheduler.js';
 import { applyFactExtractionResult, buildFactExtractionPrompt, normalizeDynamicWorldBookEntries } from '../agent/factExtractor.js';
 import { worldBookIdentity } from '../agent/factCards.js';
 import { estimateTokens } from '../agent/token.js';
@@ -11,78 +10,85 @@ import { extractActionEnvelope } from '../simulation/actionProtocol.js';
 import {
   applyMvuPatchEnvelope,
   extractMvuPatchEnvelope,
-  normalizeMvuSnapshot
+  normalizeMvuSnapshot,
+  MVU_PATCH_SPEC
 } from '../compat/mvuProtocol.js';
 import { executeDeclarativeLifecycle } from '../compat/declarativeLifecycle.js';
+import { applyPromptTransforms } from '../compat/lightFrontendRuntime.js';
+import { parseMacroVariableWrites } from '../compat/lifecyclePolicy.js';
+import {
+  buildEditableSessionConfig,
+  hasCompleteSessionConfig
+} from '../config/sessionScopedConfig.js';
 import { WorldSimulationService } from './worldSimulationService.js';
+import { MemoryService } from '../memory/memoryService.js';
 
 const MAX_CONSECUTIVE_SUMMARY_FAILURES = 3;
 const INTERACTIVE_PROVIDER_TASKS = new Set(['chat', 'rewrite']);
 
 export class AgentService {
-  constructor({ configService, sessionService, providerClient, vectorMemoryService, worldSimulationService }) {
+  constructor({ configService, sessionService, providerClient, vectorMemoryService, memoryService, worldSimulationService, mcpRegistry }) {
     this.configService = configService;
     this.sessionService = sessionService;
     this.providerClient = providerClient;
     this.vectorMemoryService = vectorMemoryService || new VectorMemoryService({ configService, fetchImpl: fetch });
+    this.memoryService = memoryService || new MemoryService({ vectorMemoryService: this.vectorMemoryService });
     this.worldSimulationService = worldSimulationService || new WorldSimulationService({ sessionService });
+    this.mcpRegistry = mcpRegistry || null;
   }
 
   /**
    * 在 assemblePrompt 前调用：增量索引 session.messages + 用 userMessage 做向量检索
-   * 返回 { vectorHits, vectorEnabled }
+   * 兼容旧调用名；实际由统一 MemoryService 返回情节、向量与图谱检索上下文。
    */
   async maybeRetrieveVectorMemory({ session, userMessage, excludeMessageIds = [] }) {
-    if (!this.vectorMemoryService) return { vectorHits: [], vectorEnabled: false };
-    const enabled = await this.vectorMemoryService.isEnabled(session);
-    if (!enabled) return { vectorHits: [], vectorEnabled: false };
-    // 增量索引现有消息
-    await this.vectorMemoryService.indexMessages({ sessionId: session.id || 'main', messages: session.messages });
-    // 用当前 userMessage 做检索
-    const query = String(userMessage?.content || userMessage || '').trim();
-    if (!query) return { vectorHits: [], vectorEnabled: true };
-    const topK = await this.vectorMemoryService.getTopK(session);
-    const hits = await this.vectorMemoryService.search({
-      sessionId: session.id || 'main',
-      query,
-      topK,
+    const memoryContext = await this.memoryService.retrieveContext({
+      session,
+      userMessage,
       excludeMessageIds
     });
-    return { vectorHits: hits, vectorEnabled: true };
-  }
-
-  async resolveSessionConfig(session) {
-    if (session.config) return session.config;
-    const globalConfig = await this.configService.getAll();
-    session.config = {
-      characterCard: globalConfig.characterCard,
-      promptModules: globalConfig.promptModules,
-      worldBook: globalConfig.worldBook,
-      persona: globalConfig.persona,
-      lightFrontend: globalConfig.lightFrontend || {}
+    return {
+      vectorHits: memoryContext.vectorHits,
+      vectorEnabled: memoryContext.vectorEnabled,
+      memoryContext
     };
-    await this.sessionService.saveSession(session);
-    return session.config;
   }
 
-  async sendMessage({ sessionId = 'main', content, targetSpeaker }) {
+  async resolveSessionConfig(session, globalConfigOverride) {
+    const globalConfig = globalConfigOverride || await this.configService.getAll();
+    const activeConfig = buildEditableSessionConfig(globalConfig, session);
+    if (!hasCompleteSessionConfig(session.config)) {
+      session.config = activeConfig;
+      await this.sessionService.saveSession(session);
+    }
+    return activeConfig;
+  }
+
+  async prepareChatContext({ sessionId, taskKey = 'chat' }) {
     const [globalConfig, session] = await Promise.all([
       this.configService.getAll(),
       this.sessionService.getSession(sessionId)
     ]);
-    const activeConfig = await this.resolveSessionConfig(session);
+    const activeConfig = await this.resolveSessionConfig(session, globalConfig);
     this.worldSimulationService.prepareSession(session, {
       characterCard: activeConfig.characterCard,
-      groupMembers: globalConfig.groupMembers
+      characterPresets: activeConfig.characterPresets,
+      groupMembers: activeConfig.groupMembers,
+      worldSystems: activeConfig.worldSystems
     });
     const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
+    const fallbackChain = getProviderChain(globalConfig, session, provider, taskKey).slice(1);
+    return { globalConfig, session, activeConfig, provider, fallbackChain };
+  }
+
+  async sendMessage({ sessionId = 'main', content, targetSpeaker }) {
+    const { globalConfig, session, activeConfig, provider, fallbackChain } = await this.prepareChatContext({ sessionId, taskKey: 'chat' });
 
     const userMessage = createMessage('user', content, {
       kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat'
     });
     const userLifecycle = applySessionLifecycle(session, activeConfig.lightFrontend, 'onUser');
-    const { vectorHits } = await this.maybeRetrieveVectorMemory({
+    const { vectorHits, memoryContext } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: userMessage.content
     });
@@ -91,12 +97,13 @@ export class AgentService {
       session,
       provider,
       userMessage,
-      groupMembers: globalConfig.groupMembers,
+      groupMembers: activeConfig.groupMembers,
       targetSpeaker,
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       fallbackChain,
       vectorHits,
+      memoryContext,
       lifecyclePatches: userLifecycle.envelopes,
       lifecycleReports: [userLifecycle.report]
     });
@@ -109,6 +116,7 @@ export class AgentService {
       actionEnvelope,
       actionError
     });
+    this.memoryService.observeTurn({ session, userMessage, assistantMessage });
 
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled, globalConfig });
 
@@ -122,23 +130,13 @@ export class AgentService {
   }
 
   async sendMessageStream({ sessionId = 'main', content, targetSpeaker, hideUserMessage = false, onToken }) {
-    const [globalConfig, session] = await Promise.all([
-      this.configService.getAll(),
-      this.sessionService.getSession(sessionId)
-    ]);
-    const activeConfig = await this.resolveSessionConfig(session);
-    this.worldSimulationService.prepareSession(session, {
-      characterCard: activeConfig.characterCard,
-      groupMembers: globalConfig.groupMembers
-    });
-    const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
+    const { globalConfig, session, activeConfig, provider, fallbackChain } = await this.prepareChatContext({ sessionId, taskKey: 'chat' });
     const userMessage = createMessage('user', content, {
       kind: isJourneySetupContent(content) ? 'journey-setup' : 'chat',
       hiddenFromChat: hideUserMessage
     });
     const userLifecycle = applySessionLifecycle(session, activeConfig.lightFrontend, 'onUser');
-    const { vectorHits } = await this.maybeRetrieveVectorMemory({
+    const { vectorHits, memoryContext } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: userMessage.content
     });
@@ -151,11 +149,14 @@ export class AgentService {
       messages: session.messages,
       userMessage: userMessage.content,
       persona: activeConfig.persona,
-      groupMembers: globalConfig.groupMembers,
+      groupMembers: activeConfig.groupMembers,
       targetSpeaker,
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       vectorHits,
+      memoryContext,
+      lightFrontend: activeConfig.lightFrontend,
+      activationContext: { seed: session.id || sessionId, generationType: 'normal' },
       options: session.settings
     });
 
@@ -183,6 +184,7 @@ export class AgentService {
       mvuError: mvuUpdate.error,
       lifecycleReports: [userLifecycle.report, assistantLifecycle.report],
       roleplayPanels: parsedOutput.roleplayPanels,
+      worldBookActivation: assembled.sections.worldBookActivation,
       speaker
     });
     appendUsageLedgerEntry(session, {
@@ -200,6 +202,7 @@ export class AgentService {
       actionEnvelope: parsedOutput.actionEnvelope,
       actionError: parsedOutput.actionError
     });
+    this.memoryService.observeTurn({ session, userMessage, assistantMessage });
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled, globalConfig });
 
     session.updatedAt = new Date().toISOString();
@@ -234,15 +237,7 @@ export class AgentService {
   }
 
   async editMessage({ sessionId = 'main', messageId, content }) {
-    const [globalConfig, session] = await Promise.all([
-      this.configService.getAll(),
-      this.sessionService.getSession(sessionId)
-    ]);
-    const activeConfig = await this.resolveSessionConfig(session);
-    this.worldSimulationService.prepareSession(session, {
-      characterCard: activeConfig.characterCard,
-      groupMembers: globalConfig.groupMembers
-    });
+    const { globalConfig, session, activeConfig, provider, fallbackChain } = await this.prepareChatContext({ sessionId, taskKey: 'chat' });
     const index = findMessageIndex(session, messageId);
     const message = session.messages[index];
 
@@ -258,7 +253,7 @@ export class AgentService {
       message.updatedAt = new Date().toISOString();
       session.messages = session.messages.slice(0, index + 1);
       this.invalidateVectorIndex(session);
-      session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+      session.memory = this.memoryService.rebuildRange({ session, messages: session.messages });
       session.updatedAt = new Date().toISOString();
       await this.sessionService.saveSession(session);
       return { session, reply: message };
@@ -266,8 +261,6 @@ export class AgentService {
 
     if (message.role !== 'user') throw new Error('UNSUPPORTED_MESSAGE_ROLE');
 
-    const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
     message.swipes = normalizeSwipes(message.swipes, message.content);
     const newContent = String(content || '');
     if (!message.swipes.includes(newContent)) message.swipes.push(newContent);
@@ -276,9 +269,9 @@ export class AgentService {
     message.updatedAt = new Date().toISOString();
     session.messages = session.messages.slice(0, index + 1);
     this.invalidateVectorIndex(session);
-    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+    session.memory = this.memoryService.rebuildRange({ session, messages: session.messages });
 
-    const { vectorHits } = await this.maybeRetrieveVectorMemory({
+    const { vectorHits, memoryContext } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: message.content
     });
@@ -287,11 +280,13 @@ export class AgentService {
       session,
       provider,
       userMessage: message,
-      groupMembers: globalConfig.groupMembers,
+      groupMembers: activeConfig.groupMembers,
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       fallbackChain,
-      vectorHits
+      vectorHits,
+      memoryContext,
+      promptMessages: session.messages.slice(0, -1)
     });
 
     session.messages.push(assistantMessage);
@@ -302,6 +297,7 @@ export class AgentService {
       actionEnvelope,
       actionError
     });
+    this.memoryService.observeTurn({ session, userMessage: message, assistantMessage });
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled, globalConfig });
 
     session.updatedAt = new Date().toISOString();
@@ -325,7 +321,7 @@ export class AgentService {
     message.content = swipes[targetIndex];
     applySwipeMetadata(message, message.swipeMetadata[targetIndex]);
     message.updatedAt = new Date().toISOString();
-    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+    session.memory = this.memoryService.rebuildRange({ session, messages: session.messages });
     session.updatedAt = new Date().toISOString();
     this.invalidateVectorIndex(session);
     await this.sessionService.saveSession(session);
@@ -333,17 +329,7 @@ export class AgentService {
   }
 
   async regenerateAssistantMessage({ sessionId = 'main', messageId }) {
-    const [globalConfig, session] = await Promise.all([
-      this.configService.getAll(),
-      this.sessionService.getSession(sessionId)
-    ]);
-    const activeConfig = await this.resolveSessionConfig(session);
-    this.worldSimulationService.prepareSession(session, {
-      characterCard: activeConfig.characterCard,
-      groupMembers: globalConfig.groupMembers
-    });
-    const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
+    const { globalConfig, session, activeConfig, provider, fallbackChain } = await this.prepareChatContext({ sessionId, taskKey: 'chat' });
     const index = findMessageIndex(session, messageId);
     const assistantMessage = session.messages[index];
     if (assistantMessage.role !== 'assistant') throw new Error('MESSAGE_NOT_ASSISTANT');
@@ -352,9 +338,9 @@ export class AgentService {
     if (!userMessage || userMessage.role !== 'user') throw new Error('MISSING_USER_MESSAGE');
 
     session.messages = session.messages.slice(0, index);
-    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+    session.memory = this.memoryService.rebuildRange({ session, messages: session.messages });
     this.invalidateVectorIndex(session);
-    const { vectorHits } = await this.maybeRetrieveVectorMemory({
+    const { vectorHits, memoryContext } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: userMessage.content
     });
@@ -363,11 +349,18 @@ export class AgentService {
       session,
       provider,
       userMessage,
-      groupMembers: globalConfig.groupMembers,
+      groupMembers: activeConfig.groupMembers,
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       fallbackChain,
-      vectorHits
+      vectorHits,
+      memoryContext,
+      promptMessages: session.messages.slice(0, -1),
+      targetSpeaker: assistantMessage.speaker,
+      generationType: Array.isArray(activeConfig.groupMembers)
+        && activeConfig.groupMembers.some((member) => member && member.enabled !== false)
+        ? 'normal'
+        : 'regenerate'
     });
     const nextSwipe = result.assistantMessage.content;
     const swipes = normalizeSwipes(assistantMessage.swipes, assistantMessage.content);
@@ -391,6 +384,7 @@ export class AgentService {
       actionEnvelope: result.actionEnvelope,
       actionError: result.actionError
     });
+    this.memoryService.observeTurn({ session, userMessage, assistantMessage });
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled: result.assembled, globalConfig });
 
     session.updatedAt = new Date().toISOString();
@@ -409,6 +403,9 @@ export class AgentService {
     customArrays,
     fallbackChain = [],
     vectorHits = [],
+    memoryContext = null,
+    promptMessages = session.messages,
+    generationType = 'normal',
     lifecyclePatches = [],
     lifecycleReports = []
   }) {
@@ -418,7 +415,7 @@ export class AgentService {
       worldBook: config.worldBook,
       memory: session.memory,
       authoring: session.authoring,
-      messages: session.messages,
+      messages: promptMessages,
       userMessage: userMessage.content,
       persona: config.persona,
       groupMembers,
@@ -426,14 +423,16 @@ export class AgentService {
       templates,
       customArrays,
       vectorHits,
+      memoryContext,
+      lightFrontend: config.lightFrontend,
+      activationContext: { seed: session.id || '', generationType },
       options: session.settings
     });
 
-    const assistantResult = await this.completeWithFallback({
-      primaryProvider: provider,
+    const assistantResult = await this.completeWithToolLoop({
+      provider,
       fallbackChain,
-      messages: assembled.messages,
-      taskKey: 'chat'
+      messages: assembled.messages
     });
     const parsedOutput = parseAssistantOutput(assistantResult.content);
     const mvuUpdate = applyAssistantMvuUpdate(session, parsedOutput);
@@ -450,6 +449,7 @@ export class AgentService {
       mvuError: mvuUpdate.error,
       lifecycleReports: [...lifecycleReports, assistantLifecycle.report],
       roleplayPanels: parsedOutput.roleplayPanels,
+      worldBookActivation: assembled.sections.worldBookActivation,
       speaker
     });
     appendUsageLedgerEntry(session, {
@@ -517,7 +517,7 @@ export class AgentService {
     const message = session.messages[index];
     message.excluded = !message.excluded;
     message.updatedAt = new Date().toISOString();
-    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+    session.memory = this.memoryService.rebuildRange({ session, messages: session.messages });
     session.updatedAt = new Date().toISOString();
     this.invalidateVectorIndex(session);
     await this.sessionService.saveSession(session);
@@ -542,13 +542,7 @@ export class AgentService {
   }
 
   async continueMessage({ sessionId = 'main', onToken }) {
-    const [globalConfig, session] = await Promise.all([
-      this.configService.getAll(),
-      this.sessionService.getSession(sessionId)
-    ]);
-    const activeConfig = await this.resolveSessionConfig(session);
-    const provider = getActiveProvider(globalConfig, session);
-    const fallbackChain = getProviderChain(globalConfig, session, provider, 'chat').slice(1);
+    const { globalConfig, session, activeConfig, provider, fallbackChain } = await this.prepareChatContext({ sessionId, taskKey: 'chat' });
 
     const messages = Array.isArray(session.messages) ? session.messages : [];
     const lastMessage = messages[messages.length - 1];
@@ -557,7 +551,7 @@ export class AgentService {
     const continuationContent = String(lastMessage.content || '').trim();
     if (!continuationContent) throw new Error('EMPTY_ASSISTANT_CONTENT');
 
-    const { vectorHits } = await this.maybeRetrieveVectorMemory({
+    const { vectorHits, memoryContext } = await this.maybeRetrieveVectorMemory({
       session,
       userMessage: continuationContent,
       excludeMessageIds: [lastMessage.id]
@@ -570,14 +564,35 @@ export class AgentService {
       messages: session.messages,
       userMessage: '',
       persona: activeConfig.persona,
-      groupMembers: globalConfig.groupMembers,
+      groupMembers: activeConfig.groupMembers,
       templates: globalConfig.macroTemplates,
       customArrays: globalConfig.customArrays,
       vectorHits,
+      memoryContext,
+      lightFrontend: activeConfig.lightFrontend,
+      targetSpeaker: lastMessage.speaker,
+      activationContext: { seed: session.id || sessionId, generationType: 'continue' },
       options: session.settings
     });
 
-    assembled.messages.push({ role: 'assistant', content: continuationContent });
+    assembled.messages.push({
+      role: 'assistant',
+      content: applyPromptTransforms(
+        continuationContent,
+        activeConfig.lightFrontend?.regexTransforms,
+        {
+          role: 'assistant',
+          context: {
+            user: activeConfig.persona?.enabled ? activeConfig.persona.name || '用户' : '用户',
+            char: activeConfig.characterCard?.name || '',
+            characterCard: activeConfig.characterCard,
+            persona: activeConfig.persona,
+            lightFrontendState: session.memory?.lightFrontendState || {}
+          },
+          depth: 0
+        }
+      )
+    });
 
     const streamFilter = createHiddenBlockStreamFilter(onToken);
     const assistantResult = await this.completeAssistantContentStream({
@@ -620,6 +635,7 @@ export class AgentService {
     ].slice(-64);
     if (!lastMessage.mvuPatches.length) delete lastMessage.mvuPatches;
     if (mvuUpdate.error) lastMessage.mvuError = structuredClone(mvuUpdate.error);
+    lastMessage.worldBookActivation = structuredClone(assembled.sections.worldBookActivation);
     delete lastMessage.adjudication;
     lastMessage.swipes = normalizeSwipes(lastMessage.swipes, lastMessage.content);
     lastMessage.activeSwipeIndex = Math.max(0, lastMessage.swipes.indexOf(lastMessage.content));
@@ -627,7 +643,7 @@ export class AgentService {
     lastMessage.swipeMetadata[lastMessage.activeSwipeIndex] = metadataFromMessage(lastMessage);
     lastMessage.updatedAt = new Date().toISOString();
 
-    session.memory = rebuildMemoryFromMessages({ memory: session.memory, messages: session.messages });
+    session.memory = this.memoryService.rebuildRange({ session, messages: session.messages });
     await this.runMemoryMaintenanceIfNeeded({ session, provider, assembled, globalConfig });
     session.updatedAt = new Date().toISOString();
     this.invalidateVectorIndex(session);
@@ -666,12 +682,13 @@ export class AgentService {
   async tryExtractFacts({ session, provider, fallbackChain = [], narrativeContext }) {
     const unsummarizedTurnCount = Number(session.memory.unsummarizedTurnCount || 0);
     const messageWindow = Math.min(40, Math.max(8, unsummarizedTurnCount * 2));
-    const recent = session.messages.slice(-messageWindow);
+    const recent = session.messages.filter((message) => !message.excluded).slice(-messageWindow);
     try {
       const messages = buildFactExtractionPrompt({
         worldState: session.memory.worldState,
         messages: recent,
-        narrativeContext
+        narrativeContext,
+        canonicalContext: buildCanonicalSourceDigest(session.config, recent)
       });
       const result = await this.completeWithFallback({
         primaryProvider: provider,
@@ -712,7 +729,8 @@ export class AgentService {
       const messages = buildSummaryPrompt({
         rollingSummary: session.memory.rollingSummary,
         messages: recent,
-        narrativeContext
+        narrativeContext,
+        canonicalContext: buildCanonicalSourceDigest(session.config, recent)
       });
       const result = await this.completeWithFallback({
         primaryProvider: provider,
@@ -726,7 +744,17 @@ export class AgentService {
         usage,
         routing: result.routing
       });
-      session.memory.rollingSummary = result.content;
+      const summary = parseSummaryResult(result.content);
+      if (!summary.rollingSummary) throw new Error('SUMMARY_OUTPUT_EMPTY');
+      session.memory.rollingSummary = summary.rollingSummary;
+      if (summary.sceneSummary) {
+        this.memoryService.recordSceneSummary({
+          session,
+          title: summary.sceneTitle,
+          summary: summary.sceneSummary,
+          messages: recent
+        });
+      }
       session.memory.unsummarizedTurnCount = 0;
       session.memory.lastSummaryError = '';
       session.memory.consecutiveSummaryFailures = 0;
@@ -740,7 +768,7 @@ export class AgentService {
    * 带回退的 complete 调用：主 provider 失败时按顺序尝试 fallbackChain
    * 全部失败时抛出最后一个错误
    */
-  async completeWithFallback({ primaryProvider, fallbackChain = [], messages, taskKey = 'chat' }) {
+  async completeWithFallback({ primaryProvider, fallbackChain = [], messages, taskKey = 'chat', tools = null }) {
     const chain = [primaryProvider, ...fallbackChain].filter(Boolean);
     const startedAt = Date.now();
     const attempts = [];
@@ -749,7 +777,7 @@ export class AgentService {
       const provider = chain[index];
       const attemptStartedAt = Date.now();
       try {
-        const result = await this.providerClient.complete({ provider, messages });
+        const result = await this.providerClient.complete({ provider, messages, tools });
         attempts.push(buildRoutingAttempt({ provider, status: 'success', startedAt: attemptStartedAt }));
         return attachRoutingMetadata(result, {
           taskKey,
@@ -775,6 +803,93 @@ export class AgentService {
       });
     }
     throw lastError || new Error('ALL_PROVIDERS_FAILED');
+  }
+
+  /**
+   * MCP function calling 循环：获取 MCP 工具，调用 provider，若有 tool_calls 则执行工具并循环。
+   * 最大循环 5 次，防止无限调用。无 mcpRegistry 或无工具时退化为普通 completeWithFallback。
+   */
+  async completeWithToolLoop({ provider, fallbackChain, messages, taskKey = 'chat' }) {
+    const mcpTools = await this.listMcpTools();
+    if (!mcpTools.length) {
+      return this.completeWithFallback({ primaryProvider: provider, fallbackChain, messages, taskKey });
+    }
+
+    const MAX_TOOL_ROUNDS = 5;
+    let currentMessages = [...messages];
+    let result = null;
+
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      result = await this.completeWithFallback({
+        primaryProvider: provider,
+        fallbackChain,
+        messages: currentMessages,
+        taskKey,
+        tools: mcpTools
+      });
+
+      if (!Array.isArray(result.toolCalls) || result.toolCalls.length === 0) {
+        return result;
+      }
+
+      // 追加 assistant 的 tool_calls 消息（OpenAI 格式）
+      currentMessages = [
+        ...currentMessages,
+        {
+          role: 'assistant',
+          content: result.content || '',
+          tool_calls: result.toolCalls.map((call) => ({
+            id: call.id,
+            type: 'function',
+            function: { name: call.name, arguments: JSON.stringify(call.arguments) }
+          }))
+        }
+      ];
+
+      // 执行每个工具调用，追加 tool 结果消息
+      for (const call of result.toolCalls) {
+        const toolResult = await this.executeMcpToolCall(call);
+        currentMessages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: toolResult
+        });
+      }
+    }
+
+    // 达到最大循环次数，返回最后一次结果（可能仍有 toolCalls，但不再执行）
+    return result;
+  }
+
+  async listMcpTools() {
+    if (!this.mcpRegistry) return [];
+    try {
+      const tools = await this.mcpRegistry.listAllTools();
+      return Array.isArray(tools) ? tools : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async executeMcpToolCall(call) {
+    if (!this.mcpRegistry) return JSON.stringify({ error: 'MCP registry not available' });
+    const tool = await this.resolveMcpToolByName(call.name);
+    if (!tool) return JSON.stringify({ error: `Tool ${call.name} not found` });
+    try {
+      const result = await this.mcpRegistry.callTool({
+        serverId: tool.serverId,
+        toolName: tool.toolName,
+        arguments: call.arguments || {}
+      });
+      return serializeToolResult(result);
+    } catch (error) {
+      return JSON.stringify({ error: error.message || 'Tool execution failed' });
+    }
+  }
+
+  async resolveMcpToolByName(name) {
+    const tools = await this.listMcpTools();
+    return tools.find((tool) => tool.toolName === name || tool.name === name) || null;
   }
 
   /**
@@ -854,6 +969,21 @@ function buildRoutingAttempt({ provider, status, startedAt, error }) {
   };
 }
 
+function serializeToolResult(result) {
+  if (typeof result === 'string') return result.slice(0, 8000);
+  if (Array.isArray(result?.content)) {
+    return result.content
+      .map((block) => {
+        if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+        if (typeof block === 'string') return block;
+        return JSON.stringify(block);
+      })
+      .join('\n')
+      .slice(0, 8000);
+  }
+  return JSON.stringify(result || {}).slice(0, 8000);
+}
+
 function createMessage(role, content, extras = {}) {
   const message = {
     id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -895,6 +1025,9 @@ function createMessage(role, content, extras = {}) {
   if (extras.speaker) message.speaker = String(extras.speaker).slice(0, 30);
   if (extras.roleplayPanels && typeof extras.roleplayPanels === 'object' && !Array.isArray(extras.roleplayPanels)) {
     message.roleplayPanels = structuredClone(extras.roleplayPanels);
+  }
+  if (extras.worldBookActivation && typeof extras.worldBookActivation === 'object' && !Array.isArray(extras.worldBookActivation)) {
+    message.worldBookActivation = structuredClone(extras.worldBookActivation);
   }
   message.swipeMetadata = [metadataFromMessage(message)];
   return message;
@@ -1171,6 +1304,9 @@ function parseAssistantOutput(rawContent) {
   const reply = extractRecommendedActions(actionParsed.content);
   const presentation = parseRoleplayResponse(reply.content);
   reply.content = presentation.content;
+  if (!reply.recommendedActions.length && presentation.recommendedActions.length) {
+    reply.recommendedActions = presentation.recommendedActions;
+  }
   if (!String(reply.content || '').trim()) throw new Error('PROVIDER_EMPTY_RESPONSE');
   return {
     reply,
@@ -1185,7 +1321,9 @@ function parseAssistantOutput(rawContent) {
 
 function applyAssistantMvuUpdate(session, parsedOutput) {
   const parsedError = parsedOutput?.mvuError;
-  if (!parsedOutput?.mvuEnvelope) {
+  const macroOps = parseMacroVariableWrites(parsedOutput?.reply?.content || '');
+  const hasEnvelope = Boolean(parsedOutput?.mvuEnvelope);
+  if (!hasEnvelope && !macroOps.length) {
     return { patches: [], error: parsedError ? serializeMvuError(parsedError) : null };
   }
 
@@ -1201,8 +1339,19 @@ function applyAssistantMvuUpdate(session, parsedOutput) {
     memory.lightFrontendBaseline = structuredClone(current);
   }
 
+  // 合并显式 MVU envelope 与正文里的 setvar/addvar 宏操作
+  const baseEnvelope = hasEnvelope
+    ? structuredClone(parsedOutput.mvuEnvelope)
+    : {
+        spec: MVU_PATCH_SPEC,
+        expectedRevision: current.revision,
+        summary: 'setvar/addvar 宏写入',
+        operations: []
+      };
+  baseEnvelope.operations = [...(baseEnvelope.operations || []), ...macroOps];
+
   try {
-    const applied = applyMvuPatchEnvelope(current, parsedOutput.mvuEnvelope);
+    const applied = applyMvuPatchEnvelope(current, baseEnvelope);
     memory.lightFrontendState = structuredClone(applied.state);
     memory.lightFrontendReplayErrors = [];
     return { patches: [applied.envelope], error: null };
@@ -1286,7 +1435,8 @@ function normalizeSwipeMetadata(message, swipes) {
   if (metadata[activeIndex]
     && !metadata[activeIndex].actionEnvelope
     && !metadata[activeIndex].mvuPatches?.length
-    && (message?.actionEnvelope || message?.mvuPatches?.length)) {
+    && !metadata[activeIndex].worldBookActivation
+    && (message?.actionEnvelope || message?.mvuPatches?.length || message?.worldBookActivation)) {
     metadata[activeIndex] = metadataFromMessage(message);
   }
   return metadata.slice(0, swipes.length);
@@ -1302,6 +1452,7 @@ function normalizeSwipeMetadataEntry(value) {
     adjudication: value.adjudication ? structuredClone(value.adjudication) : null,
     recommendedActions: Array.isArray(value.recommendedActions) ? structuredClone(value.recommendedActions) : [],
     roleplayPanels: value.roleplayPanels ? structuredClone(value.roleplayPanels) : null,
+    worldBookActivation: value.worldBookActivation ? structuredClone(value.worldBookActivation) : null,
     speaker: value.speaker ? String(value.speaker).slice(0, 30) : ''
   };
 }
@@ -1315,6 +1466,7 @@ function metadataFromMessage(message) {
     adjudication: message?.adjudication,
     recommendedActions: message?.recommendedActions,
     roleplayPanels: message?.roleplayPanels,
+    worldBookActivation: message?.worldBookActivation,
     speaker: message?.speaker
   });
 }
@@ -1328,6 +1480,7 @@ function emptySwipeMetadata() {
     adjudication: null,
     recommendedActions: [],
     roleplayPanels: null,
+    worldBookActivation: null,
     speaker: ''
   };
 }
@@ -1343,6 +1496,7 @@ function applySwipeMetadata(message, metadata) {
   if (normalized.recommendedActions.length) message.recommendedActions = normalized.recommendedActions;
   else delete message.recommendedActions;
   if (normalized.roleplayPanels) message.roleplayPanels = normalized.roleplayPanels;
+  if (normalized.worldBookActivation) message.worldBookActivation = normalized.worldBookActivation;
   if (normalized.speaker) message.speaker = normalized.speaker;
 }
 
@@ -1353,6 +1507,7 @@ function clearMessageWorldUpdate(message) {
   delete message.mvuError;
   delete message.adjudication;
   delete message.roleplayPanels;
+  delete message.worldBookActivation;
   delete message.speaker;
 }
 
@@ -1384,14 +1539,73 @@ function parseRecommendedActions(value) {
   try {
     const parsed = JSON.parse(String(value || '').trim());
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 4);
+    return sanitizeRecommendedActions(parsed);
   } catch {
-    return String(value || '')
+    return sanitizeRecommendedActions(String(value || '')
       .split('\n')
-      .map((line) => line.replace(/^[-*\d.、\s]+/, '').trim())
-      .filter(Boolean)
-      .slice(0, 4);
+      .map((line) => line.replace(/^[-*\d.、\s]+/, '').trim()));
   }
+}
+
+function sanitizeRecommendedActions(values = []) {
+  const protocolLeak = /(?:<\/?(?:think|analysis|plot|normal_status|relationship_status|special_status|NextCharacterPanel|recommended_actions)\b|recommended_actions|Ira-actions|正文前(?:注释|格式)|天机选项块|step\s*\d+|--?>|《end》|<\/think>)/i;
+  const instructionLeak = /(?:如果稳定变化需要输出|结束需要|输出格式|格式为|正文前|正文后|以下标签|x\s*3)/i;
+  const actions = Array.from(new Set((Array.isArray(values) ? values : [values])
+    .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
+    .filter((item) => item.length >= 2 && item.length <= 120)
+    .filter((item) => !protocolLeak.test(item) && !instructionLeak.test(item))
+    .filter((item) => !/^[;；<>{}\[\]()\/\\|=_-]+/.test(item))
+    .filter((item) => /[\p{L}\p{N}]/u.test(item))));
+  return actions.length >= 2 ? actions.slice(0, 4) : [];
+}
+
+function buildCanonicalSourceDigest(config, messages, maxChars = 6500) {
+  const activeConfig = config && typeof config === 'object' ? config : {};
+  const character = activeConfig.characterCard && typeof activeConfig.characterCard === 'object'
+    ? activeConfig.characterCard
+    : {};
+  const transcript = (Array.isArray(messages) ? messages : [])
+    .map((message) => String(message?.content || ''))
+    .join('\n')
+    .slice(-14000);
+  const characterDigest = [
+    character.name ? `名称：${character.name}` : '',
+    character.role ? `身份：${character.role}` : '',
+    character.description ? `描述：${String(character.description).slice(0, 1500)}` : '',
+    character.personality ? `性格：${String(character.personality).slice(0, 900)}` : '',
+    character.scenario ? `场景：${String(character.scenario).slice(0, 1200)}` : '',
+    character.firstMessage ? `开场：${String(character.firstMessage).slice(0, 1000)}` : ''
+  ].filter(Boolean).join('\n');
+  const worldBook = (Array.isArray(activeConfig.worldBook) ? activeConfig.worldBook : [])
+    .filter((entry) => entry && entry.enabled !== false)
+    .map((entry, index) => ({
+      entry,
+      index,
+      score: scoreCanonicalWorldBookEntry(entry, transcript)
+    }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 12)
+    .map(({ entry }) => {
+      const title = String(entry.title || entry.name || '未命名世界书条目').trim();
+      return `【${title}】${String(entry.content || '').trim().slice(0, 850)}`;
+    });
+  return [`【角色卡】\n${characterDigest}`, worldBook.length ? `【已启用世界书摘录】\n${worldBook.join('\n')}` : '']
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, maxChars);
+}
+
+function scoreCanonicalWorldBookEntry(entry, transcript) {
+  const keywords = [
+    entry?.title,
+    ...(Array.isArray(entry?.keywords) ? entry.keywords : []),
+    ...(Array.isArray(entry?.secondaryKeywords) ? entry.secondaryKeywords : [])
+  ].map((value) => String(value || '').trim()).filter((value) => value.length >= 2);
+  const matchScore = keywords.reduce(
+    (score, keyword) => score + (transcript.includes(keyword) ? 400 : 0),
+    0
+  );
+  return matchScore + (entry?.constant ? 180 : 0) + Number(entry?.priority || 0);
 }
 
 function chunkText(text) {

@@ -6,6 +6,7 @@ const FACT_TYPES = new Set([
   'relationship',
   'event',
   'flag',
+  'rule',
   'uncategorized'
 ]);
 

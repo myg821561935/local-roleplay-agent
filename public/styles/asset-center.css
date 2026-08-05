@@ -947,6 +947,68 @@ body.asset-center-open {
   color: var(--teal);
 }
 
+.asset-revision-current {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.asset-revision-review {
+  margin-bottom: 9px;
+  padding: 8px 9px;
+  border: 1px solid rgba(214, 166, 74, 0.35);
+  border-radius: 5px;
+  background: rgba(214, 166, 74, 0.08);
+  color: var(--gold);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.asset-revision-list {
+  display: grid;
+  gap: 6px;
+}
+
+.asset-revision-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.asset-revision-row.is-current {
+  border-color: rgba(121, 211, 201, 0.34);
+  background: rgba(69, 139, 132, 0.08);
+}
+
+.asset-revision-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.asset-revision-row strong {
+  color: var(--text);
+  font-size: 10px;
+}
+
+.asset-revision-row small {
+  color: var(--subtle);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.asset-card-version.is-review {
+  border-color: rgba(214, 166, 74, 0.35);
+  color: var(--gold);
+}
+
 .asset-evaluation-score {
   display: flex;
   align-items: baseline;
@@ -1289,4 +1351,42 @@ body.asset-center-open {
   .asset-center-footer {
     display: none;
   }
+}
+
+.asset-card-version.compatibility {
+  border: 1px solid rgba(122, 183, 170, 0.34);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #9ed3c7;
+}
+
+.asset-card-version.compatibility.is-warning,
+.asset-card-version.compatibility.is-review {
+  border-color: rgba(218, 174, 88, 0.46);
+  color: #ddbd7c;
+}
+
+.asset-card-version.compatibility.is-error {
+  border-color: rgba(218, 106, 91, 0.52);
+  color: #e5a197;
+}
+
+.asset-compatibility-note {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  border-left: 3px solid rgba(122, 183, 170, 0.45);
+  background: rgba(66, 119, 109, 0.08);
+  color: var(--muted, #9eacab);
+  line-height: 1.55;
+}
+
+.asset-compatibility-note.is-warning,
+.asset-compatibility-note.is-review {
+  border-left-color: rgba(218, 174, 88, 0.62);
+  background: rgba(164, 117, 41, 0.08);
+}
+
+.asset-compatibility-note.is-error {
+  border-left-color: rgba(218, 106, 91, 0.68);
+  background: rgba(168, 73, 61, 0.08);
 }

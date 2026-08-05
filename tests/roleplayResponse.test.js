@@ -63,6 +63,69 @@ test('partial protocol prefixes and hidden analysis do not leak during streaming
   assert.equal(parseRoleplayResponse('<lra-mvu').content, '');
 });
 
+test('community ai_last_output keeps prose visible and moves think blocks into director notes', () => {
+  const raw = `<ai_last_output>
+<think>
+能力范围判定：当前角色会先观察，再谨慎回应。
+剧情推理：下一幕应保持书房场景，不替用户作决定。
+</think>
+
+时间地点
+时间：09:30
+地点：主人书房
+
+她把报告放在桌角，安静地等待你的答复。
+</ai_last_output>`;
+  const parsed = parseRoleplayResponse(raw);
+  assert.match(parsed.content, /她把报告放在桌角/);
+  assert.doesNotMatch(parsed.content, /能力范围判定|剧情推理|ai_last_output|think/);
+  assert.match(parsed.panels.directorNotes, /能力范围判定/);
+  assert.equal(extractRoleplayPresentation(raw).content, parsed.content);
+  assert.equal(extractRoleplayPresentation(raw).panels.directorNotes, parsed.panels.directorNotes);
+});
+
+test('community analysis prefixes stay hidden while streaming', () => {
+  assert.equal(parseRoleplayResponse('<ai_last').content, '');
+  assert.equal(parseRoleplayResponse('<ai_last_output><think>正在分析').content, '');
+  assert.equal(
+    parseRoleplayResponse('<ai_last_output><think>正在分析</think>雨声落在窗棂上。').content,
+    '雨声落在窗棂上。'
+  );
+});
+
+test('community planing wrappers never expose generation plans or replacement CSS as prose', () => {
+  const raw = `<planing>
+用户输入“打听刘全”。本轮应让脚步声人物入场，并保留夜字铁牌的悬念。
+</planing>
+
+第1日 辰时过半·北墙柴房
+
+门外的脚步在第二块青砖前停住，来人隔着门板低声问：“刘全昨夜可曾回来？”`;
+
+  for (const parsed of [parseRoleplayResponse(raw), extractRoleplayPresentation(raw)]) {
+    assert.match(parsed.content, /门外的脚步/);
+    assert.doesNotMatch(parsed.content, /用户输入|本轮应让|planing|st-planing|\.st-planing/i);
+    assert.match(parsed.panels.directorNotes, /夜字铁牌/);
+  }
+  assert.equal(parseRoleplayResponse('<planing>正在规划').content, '');
+  assert.equal(extractRoleplayPresentation('<planning>正在规划').content, '');
+});
+
+test('community content wrappers keep only narrative prose and collapse tool activity', () => {
+  const raw = `<thinking>先检索背景资料。</thinking>
+<web_search_results>来源一：庄园记录\n来源二：人员名册</web_search_results>
+<content>神宫寺遥合上名册，等待主人的决定。</content>`;
+
+  for (const parsed of [parseRoleplayResponse(raw), extractRoleplayPresentation(raw)]) {
+    assert.equal(parsed.content, '神宫寺遥合上名册，等待主人的决定。');
+    assert.equal(parsed.panels.directorNotes, '先检索背景资料。');
+    assert.match(parsed.panels.toolActivity, /庄园记录/);
+    assert.doesNotMatch(parsed.content, /thinking|web_search|content/);
+  }
+  assert.equal(extractRoleplayPresentation('<正文>雨声渐歇。</正文>').content, '雨声渐歇。');
+  assert.equal(extractRoleplayPresentation('<msg>她轻声回应。</msg>').content, '她轻声回应。');
+});
+
 test('frontend legacy parser recovers panels from saved raw messages', () => {
   const parsed = extractRoleplayPresentation(structuredReply);
   assert.equal(parsed.content, parseRoleplayResponse(structuredReply).content);
@@ -89,4 +152,108 @@ test('frontend legacy parser converts control-only output into sidebar data and 
     '主动起身，介入两女之间的对话',
     '继续饮酒，当作无事发生'
   ]);
+});
+
+test('frontend parser discards leaked protocol instructions instead of rendering them as actions', () => {
+  const raw = `<plot>她把钥匙轻轻放在桌角，等你回应。</plot>
+<recommended_actions>
+; Ira-actions如果稳定变化需要输出；结束需要《end》
+step3：编排：正文前注释 -> <plot>正文</plot> -> 天机选项块
+<!-- 1.正文前的格式 -->
+<plot>
+</recommended_actions>`;
+  const parsed = extractRoleplayPresentation(raw);
+
+  assert.equal(parsed.content, '她把钥匙轻轻放在桌角，等你回应。');
+  assert.deepEqual(parsed.recommendedActions, []);
+});
+
+test('community preset panels and w2g choices become native presentation data', () => {
+  const raw = `<bginfor>
+时间：下午5:42<br>
+地点：咖啡厅柜台前
+</bginfor>
+
+她把冰水往你面前推了三厘米，等你回应。
+
+<w2g>
+A：追问店长：问她店长那边究竟有什么麻烦
+B：先不追问：接过水杯后回到座位
+C：表明立场：告诉她必要时可以作证
+D：询问后辈：侧面了解店里的情况
+E：跳过
+</w2g>
+
+<catsay>
+<details><summary>😼咪咪点评</summary>
+这次没有硬追问，分寸感还行。<br>
+先观察店长出现时她的反应。
+</details>
+</catsay>`;
+
+  const serverParsed = parseRoleplayResponse(raw);
+  const frontendParsed = extractRoleplayPresentation(raw);
+  for (const parsed of [serverParsed, frontendParsed]) {
+    assert.equal(parsed.content, '她把冰水往你面前推了三厘米，等你回应。');
+    assert.equal(parsed.panels.sceneStatus, '时间：下午5:42\n\n地点：咖啡厅柜台前');
+    assert.match(parsed.panels.communityComment, /分寸感还行/);
+    assert.doesNotMatch(parsed.panels.communityComment, /catsay|details|summary|<br>/i);
+    assert.deepEqual(parsed.recommendedActions, [
+      '追问店长：问她店长那边究竟有什么麻烦',
+      '先不追问：接过水杯后回到座位',
+      '表明立场：告诉她必要时可以作证',
+      '询问后辈：侧面了解店里的情况',
+      '跳过'
+    ]);
+  }
+  assert.equal(parseRoleplayResponse('<bginf').content, '');
+  assert.equal(extractRoleplayPresentation('<cats').content, '');
+});
+
+test('Dreamer preset protocol maps into native prose, panels, and actions', () => {
+  const raw = `<dream_plot>
+<think>内部推演，不显示。</think>
+<dream_body>雨声压低了咖啡馆里的谈话。她把杯子推到你面前，等待回应。</dream_body>
+<dream_after_format>
+<dream_scene>时间：傍晚\n地点：咖啡馆</dream_scene>
+<dream_discuss>这一幕的重点是保持克制，不替用户追问。</dream_discuss>
+<dream_option>
+A：接过杯子，先道谢
+B：观察她的神情
+C：询问店长何时回来
+</dream_option>
+</dream_after_format>
+</dream_plot>`;
+
+  for (const parsed of [parseRoleplayResponse(raw), extractRoleplayPresentation(raw)]) {
+    assert.equal(parsed.content, '雨声压低了咖啡馆里的谈话。她把杯子推到你面前，等待回应。');
+    assert.match(parsed.panels.directorNotes, /内部推演/);
+    assert.match(parsed.panels.sceneStatus, /咖啡馆/);
+    assert.match(parsed.panels.communityComment, /保持克制/);
+    assert.deepEqual(parsed.recommendedActions, [
+      '接过杯子，先道谢',
+      '观察她的神情',
+      '询问店长何时回来'
+    ]);
+  }
+});
+
+test('community StatusBlock materializes concrete CharacterStatus without leaking wrapper markup', () => {
+  const raw = `雨幕沿着诊所的玻璃缓缓滑落，她把登记簿转向你。
+<StatusBlock>
+<CharacterStatus>
+<details><summary>---林夏状态栏---</summary>
+角色：林夏<br>
+人物特质：谨慎、敏锐<br>
+当前目标：确认来访者身份
+</details>
+</CharacterStatus>
+</StatusBlock>`;
+
+  for (const parsed of [parseRoleplayResponse(raw), extractRoleplayPresentation(raw)]) {
+    assert.equal(parsed.content, '雨幕沿着诊所的玻璃缓缓滑落，她把登记簿转向你。');
+    assert.match(parsed.panels.characterStatus, /角色：林夏/);
+    assert.match(parsed.panels.characterStatus, /确认来访者身份/);
+    assert.doesNotMatch(parsed.content, /StatusBlock|CharacterStatus|状态栏/);
+  }
 });

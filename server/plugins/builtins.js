@@ -44,7 +44,7 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
     id: 'core.sillytavern-preset',
     version: '1.0.0',
     name: 'SillyTavern Prompt 预设适配',
-    description: '保留提示词顺序、角色、插入位置与生成参数，并诊断正则和酒馆助手脚本依赖。',
+    description: '保留提示词顺序、角色、插入位置与生成参数；安全映射配套 Regex，酒馆助手脚本保持禁用。',
     engine: ENGINE_RANGE,
     adapters: [{
       id: 'sillytavern-prompt-preset',
@@ -55,6 +55,15 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
       priority: 180,
       capabilities: ['inspect', 'normalize', 'prompt-order', 'generation-settings', 'dependency-report'],
       match: { previewKinds: ['prompt-preset'] }
+    }, {
+      id: 'sillytavern-regex-preset',
+      version: '1.0.0',
+      label: 'SillyTavern Regex 配套规则',
+      kinds: ['prompt'],
+      formats: ['json'],
+      priority: 185,
+      capabilities: ['inspect', 'normalize', 'safe-regex-runtime', 'dependency-report'],
+      match: { previewKinds: ['regex-preset'] }
     }]
   },
   {
@@ -72,7 +81,7 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
       formats: ['txt', 'yaml', 'yml', 'json'],
       priority: 1,
       capabilities: ['inspect', 'normalize'],
-      match: { previewKinds: ['character-card', 'world-book', 'prompt-module', 'prompt-preset'], fallback: true }
+      match: { previewKinds: ['character-card', 'world-book', 'prompt-module', 'prompt-preset', 'regex-preset'], fallback: true }
     }]
   },
   {
@@ -91,7 +100,7 @@ export const BUILTIN_PLUGIN_MANIFESTS = [
       priority: 120,
       capabilities: ['inspect', 'normalize', 'provenance'],
       match: {
-        previewKinds: ['character-card', 'world-book', 'prompt-module', 'prompt-preset'],
+        previewKinds: ['character-card', 'world-book', 'prompt-module', 'prompt-preset', 'regex-preset'],
         sourceIncludes: ['类脑', 'liunao']
       }
     }]

@@ -50,6 +50,36 @@ test('ConfigService saves character card', async () => {
   assert.deepEqual(state.characterCard.tags, ['武侠', '高武']);
 });
 
+test('ConfigService preserves compatible group member profiles without unsafe metadata keys', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-config-'));
+  const service = new ConfigService(new JsonStore(root));
+
+  await service.saveGroupMembers([{
+    id: 'member-lu',
+    name: ' 陆无咎 ',
+    role: ' 谋士 ',
+    enabled: false,
+    speechStyle: '温和克制',
+    exampleDialog: ['陆无咎：先看证据。'],
+    goals: ['查清旧案'],
+    relationships: { 沈观澜: '盟友' },
+    location: '落雁城',
+    publicKnowledge: ['城门将封'],
+    schedule: { 夜间: '巡查' },
+    extensions: JSON.parse('{"speech":"简短","__proto__":{"polluted":true}}')
+  }]);
+
+  const member = (await service.getAll()).groupMembers[0];
+  assert.equal(member.name, '陆无咎');
+  assert.equal(member.enabled, false);
+  assert.equal(member.speechStyle, '温和克制');
+  assert.deepEqual(member.exampleDialog, ['陆无咎：先看证据。']);
+  assert.deepEqual(member.goals, ['查清旧案']);
+  assert.deepEqual(member.relationships, { 沈观澜: '盟友' });
+  assert.deepEqual(member.schedule, { 夜间: '巡查' });
+  assert.equal(Object.hasOwn(member.extensions, '__proto__'), false);
+});
+
 test('ConfigService saves provider config without touching prompt modules', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'agent-config-'));
   const service = new ConfigService(new JsonStore(root));
@@ -92,6 +122,14 @@ test('ConfigService preserves native provider kind and preset metadata', async (
   const state = await service.getAll();
   assert.equal(state.providers.providers[0].kind, 'anthropic');
   assert.equal(state.providers.providers[0].preset, 'anthropic');
+});
+
+test('ConfigService normalizes provider reasoning mode', async () => {
+  const enabled = await saveAndLoadProvider({ reasoningMode: 'enabled' });
+  const invalid = await saveAndLoadProvider({ reasoningMode: 'unexpected' });
+
+  assert.equal(enabled.reasoningMode, 'enabled');
+  assert.equal(invalid.reasoningMode, 'auto');
 });
 
 test('ConfigService falls back for invalid temperature string', async () => {

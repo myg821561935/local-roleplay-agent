@@ -1,4 +1,9 @@
 import { openWorldbookEntryEditor } from './inspector.js';
+import { collapsePromptResourcesForDisplay } from './presetLibrary.js';
+import {
+  compatibilityActionLabel,
+  getPackCompatibilityAudit
+} from './packCompatibility.js';
 
 const KIND_LABELS = {
   character: '角色卡',
@@ -18,12 +23,15 @@ export function createAssetCenterController({
   onUseAsset,
   onOpenComposer,
   onReevaluateAsset,
+  onLoadRevisions,
+  onRollbackRevision,
   onSaveMetadata,
   onSaveContent,
   onDeleteAsset,
   onBatchMetadata,
   onExportAssets,
-  onBatchDelete
+  onBatchDelete,
+  onReviewPackCompatibility
 } = {}) {
   if (!root) return createNoopController();
 
@@ -65,7 +73,9 @@ export function createAssetCenterController({
     view: localStorage.getItem(VIEW_STORAGE_KEY) === 'list' ? 'list' : 'grid',
     selectedKey: '',
     organizeMode: false,
-    selectedKeys: new Set()
+    selectedKeys: new Set(),
+    revisionHistory: new Map(),
+    revisionLoading: new Set()
   };
 
   function bindEvents() {
@@ -264,12 +274,19 @@ export function createAssetCenterController({
       : item.kind === 'prompt'
         ? createPromptManagementPanel(item)
         : null;
-    const versions = item.versionCount > 1 ? createVersionPanel(item, getCatalog()) : null;
+    const revisions = item.kind === 'pack'
+      ? null
+      : createRevisionHistoryPanel(
+        item,
+        localState.revisionHistory.get(item.id),
+        localState.revisionLoading.has(item.id)
+      );
+    const sameTitleVersions = item.versionCount > 1 ? createVersionPanel(item, getCatalog()) : null;
     const evaluation = createEvaluationPanel(item);
     const preview = createPreviewPanel(item);
     const editor = item.kind === 'pack' ? null : createMetadataEditor(item);
     const actions = createDetailActions(item);
-    [header, visual, metrics, characterProfile, contentManager, source, versions, evaluation, preview, editor, actions]
+    [header, visual, metrics, characterProfile, contentManager, source, revisions, sameTitleVersions, evaluation, preview, editor, actions]
       .filter(Boolean)
       .forEach((node) => ui.detail.append(node));
   }
@@ -284,12 +301,43 @@ export function createAssetCenterController({
     const catalog = getCatalog();
     const item = catalog.find((entry) => entry.key === localState.selectedKey);
     if (!item) return;
-    const action = event.target.closest('[data-asset-action]')?.dataset.assetAction;
+    const actionTarget = event.target.closest('[data-asset-action]');
+    const action = actionTarget?.dataset.assetAction;
     if (!action) return;
+
+    if (action === 'versions' && item.kind !== 'pack') {
+      await loadRevisionHistory(item);
+      return;
+    }
+    if (action === 'rollback' && item.kind !== 'pack') {
+      const revisionId = actionTarget.dataset.revisionId || '';
+      const revision = (localState.revisionHistory.get(item.id)?.revisions || [])
+        .find((entry) => entry.id === revisionId);
+      if (!revisionId || revision?.current) return;
+      if (!window.confirm(`将“${item.title}”恢复到修订 ${revision?.number || ''}？当前内容会先保留为历史版本，已创建故事不会改变。`)) return;
+      try {
+        setStatus(`正在恢复：${item.title}`);
+        await onRollbackRevision?.(item, revisionId);
+        localState.revisionHistory.delete(item.id);
+        await refresh({ announce: false });
+        const refreshed = getCatalog().find((entry) => entry.id === item.id) || item;
+        await loadRevisionHistory(refreshed, { announce: false });
+        setStatus(`已恢复到修订 ${revision?.number || ''}，并保留回滚记录`, 'ok');
+      } catch (error) {
+        setStatus(`恢复失败：${error.message}`, 'error');
+      }
+      return;
+    }
 
     if (action === 'use') {
       close();
       onUseAsset?.(item);
+      return;
+    }
+    if (action === 'compatibility' && item.kind === 'pack') {
+      await onReviewPackCompatibility?.(item.raw, {
+        reportStatus: (message, tone) => setStatus(message, tone)
+      });
       return;
     }
     if (action === 'compose') {
@@ -341,7 +389,7 @@ export function createAssetCenterController({
       await saveContent(item, { entries }, '世界书条目已删除');
       return;
     }
-    if (action === 'prompt-edit' && item.kind === 'prompt') {
+    if (action === 'prompt-edit' && item.kind === 'prompt' && item.resourceKind === 'prompt') {
       openPromptResourceEditor(item, (updated) => {
         if (!updated) return;
         void saveContent(item, updated, '预设模块已保存', updated.title);
@@ -497,6 +545,23 @@ export function createAssetCenterController({
     }
   }
 
+  async function loadRevisionHistory(item, { announce = true } = {}) {
+    if (!item?.id || item.kind === 'pack' || localState.revisionLoading.has(item.id)) return;
+    localState.revisionLoading.add(item.id);
+    render();
+    if (announce) setStatus(`正在读取版本记录：${item.title}`);
+    try {
+      const payload = await onLoadRevisions?.(item);
+      localState.revisionHistory.set(item.id, payload || { revisions: [] });
+      if (announce) setStatus(`已读取 ${payload?.revisions?.length || 0} 个修订`, 'ok');
+    } catch (error) {
+      if (announce) setStatus(`版本记录读取失败：${error.message}`, 'error');
+    } finally {
+      localState.revisionLoading.delete(item.id);
+      render();
+    }
+  }
+
   function setView(view) {
     localState.view = view === 'list' ? 'list' : 'grid';
     localStorage.setItem(VIEW_STORAGE_KEY, localState.view);
@@ -509,11 +574,11 @@ export function createAssetCenterController({
     ui.status.dataset.tone = tone;
   }
 
-  return { bindEvents, open, close, render, refresh };
+  return { bindEvents, open, close, render, refresh, setStatus };
 }
 
 export function buildAssetCatalog(resources = [], packs = []) {
-  const normalizedResources = (Array.isArray(resources) ? resources : []).map((resource) => normalizeCatalogResource(resource));
+  const normalizedResources = collapsePromptResourcesForDisplay(resources).map((resource) => normalizeCatalogResource(resource));
   const normalizedPacks = (Array.isArray(packs) ? packs : []).map((pack) => normalizeCatalogPack(pack));
   const catalog = [...normalizedResources, ...normalizedPacks];
   const versionFamilies = new Map();
@@ -567,7 +632,8 @@ function normalizeCatalogResource(resource = {}) {
   return {
     key: `resource:${resource.id}`,
     id: resource.id,
-    kind: resource.kind || 'prompt',
+    kind: resource.kind === 'prompt-bundle' ? 'prompt' : (resource.kind || 'prompt'),
+    resourceKind: resource.kind || 'prompt',
     title: resource.title || '未命名素材',
     summary: resource.summary || '',
     tags: Array.isArray(resource.tags) ? resource.tags : [],
@@ -581,8 +647,12 @@ function normalizeCatalogResource(resource = {}) {
     source: resource.source || {},
     sourceLabel: resource.source?.community || resource.source?.site || '本地素材',
     author: resource.source?.author || '',
+    revision: resource.revision || {},
+    revisionCount: Math.max(1, Number(resource.revision?.count || 1)),
+    securityReviewRequired: resource.revision?.securityReview?.required === true,
     updatedAt: resource.updatedAt || resource.createdAt || '',
-    raw: resource
+    raw: resource,
+    resourceIds: Array.isArray(resource.resourceIds) ? resource.resourceIds : [resource.id]
   };
 }
 
@@ -611,6 +681,7 @@ function normalizeCatalogPack(pack = {}) {
     source: { site: pack.custom ? '本地剧本' : '系统内容包', version: pack.manifest?.version || pack.version || '' },
     sourceLabel: pack.custom ? '本地剧本' : '系统内容包',
     author: pack.manifest?.author || '',
+    compatibilityAudit: getPackCompatibilityAudit(pack),
     updatedAt: pack.updatedAt || pack.createdAt || '',
     raw: pack
   };
@@ -683,8 +754,28 @@ function createAssetCard(item, selected, { organizeMode = false, batchSelected =
   if (item.versionCount > 1) {
     const versionBadge = document.createElement('span');
     versionBadge.className = 'asset-card-version';
-    versionBadge.textContent = `${item.versionCount} 个同名版本`;
+    versionBadge.textContent = `${item.versionCount} 个同名素材`;
     metrics.append(versionBadge);
+  }
+  if (item.revisionCount > 1) {
+    const revisionBadge = document.createElement('span');
+    revisionBadge.className = 'asset-card-version';
+    revisionBadge.textContent = `修订 ${item.revisionCount}`;
+    metrics.append(revisionBadge);
+  }
+  if (item.securityReviewRequired) {
+    const reviewBadge = document.createElement('span');
+    reviewBadge.className = 'asset-card-version is-review';
+    reviewBadge.textContent = '脚本待复核';
+    metrics.append(reviewBadge);
+  }
+  if (item.kind === 'pack') {
+    const audit = getPackCompatibilityAudit(item.raw);
+    const auditBadge = document.createElement('span');
+    auditBadge.className = `asset-card-version compatibility is-${audit.tone}`;
+    auditBadge.textContent = audit.label;
+    auditBadge.title = audit.reason;
+    metrics.append(auditBadge);
   }
   body.append(heading, summary, metrics, meta);
   card.append(cover, body);
@@ -810,22 +901,33 @@ function createPromptManagementPanel(item) {
   const section = createDetailSection('预设管理');
   section.classList.add('asset-prompt-manager');
   const payload = item.payload || {};
+  const bundleModules = Array.isArray(payload.promptModules) ? payload.promptModules : null;
   const grid = document.createElement('dl');
   grid.className = 'asset-prompt-summary';
-  [
-    ['角色', payload.role || 'system'],
-    ['位置', payload.position || '默认'],
-    ['深度', payload.depth ?? '默认'],
-    ['状态', payload.enabled === false ? '已停用' : '已启用']
-  ].forEach(([label, value]) => {
+  const entries = bundleModules
+    ? [
+        ['内部模块', bundleModules.length],
+        ['启用模块', bundleModules.filter((module) => module?.enabled !== false).length],
+        ['运行伴侣', bundleModules.filter((module) => module?.extensions?.sillyTavernRuntimeCompanion).length],
+        ['来源格式', payload.sourceFormat || item.format || '未知']
+      ]
+    : [
+        ['角色', payload.role || 'system'],
+        ['位置', payload.position || '默认'],
+        ['深度', payload.depth ?? '默认'],
+        ['状态', payload.enabled === false ? '已停用' : '已启用']
+      ];
+  entries.forEach(([label, value]) => {
     const dt = document.createElement('dt');
     dt.textContent = label;
     const dd = document.createElement('dd');
     dd.textContent = String(value);
     grid.append(dt, dd);
   });
-  const edit = createActionButton('编辑预设模块', 'prompt-edit', 'asset-secondary-button');
-  section.append(grid, edit);
+  section.append(grid);
+  if (!bundleModules) {
+    section.append(createActionButton('编辑预设模块', 'prompt-edit', 'asset-secondary-button'));
+  }
   return section;
 }
 
@@ -970,8 +1072,62 @@ function createCharacterProfilePanel(item) {
   return section;
 }
 
+function createRevisionHistoryPanel(item, history, loading = false) {
+  const section = createDetailSection(`版本记录 · ${item.revisionCount || 1}`);
+  section.classList.add('asset-revision-panel');
+  const current = document.createElement('p');
+  current.className = 'asset-revision-current';
+  current.textContent = item.revision?.headId
+    ? `当前修订 ${Number(item.revision.number || 1)} · ${formatRevisionChangeType(item.revision.changeType)} · ${formatDate(item.revision.changedAt)}`
+    : '这是旧版素材；首次查看版本记录时会建立初始快照。';
+  section.append(current);
+
+  if (item.securityReviewRequired) {
+    const warning = document.createElement('div');
+    warning.className = 'asset-revision-review';
+    warning.textContent = '当前版本包含脚本、正则或运行时扩展；内容哈希变化后需要重新审核。';
+    section.append(warning);
+  }
+
+  if (!history) {
+    const load = createActionButton(loading ? '正在读取...' : '查看版本与回滚', 'versions', 'asset-secondary-button');
+    load.disabled = loading;
+    section.append(load);
+    return section;
+  }
+
+  const revisions = Array.isArray(history.revisions) ? history.revisions : [];
+  const list = document.createElement('div');
+  list.className = 'asset-revision-list';
+  revisions.forEach((revision) => {
+    const row = document.createElement('div');
+    row.className = `asset-revision-row${revision.current ? ' is-current' : ''}`;
+    const copy = document.createElement('span');
+    const title = document.createElement('strong');
+    title.textContent = `修订 ${Number(revision.number || 1)}${revision.current ? ' · 当前' : ''}`;
+    const meta = document.createElement('small');
+    meta.textContent = [
+      formatRevisionChangeType(revision.changeType),
+      revision.sourceVersion ? `来源 ${revision.sourceVersion}` : '',
+      formatDate(revision.createdAt)
+    ].filter(Boolean).join(' · ');
+    const diff = document.createElement('small');
+    diff.textContent = revision.diff?.summary || '未记录差异摘要';
+    copy.append(title, meta, diff);
+    row.append(copy);
+    if (!revision.current) {
+      const rollback = createActionButton('恢复此版', 'rollback', 'asset-secondary-button');
+      rollback.dataset.revisionId = revision.id;
+      row.append(rollback);
+    }
+    list.append(row);
+  });
+  section.append(list);
+  return section;
+}
+
 function createVersionPanel(item, catalog) {
-  const section = createDetailSection(`同名版本 · ${item.versionCount}`);
+  const section = createDetailSection(`同名素材 · ${item.versionCount}`);
   section.classList.add('asset-version-panel');
   const list = document.createElement('div');
   list.className = 'asset-version-list';
@@ -1000,15 +1156,32 @@ function createVersionPanel(item, catalog) {
 
 function createEvaluationPanel(item) {
   const diagnostics = item.diagnostics || {};
-  const section = createDetailSection('导入评定');
+  const section = createDetailSection(item.kind === 'pack' ? '兼容与运行边界' : '导入评定');
   const score = document.createElement('div');
   score.className = 'asset-evaluation-score';
   const scoreValue = document.createElement('strong');
   scoreValue.textContent = Number(diagnostics.score || item.score || 0);
   const scoreGrade = document.createElement('span');
-  scoreGrade.textContent = diagnostics.grade || '未评定';
+  const audit = item.kind === 'pack' ? getPackCompatibilityAudit(item.raw) : null;
+  scoreGrade.textContent = audit?.label || diagnostics.grade || '未评定';
   score.append(scoreValue, scoreGrade);
   section.append(score);
+  if (audit) {
+    const note = document.createElement('p');
+    note.className = `asset-compatibility-note is-${audit.tone}`;
+    note.textContent = audit.reason;
+    section.append(note);
+    if (audit.issues.length) {
+      const issueList = document.createElement('ul');
+      issueList.className = 'asset-warning-list';
+      audit.issues.slice(0, 5).forEach((issue) => {
+        const row = document.createElement('li');
+        row.textContent = issue;
+        issueList.append(row);
+      });
+      section.append(issueList);
+    }
+  }
 
   const dimensions = Array.isArray(diagnostics.dimensions) ? diagnostics.dimensions : [];
   if (dimensions.length) {
@@ -1055,7 +1228,15 @@ function createPreviewPanel(item) {
     entries.slice(0, 8).forEach((entry) => appendPreviewBlock(content, entry.title || '未命名条目', entry.content));
     if (entries.length > 8) appendPreviewBlock(content, '更多条目', `另有 ${entries.length - 8} 条设定未展开。`);
   } else if (item.kind === 'prompt') {
-    appendPreviewBlock(content, item.payload.title || item.title, item.payload.content || item.payload.systemPrompt);
+    const modules = Array.isArray(item.payload.promptModules) ? item.payload.promptModules : [];
+    if (modules.length) {
+      modules.slice(0, 8).forEach((module) => (
+        appendPreviewBlock(content, module.title || module.id || '未命名模块', module.content)
+      ));
+      if (modules.length > 8) appendPreviewBlock(content, '更多模块', `另有 ${modules.length - 8} 个内部模块未展开。`);
+    } else {
+      appendPreviewBlock(content, item.payload.title || item.title, item.payload.content || item.payload.systemPrompt);
+    }
   } else {
     appendPreviewBlock(content, '剧本说明', item.summary);
     appendPreviewBlock(content, '依赖', formatDependencies(item.payload.manifest?.dependencies));
@@ -1067,9 +1248,18 @@ function createPreviewPanel(item) {
 function createMetadataEditor(item) {
   const section = createDetailSection('馆藏资料');
   section.classList.add('asset-metadata-editor');
+  const isLegacyGroup = Array.isArray(item.resourceIds) && item.resourceIds.length > 1;
+  if (isLegacyGroup) {
+    const note = document.createElement('p');
+    note.textContent = '这是旧版散装模块的聚合视图；可统一整理标签与集合，模块原始标题保持不变。';
+    section.append(note);
+  } else {
+    section.append(
+      createField('标题', 'title', item.title),
+      createField('摘要', 'summary', item.summary, 'textarea')
+    );
+  }
   section.append(
-    createField('标题', 'title', item.title),
-    createField('摘要', 'summary', item.summary, 'textarea'),
     createField('标签', 'tags', (item.tags || []).join('、'), 'input', '用逗号或顿号分隔'),
     createField('集合', 'collections', (item.collections || []).join('、'), 'input', '例如：仙侠主线、待整理')
   );
@@ -1088,6 +1278,13 @@ function createDetailActions(item) {
   if (item.kind !== 'pack') {
     footer.append(createActionButton(item.favorite ? '取消收藏' : '收藏', 'favorite', 'asset-secondary-button'));
     footer.append(createActionButton('重新评估', 'reevaluate', 'asset-secondary-button'));
+  }
+  if (item.kind === 'pack') {
+    const audit = getPackCompatibilityAudit(item.raw);
+    const actionLabel = compatibilityActionLabel(audit);
+    if (actionLabel) {
+      footer.append(createActionButton(actionLabel, 'compatibility', `asset-secondary-button compatibility is-${audit.tone}`));
+    }
   }
   footer.append(createActionButton(item.kind === 'prompt' ? '打开剧本工坊' : item.kind === 'pack' ? '在书架查看' : '用于新剧本', 'use', 'asset-primary-button'));
   footer.append(createActionButton('高级拼装', 'compose', 'asset-secondary-button'));
@@ -1223,6 +1420,17 @@ function formatDate(value) {
   return date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
 }
 
+function formatRevisionChangeType(value) {
+  return {
+    import: '初始导入',
+    'legacy-import': '旧素材快照',
+    'upstream-update': '来源更新',
+    'portrait-update': '立绘更新',
+    'local-edit': '本地编辑',
+    rollback: '回滚生成'
+  }[String(value || '')] || '内容修订';
+}
+
 function formatDependencies(dependencies) {
   if (!Array.isArray(dependencies) || !dependencies.length) return '无外部依赖';
   return dependencies.map((item) => `${item.kind || '资源'}:${item.id || '未命名'} ${item.range || ''}`.trim()).join('；');
@@ -1238,5 +1446,5 @@ function truncate(value, limit) {
 }
 
 function createNoopController() {
-  return { bindEvents() {}, open() {}, close() {}, render() {}, refresh() {} };
+  return { bindEvents() {}, open() {}, close() {}, render() {}, refresh() {}, setStatus() {} };
 }

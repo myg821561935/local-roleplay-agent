@@ -12,7 +12,11 @@ test('plugin registry exposes compatible built-in adapters', async () => {
   const adapters = await service.listAdapters();
 
   assert.ok(plugins.find((item) => item.id === 'core.content-pack-v1' && item.compatible));
-  assert.ok(adapters.find((item) => item.id === 'character-card-v2'));
+  assert.ok(plugins.every((item) => !item.warnings.some((warning) => warning.code === 'adapter-capability-unsupported')));
+  assert.deepEqual(
+    adapters.find((item) => item.id === 'character-card-v2')?.capabilities,
+    ['inspect', 'normalize']
+  );
   assert.ok(adapters.find((item) => item.id === 'lra-plugin-manifest-v1'));
 });
 
@@ -42,11 +46,12 @@ test('plugin registry installs declarative adapters and blocks executable fields
         ...manifest.adapters[0].match,
         hooks: { onLoad: 'run-me' }
       },
-      capabilities: ['sidebar-panels', 'arbitrary-javascript']
+      capabilities: ['inspect', 'arbitrary-javascript']
     }]
   });
   assert.equal(nestedExecutable.canInstall, false);
   assert.ok(nestedExecutable.blockingIssues.some((item) => item.path.includes('hooks')));
+  assert.deepEqual(nestedExecutable.manifest.adapters[0].capabilities, ['inspect']);
   assert.ok(nestedExecutable.warnings.some((item) => item.code === 'adapter-capability-unsupported'));
 
   const partiallySupported = await service.inspectManifest({

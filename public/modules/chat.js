@@ -1,3 +1,5 @@
+import { shouldHideAuxiliaryMessage } from './messagePresentation.js';
+
 const MASKED_SECRET = '********';
 
 function isLoopbackUrl(value) {
@@ -24,6 +26,11 @@ export function isProviderConfigured(providersConfig = {}) {
   return (!usesProviderDefaultEndpoint && isLoopbackUrl(provider.baseUrl))
     || Boolean(apiKey && apiKey !== 'sk-...')
     || apiKey === MASKED_SECRET;
+}
+
+export function resolveOpeningButtonText(template = {}) {
+  return String(template?.buttonText || '').trim()
+    || '[ 确认当前设定 · 开始故事 ]';
 }
 
 export function createProviderOnboardingBanner({ onConfigure } = {}) {
@@ -54,6 +61,7 @@ export function createChatController(deps) {
     state,
     els,
     getCurrentSessionId,
+    getCurrentSessionLabel = getCurrentSessionId,
     applyBackgroundImage,
     renderImmersiveSidebar,
     renderJourneyDraft,
@@ -114,7 +122,7 @@ export function createChatController(deps) {
         els.messages.classList.add('has-journey-draft');
         els.messages.append(renderJourneyDraft(state.pendingJourneyDraft));
         els.messages.scrollTop = 0;
-        setStatus(els.sessionStatus, `${getCurrentSessionId()} · 开局稿待发送`, 'ok');
+        setStatus(els.sessionStatus, `${getCurrentSessionLabel()} · 开局稿待发送`, 'ok');
         return;
       }
 
@@ -145,9 +153,7 @@ export function createChatController(deps) {
         startBtn.className = 'epic-start-btn';
         startBtn.type = 'button';
         startBtn.dataset.helpKey = 'startJourney';
-        startBtn.textContent = genre === 'xuanhuan'
-          ? '[ 武破天穹 · 直入江湖 ]'
-          : tpl.buttonText;
+        startBtn.textContent = resolveOpeningButtonText(tpl);
         startBtn.onclick = () => startGuidedJourney(genre);
 
         const actions = document.createElement('div');
@@ -165,14 +171,17 @@ export function createChatController(deps) {
     } else {
       const fragment = document.createDocumentFragment();
       messages
-        .filter((message) => !isJourneySetupMessage(message) && !message?.hiddenFromChat)
+        .filter((message, index) => (
+          !isJourneySetupMessage(message)
+          && !shouldHideAuxiliaryMessage(message, messages[index + 1])
+        ))
         .forEach((message) => fragment.append(createMessageNode(message)));
       els.messages.append(fragment);
       restoreScrollState(scrollState);
     }
 
     const count = messages.length;
-    setStatus(els.sessionStatus, `${getCurrentSessionId()} · ${count} 条消息`, '');
+    setStatus(els.sessionStatus, `${getCurrentSessionLabel()} · ${count} 条消息`, '');
   }
 
   return {

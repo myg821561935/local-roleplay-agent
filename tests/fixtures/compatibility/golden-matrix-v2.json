@@ -1,0 +1,228 @@
+{
+  "schema": "lra.tavern-golden-matrix/v2",
+  "contractVersion": 2,
+  "description": "只含虚构最小文本的酒馆兼容黄金矩阵；不包含社区原文、图片、作者信息或真实第三方代码。",
+  "dimensions": {
+    "resourceKinds": ["character", "worldbook", "prompt"],
+    "contentRatings": ["sfw", "nsfw"],
+    "interactionLevels": ["text", "light-frontend", "heavy-frontend"]
+  },
+  "profiles": {
+    "character-text": {
+      "payload": {
+        "name": "黄金文本角色",
+        "description": "一名只使用标准文本字段的成年虚构角色。",
+        "personality": "谨慎，重视证据。",
+        "scenario": "雨夜抵达一座无名驿站。",
+        "first_mes": "门外传来三声轻叩。"
+      },
+      "expected": {
+        "outcome": "full-mapping",
+        "requiredCapabilities": ["character-card-core"],
+        "lane": "native-roleplay"
+      }
+    },
+    "character-light-frontend": {
+      "payload": {
+        "name": "黄金轻前端角色",
+        "description": "使用声明式状态和快捷行动。",
+        "extensions": {
+          "mvu": {
+            "values": {
+              "relationships": {
+                "guide": { "trust": 1 }
+              }
+            }
+          },
+          "quick_replies": [
+            { "label": "询问线索", "command": "/send 询问线索" }
+          ],
+          "lifecycle": {
+            "onUser": [
+              { "op": "increment", "path": "relationships.guide.trust", "amount": 1 }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "outcome": "full-mapping",
+        "requiredCapabilities": ["character-card-core", "mvu-state", "quick-replies", "declarative-lifecycle"],
+        "lane": "declarative-light-frontend"
+      }
+    },
+    "character-heavy-frontend": {
+      "payload": {
+        "name": "黄金独立前端角色",
+        "description": "静态人物信息仍可保存。",
+        "extensions": {
+          "custom_html": "<iframe src=\"/standalone/index.html\"></iframe>"
+        }
+      },
+      "expected": {
+        "outcome": "blocked",
+        "requiredCapabilities": ["character-card-core", "custom-html-ui"],
+        "blockers": ["custom-html-ui"],
+        "lane": "heavy-frontend-pack"
+      }
+    },
+    "worldbook-text": {
+      "payload": {
+        "name": "黄金文本世界书",
+        "entries": [
+          {
+            "uid": 1,
+            "comment": "旧码头",
+            "key": ["旧码头"],
+            "keysecondary": ["雨夜", "潮声"],
+            "selective": true,
+            "selectiveLogic": 0,
+            "content": "旧码头只在退潮后开放北侧石阶。",
+            "position": 1,
+            "depth": 4,
+            "order": 60,
+            "enabled": true
+          }
+        ]
+      },
+      "expected": {
+        "outcome": "full-mapping",
+        "requiredCapabilities": ["worldbook-core"],
+        "lane": "native-roleplay"
+      }
+    },
+    "worldbook-light-frontend": {
+      "payload": {
+        "name": "黄金轻前端世界书",
+        "entries": [
+          {
+            "uid": 1,
+            "comment": "线索规则",
+            "key": ["线索"],
+            "content": "线索必须记录来源与可信度。",
+            "enabled": true
+          }
+        ],
+        "extensions": {
+          "mvu": { "values": { "clues": { "count": 0 } } },
+          "status_panels": [
+            {
+              "title": "线索面板",
+              "fields": [
+                { "label": "数量", "path": "clues.count" }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": {
+        "outcome": "full-mapping",
+        "requiredCapabilities": ["worldbook-core", "mvu-state", "sidebar-panels"],
+        "lane": "declarative-light-frontend"
+      }
+    },
+    "worldbook-heavy-frontend": {
+      "payload": {
+        "name": "黄金独立前端世界书",
+        "entries": [
+          {
+            "uid": 1,
+            "comment": "静态规则",
+            "key": ["规则"],
+            "content": "静态规则内容可以保存。",
+            "enabled": true
+          }
+        ],
+        "extensions": {
+          "custom_html": "<form><button>调用独立应用</button></form>"
+        }
+      },
+      "expected": {
+        "outcome": "blocked",
+        "requiredCapabilities": ["worldbook-core", "custom-html-ui"],
+        "blockers": ["custom-html-ui"],
+        "lane": "heavy-frontend-pack"
+      }
+    },
+    "prompt-text": {
+      "payload": {
+        "name": "黄金文本预设",
+        "sillyTavernPreset": {
+          "prompts": [
+            { "identifier": "main", "role": "system", "content": "保持角色卡与世界书事实优先。", "enabled": true }
+          ],
+          "prompt_order": ["main"]
+        }
+      },
+      "expected": {
+        "outcome": "full-mapping",
+        "requiredCapabilities": ["prompt-module-core", "prompt-preset-order"],
+        "lane": "native-roleplay"
+      }
+    },
+    "prompt-light-frontend": {
+      "payload": {
+        "name": "黄金轻前端预设",
+        "sillyTavernPreset": {
+          "prompts": [
+            { "identifier": "main", "role": "system", "content": "保持角色卡与世界书事实优先。", "enabled": true }
+          ],
+          "prompt_order": ["main"]
+        },
+        "extensions": {
+          "regex_scripts": [
+            {
+              "scriptName": "隐藏声明式状态块",
+              "findRegex": "/<state>[\\s\\S]*?<\\/state>/g",
+              "replaceString": "状态已同步"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "outcome": "full-mapping",
+        "requiredCapabilities": ["prompt-module-core", "prompt-preset-order", "regex-scripts"],
+        "lane": "declarative-light-frontend"
+      }
+    },
+    "prompt-heavy-frontend": {
+      "payload": {
+        "name": "黄金独立前端预设",
+        "sillyTavernPreset": {
+          "prompts": [
+            { "identifier": "main", "role": "system", "content": "静态提示内容可以保存。", "enabled": true }
+          ],
+          "prompt_order": ["main"]
+        },
+        "extensions": {
+          "custom_html": "<iframe src=\"/preset-app/index.html\"></iframe>"
+        }
+      },
+      "expected": {
+        "outcome": "blocked",
+        "requiredCapabilities": ["prompt-module-core", "prompt-preset-order", "custom-html-ui"],
+        "blockers": ["custom-html-ui"],
+        "lane": "heavy-frontend-pack"
+      }
+    }
+  },
+  "cases": [
+    { "id": "sfw-character-text", "resourceKind": "character", "contentRating": "sfw", "interactionLevel": "text", "profile": "character-text" },
+    { "id": "sfw-character-light", "resourceKind": "character", "contentRating": "sfw", "interactionLevel": "light-frontend", "profile": "character-light-frontend" },
+    { "id": "sfw-character-heavy", "resourceKind": "character", "contentRating": "sfw", "interactionLevel": "heavy-frontend", "profile": "character-heavy-frontend" },
+    { "id": "sfw-worldbook-text", "resourceKind": "worldbook", "contentRating": "sfw", "interactionLevel": "text", "profile": "worldbook-text" },
+    { "id": "sfw-worldbook-light", "resourceKind": "worldbook", "contentRating": "sfw", "interactionLevel": "light-frontend", "profile": "worldbook-light-frontend" },
+    { "id": "sfw-worldbook-heavy", "resourceKind": "worldbook", "contentRating": "sfw", "interactionLevel": "heavy-frontend", "profile": "worldbook-heavy-frontend" },
+    { "id": "sfw-prompt-text", "resourceKind": "prompt", "contentRating": "sfw", "interactionLevel": "text", "profile": "prompt-text" },
+    { "id": "sfw-prompt-light", "resourceKind": "prompt", "contentRating": "sfw", "interactionLevel": "light-frontend", "profile": "prompt-light-frontend" },
+    { "id": "sfw-prompt-heavy", "resourceKind": "prompt", "contentRating": "sfw", "interactionLevel": "heavy-frontend", "profile": "prompt-heavy-frontend" },
+    { "id": "nsfw-character-text", "resourceKind": "character", "contentRating": "nsfw", "interactionLevel": "text", "profile": "character-text" },
+    { "id": "nsfw-character-light", "resourceKind": "character", "contentRating": "nsfw", "interactionLevel": "light-frontend", "profile": "character-light-frontend" },
+    { "id": "nsfw-character-heavy", "resourceKind": "character", "contentRating": "nsfw", "interactionLevel": "heavy-frontend", "profile": "character-heavy-frontend" },
+    { "id": "nsfw-worldbook-text", "resourceKind": "worldbook", "contentRating": "nsfw", "interactionLevel": "text", "profile": "worldbook-text" },
+    { "id": "nsfw-worldbook-light", "resourceKind": "worldbook", "contentRating": "nsfw", "interactionLevel": "light-frontend", "profile": "worldbook-light-frontend" },
+    { "id": "nsfw-worldbook-heavy", "resourceKind": "worldbook", "contentRating": "nsfw", "interactionLevel": "heavy-frontend", "profile": "worldbook-heavy-frontend" },
+    { "id": "nsfw-prompt-text", "resourceKind": "prompt", "contentRating": "nsfw", "interactionLevel": "text", "profile": "prompt-text" },
+    { "id": "nsfw-prompt-light", "resourceKind": "prompt", "contentRating": "nsfw", "interactionLevel": "light-frontend", "profile": "prompt-light-frontend" },
+    { "id": "nsfw-prompt-heavy", "resourceKind": "prompt", "contentRating": "nsfw", "interactionLevel": "heavy-frontend", "profile": "prompt-heavy-frontend" }
+  ]
+}

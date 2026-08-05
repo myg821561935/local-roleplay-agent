@@ -25,13 +25,14 @@ mkdir -p "$RUNTIME_DIR"
 
 NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
 if [[ -z "$NODE_BIN" ]]; then
-  echo "未找到 Node.js，请先安装 Node.js 20 或更高版本。"
+  echo "未找到 Node.js，请先安装 Node.js 22.13 或更高版本。"
   exit 1
 fi
 
 NODE_MAJOR="$($NODE_BIN -p 'Number(process.versions.node.split(".")[0])')"
-if (( NODE_MAJOR < 20 )); then
-  echo "Node.js 版本过低：$($NODE_BIN -v)，需要 20 或更高版本。"
+NODE_MINOR="$($NODE_BIN -p 'Number(process.versions.node.split(".")[1])')"
+if (( NODE_MAJOR < 22 || (NODE_MAJOR == 22 && NODE_MINOR < 13) )); then
+  echo "Node.js 版本过低：$($NODE_BIN -v)，需要 22.13 或更高版本。"
   exit 1
 fi
 

@@ -7,6 +7,7 @@ export async function handleStoryProjectRoutes({
   res,
   url,
   storyProjectService,
+  contentLifecycleService,
   resourceLibraryService,
   sessionService,
   worldSimulationService,
@@ -29,6 +30,10 @@ export async function handleStoryProjectRoutes({
     const body = await readRequestJson(req);
     const pack = await resolveContentPack(resourceLibraryService, body.basePackId);
     if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    const readiness = await resourceLibraryService.inspectPackStartReadiness?.(pack.id);
+    if (pack.custom === true && readiness?.canStartNewStory !== true) {
+      throw new ApiError(409, 'CONTENT_PACK_COMPATIBILITY_REVIEW_REQUIRED', readiness?.status || 'unavailable');
+    }
     const project = await storyProjectService.createProject({
       title: body.title || pack.sessionTitle || pack.title,
       description: body.description || pack.description,
@@ -40,6 +45,16 @@ export async function handleStoryProjectRoutes({
       runtimePolicy: body.runtimePolicy
     });
     writeJson(res, 200, { project, summary: summarizeStoryProject(project) });
+    return true;
+  }
+
+  const storyProjectDeletionImpactRoute = url.pathname.match(/^\/api\/story-projects\/([^/]+)\/deletion-impact$/);
+  if (storyProjectDeletionImpactRoute && req.method === 'GET') {
+    const impact = await contentLifecycleService.inspectProjectDeletion(
+      decodeURIComponent(storyProjectDeletionImpactRoute[1])
+    );
+    if (!impact) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+    writeJson(res, 200, { impact });
     return true;
   }
 
@@ -68,12 +83,21 @@ export async function handleStoryProjectRoutes({
 
   if (storyProjectRoute && req.method === 'DELETE') {
     validateMutatingRequest(req);
-    const project = await storyProjectService.deleteProject(decodeURIComponent(storyProjectRoute[1]));
-    if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
-    writeJson(res, 200, {
-      ok: true,
-      preservedSessionIds: project.sessionIds
-    });
+    const body = await readRequestJson(req);
+    let result;
+    try {
+      result = await contentLifecycleService.deleteProject(
+        decodeURIComponent(storyProjectRoute[1]),
+        { confirmDetach: body.confirmDetach === true }
+      );
+    } catch (error) {
+      if (error.code === 'CONTENT_DELETE_CONFIRMATION_REQUIRED') {
+        throw new ApiError(409, error.code);
+      }
+      throw error;
+    }
+    if (!result) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+    writeJson(res, 200, result);
     return true;
   }
 
@@ -84,8 +108,15 @@ export async function handleStoryProjectRoutes({
     const projectId = decodeURIComponent(storyProjectSessionRoute[1]);
     const project = await storyProjectService.getProject(projectId);
     if (!project) throw new ApiError(404, 'STORY_PROJECT_NOT_FOUND');
+    if (project.lifecycle?.state === 'detached' || !project.basePackId) {
+      throw new ApiError(409, 'STORY_PROJECT_DETACHED');
+    }
     const pack = await resolveContentPack(resourceLibraryService, project.basePackId);
     if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    const readiness = await resourceLibraryService.inspectPackStartReadiness?.(pack.id);
+    if (pack.custom === true && readiness?.canStartNewStory !== true) {
+      throw new ApiError(409, 'CONTENT_PACK_COMPATIBILITY_REVIEW_REQUIRED', readiness?.status || 'unavailable');
+    }
     const session = await createSessionFromContentPack({
       sessionService,
       worldSimulationService,

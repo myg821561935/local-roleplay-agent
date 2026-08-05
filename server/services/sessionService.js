@@ -3,23 +3,32 @@ import { createDefaultMemory } from '../agent/memoryUpdater.js';
 import { enrichNarrativeState } from '../config/narrativeProfiles.js';
 import { createAuthoringLedger, normalizeAuthoringLedger } from '../authoring/authoringLedger.js';
 import { DEFAULT_AGENT_PROFILE_ID, normalizeAgentProfileId } from '../authoring/agentProfiles.js';
+import { materializeSessionOwnedConfig } from '../config/sessionScopedConfig.js';
+import { normalizeResponseLengthMode } from '../agent/responseContract.js';
+import { normalizeRoleplayMode } from '../agent/roleplayMode.js';
+import { createDegradedKnowledgeGraphState } from '../knowledgeGraph/knowledgeGraphService.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 export class SessionService {
-  constructor(store) {
+  constructor(store, { knowledgeGraphService = null } = {}) {
     this.store = store;
+    this.knowledgeGraphService = knowledgeGraphService;
   }
 
-  async getSession(sessionId = 'main') {
+  async getSession(sessionId = 'main', { hydrateKnowledgeGraph = true } = {}) {
     const id = validateSessionId(sessionId);
     const session = await this.store.read(sessionPath(id), createSession(id));
-    return enrichSessionNarrativeState(session);
+    const enriched = enrichSessionNarrativeState(session);
+    return hydrateKnowledgeGraph ? this.hydrateKnowledgeGraph(enriched) : enriched;
   }
 
   async saveSession(session) {
     const id = validateSessionId(session?.id);
-    return this.store.write(sessionPath(id), { ...session, id });
+    const next = await this.hydrateKnowledgeGraph({ ...session, id });
+    Object.assign(session, next);
+    await this.store.write(sessionPath(id), next);
+    return next;
   }
 
   async listSessions() {
@@ -39,7 +48,7 @@ export class SessionService {
     const sessionId = id ? validateSessionId(id) : crypto.randomUUID();
     const session = createSession(sessionId);
     session.title = title || session.title;
-    session.config = config;
+    session.config = materializeSessionOwnedConfig(config);
     session.storyProjectId = cleanSessionReference(storyProjectId);
     session.basePackId = cleanSessionReference(basePackId);
     if (memory && typeof memory === 'object' && !Array.isArray(memory)) {
@@ -47,6 +56,15 @@ export class SessionService {
     }
     await this.saveSession(session);
     return session;
+  }
+
+  async hydrateKnowledgeGraph(session) {
+    if (!this.knowledgeGraphService) return session;
+    try {
+      return this.knowledgeGraphService.synchronizeSession(session);
+    } catch (error) {
+      return createDegradedKnowledgeGraphState(session, error);
+    }
   }
 }
 
@@ -78,6 +96,13 @@ function createSession(id) {
       maxPromptTokens: 8000,
       maxInjectedCards: 5,
       narrativeMode: 'stable',
+      roleplayMode: 'dm',
+      responseLength: 'balanced',
+      worldBookIncludeNames: true,
+      worldBookCaseSensitive: false,
+      worldBookMatchWholeWords: false,
+      worldBookMinActivations: 0,
+      worldBookMinActivationsDepthMax: 0,
       activeAgentProfileId: DEFAULT_AGENT_PROFILE_ID,
       theme: '',
       backgroundImage: '',
@@ -92,6 +117,8 @@ function enrichSessionNarrativeState(session) {
   next.authoring = normalizeAuthoringLedger(next.authoring);
   next.settings = next.settings && typeof next.settings === 'object' ? next.settings : {};
   next.settings.activeAgentProfileId = normalizeAgentProfileId(next.settings.activeAgentProfileId);
+  next.settings.roleplayMode = normalizeRoleplayMode(next.settings.roleplayMode);
+  next.settings.responseLength = normalizeResponseLengthMode(next.settings.responseLength);
   const memory = next.memory && typeof next.memory === 'object' ? next.memory : createDefaultMemory();
   const packId = String(
     memory.narrativeState?.lockedGenre

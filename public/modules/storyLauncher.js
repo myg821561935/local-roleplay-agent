@@ -1,5 +1,6 @@
 export const STORY_CATEGORY_LABELS = {
   all: '全部',
+  neutral: '自定义',
   xuanhuan: '玄幻',
   xianxia: '仙侠',
   lingyi: '灵异',
@@ -8,14 +9,14 @@ export const STORY_CATEGORY_LABELS = {
   custom: '自定义'
 };
 
-const DEFAULT_VISUAL_PACK_IDS = new Set(['xuanhuan', 'xianxia', 'lingyi', 'mingmo', 'yingxiongzhi']);
+const DEFAULT_VISUAL_PACK_IDS = new Set(['neutral', 'xuanhuan', 'xianxia', 'lingyi', 'mingmo', 'yingxiongzhi']);
 
 export function getStoryPackVisualId(packOrId, packs = [], visualPackIds = DEFAULT_VISUAL_PACK_IDS) {
   const pack = typeof packOrId === 'object'
     ? packOrId
     : packs.find((item) => item.id === packOrId);
   const candidate = pack?.visualPackId || pack?.basePackId || pack?.id || String(packOrId || '');
-  return visualPackIds.has(candidate) ? candidate : 'xuanhuan';
+  return visualPackIds.has(candidate) ? candidate : 'neutral';
 }
 
 export function getStoryPackCategories(pack, options = {}) {
@@ -40,12 +41,4 @@ export function filterStoryPacks(packs, { category = 'all', query = '', visualPa
     ].filter(Boolean).join(' ').toLowerCase();
     return haystack.includes(normalizedQuery);
   });
-}
-
-export function createStoryLauncherController({ render, open, close } = {}) {
-  return {
-    render: (...args) => render?.(...args),
-    open: (...args) => open?.(...args),
-    close: (...args) => close?.(...args)
-  };
 }

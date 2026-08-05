@@ -117,6 +117,27 @@ test('content packs expose linked prompt world character and memory payloads', (
   assert.ok(xianxia.worldBook.find((entry) => entry.id === 'event-sect-rationing'));
 });
 
+test('built-in packs declare explicit inheritance boundaries for custom derivatives', () => {
+  for (const packId of ['xuanhuan', 'lingyi', 'mingmo', 'xianxia', 'yingxiongzhi']) {
+    const pack = getContentPack(packId);
+    assert.ok(pack.worldBook.length > 0);
+    assert.ok(pack.worldBook.every((entry) => entry.extensions?.inheritanceScope === 'story'));
+    assert.ok(pack.promptModules.every((module) => ['genre', 'story'].includes(module.extensions?.inheritanceScope)));
+    assert.equal(
+      pack.promptModules.find((module) => module.id === 'world-premise')?.extensions?.inheritanceScope,
+      'story'
+    );
+    assert.equal(
+      pack.promptModules.find((module) => module.id.endsWith('-core-route-contract'))?.extensions?.inheritanceScope,
+      'story'
+    );
+    assert.equal(
+      pack.promptModules.find((module) => module.id === 'core-rules')?.extensions?.inheritanceScope,
+      'genre'
+    );
+  }
+});
+
 test('genre packs include long-form world bibles and distinct prose contracts', () => {
   const expectedNarrativeModules = {
     xuanhuan: ['xuanhuan-longform-scene-engine', 'xuanhuan-dialogue-registers', 'xuanhuan-chapter-contract', 'xuanhuan-core-route-contract'],

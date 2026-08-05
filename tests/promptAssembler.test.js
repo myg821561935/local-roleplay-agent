@@ -52,7 +52,7 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
   assert.equal(result.messages.at(-1).role, 'user');
   assert.equal(result.messages.at(-1).content, '我要去镇武司附近打探消息。');
   assert.equal(result.injectedCards.length, 1);
-  assert.match(result.messages[0].content, /保持角色一致/);
+  assert.ok(result.messages.some((message) => /保持角色一致/.test(message.content)));
   assert.match(result.messages[0].content, /# 角色卡/);
   assert.match(result.messages[0].content, /沈观澜/);
   assert.match(result.messages[0].content, /正在调查镇武司旧案/);
@@ -63,6 +63,7 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
   assert.match(result.messages[0].content, /# 沉浸式呈现契约/);
   assert.match(result.messages[0].content, /<special_status>/);
   assert.match(result.messages[0].content, /<recommended_actions>/);
+  assert.match(result.messages[0].content, /角色卡与当前已启用世界书.*最高事实源/);
   assert.ok(result.messages.some(m => /镇武司负责约束江湖武人/.test(m.content)));
   assert.match(result.messages[0].content, /云州城/);
   assert.match(result.messages[0].content, /主角刚到城中。/);
@@ -70,6 +71,381 @@ test('assemblePrompt includes modules, state, summary, matched world book, and r
   assert.ok(result.messages.some((message) => message.content === '城门外风雪未歇。'));
   assert.deepEqual(result.sections.promptModules, ['core']);
   assert.equal(result.sections.hasCharacterCard, true);
+  assert.equal(result.sections.responseLengthMode, 'balanced');
+  assert.equal(result.sections.roleplayMode, 'dm');
+  assert.match(result.messages[0].content, /# 角色扮演流派（标准 DM 叙事流）/);
+  assert.match(result.messages.at(-2).content, /# 本轮正文篇幅与推进契约（标准推进）/);
+  assert.match(result.messages.at(-2).content, /1200-2000 个中文字符/);
+});
+
+test('assemblePrompt forwards World Info name and minimum-activation settings to the runtime', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '沈观澜', enabled: true },
+    persona: { enabled: true, name: '林舟' },
+    worldBook: [
+      {
+        id: 'named-user',
+        title: '点名触发',
+        keywords: [String.raw`/\x01林舟:[^\x01]*?开门/`],
+        content: '林舟正在门前。',
+        enabled: true
+      },
+      {
+        id: 'old-clue',
+        title: '旧案',
+        keywords: ['旧案'],
+        content: '旧案发生在十年前。',
+        extensions: { scan_depth: 1, scan_depth_inherited: true },
+        enabled: true
+      }
+    ],
+    memory: { memoryCards: [] },
+    messages: [
+      { role: 'user', content: '旧案的卷宗已经封存。' },
+      { role: 'assistant', content: '先看眼前。' }
+    ],
+    userMessage: '请替我开门。',
+    options: {
+      maxInjectedCards: 5,
+      maxRecursionDepth: 0,
+      worldBookScanDepth: 1,
+      worldBookMinActivations: 2,
+      worldBookMinActivationsDepthMax: 3,
+      worldBookIncludeNames: true
+    }
+  });
+
+  assert.deepEqual(new Set(result.injectedCards.map((card) => card.id)), new Set(['named-user', 'old-clue']));
+  assert.deepEqual(result.sections.worldBookActivation.minimumActivationIds, ['old-clue']);
+  assert.equal(result.sections.worldBookActivation.scan.includeNames, true);
+  assert.equal(result.sections.worldBookActivation.scan.reachedDepth, 3);
+});
+
+test('assemblePrompt applies a native roleplay mode independently of route stability', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '阿月', enabled: true },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    messages: [],
+    userMessage: '继续。',
+    options: { narrativeMode: 'strict', roleplayMode: 'director' }
+  });
+
+  assert.match(result.messages[0].content, /# 叙事路线锁（严格模式）/);
+  assert.match(result.messages[0].content, /# 角色扮演流派（导演 \/ 共创流）/);
+  assert.equal(result.sections.narrativeMode, 'strict');
+  assert.equal(result.sections.roleplayMode, 'director');
+});
+
+test('assemblePrompt injects the validated relationship subgraph', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '刘一', enabled: true },
+    worldBook: [],
+    memory: {
+      memoryCards: [],
+      knowledgeGraph: {
+        nodes: [
+          { id: 'c1', label: '刘一' },
+          { id: 'c2', label: '江小鲤' }
+        ],
+        edges: [{ source: 'c1', target: 'c2', type: 'TRUSTS', label: '逐渐信任' }]
+      }
+    },
+    messages: [],
+    userMessage: '继续。'
+  });
+
+  assert.equal(result.sections.hasKnowledgeGraph, true);
+  assert.match(result.messages[0].content, /# 当前场景关系子图/);
+  assert.match(result.messages[0].content, /刘一 → 江小鲤：逐渐信任/);
+});
+
+test('assemblePrompt injects source-backed episodic memory without exposing CoT', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '闻雪照', enabled: true },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    memoryContext: {
+      summaryHits: [{
+        id: 'summary:chapter:1',
+        summaryLevel: 'chapter',
+        title: '云州旧案第一章',
+        summary: '闻雪照已经确认失踪名单与镇武司有关。',
+        sourceMessageIds: ['u0', 'a0']
+      }],
+      episodicHits: [{
+        id: 'episode:a1',
+        title: '镇武司旧案',
+        summary: '闻雪照从卷宗中找到了失踪者名单。',
+        scene: '云州城',
+        sourceMessageIds: ['u1', 'a1']
+      }],
+      decisionRecords: [{
+        decision: '名单仍需与世界书记载交叉核验。',
+        policy: '角色卡与世界书优先',
+        evidenceMessageIds: ['a1']
+      }],
+      audit: { episodicCount: 1, summaryCount: 1, vectorCount: 0, graphRevision: 0 }
+    },
+    messages: [],
+    userMessage: '继续调查名单。'
+  });
+
+  assert.match(result.messages[0].content, /# 召回的长期情节记忆/);
+  assert.match(result.messages[0].content, /不是模型思维链/);
+  assert.match(result.messages[0].content, /章节摘要·云州旧案第一章/);
+  assert.match(result.messages[0].content, /闻雪照从卷宗中找到了失踪者名单/);
+  assert.match(result.messages[0].content, /证据:u1,a1/);
+  assert.match(result.messages[0].content, /角色卡与世界书优先/);
+  assert.doesNotMatch(result.messages[0].content, /<think>|chainOfThought|内部推演/);
+  assert.deepEqual(result.sections.memoryRetrieval, {
+    episodicCount: 1,
+    summaryCount: 1,
+    vectorCount: 0,
+    graphRevision: 0
+  });
+});
+
+test('community preset budgeting preserves variable setup and output protocol in preset sequence', () => {
+  const presetExtension = (sequence) => ({
+    sillyTavernPreset: { presetTitle: '大型社区预设', sourceFormat: 'sillytavern-preset', sequence }
+  });
+  const result = assemblePrompt({
+    promptModules: [
+      {
+        id: 'body', title: '写作模式', enabled: true, extensions: presetExtension(3),
+        content: `${'正文规则。'.repeat(450)}\n{{getvar::a}}{{getvar::b}}{{getvar::c}}{{getvar::d}}`
+      },
+      {
+        id: 'output', title: '开始设定', enabled: true, extensions: presetExtension(2),
+        content: '最终回复的根节点必须是 <dream_plot>，正文放在 <dream_body> 中。'
+      },
+      {
+        id: 'vars', title: '变量初始化', enabled: true, extensions: presetExtension(1),
+        content: '{{setvar::a::1}}{{setvar::b::2}}{{setvar::c::3}}{{setvar::d::4}}'
+      },
+      {
+        id: 'decorative', title: '可选装饰', enabled: true, extensions: presetExtension(4),
+        content: '次要装饰。'.repeat(900)
+      }
+    ],
+    characterCard: { name: '测试角色', enabled: true },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    messages: [],
+    userMessage: '继续。',
+    options: { maxPromptTokens: 8000 }
+  });
+
+  assert.deepEqual(result.sections.promptModules.slice(0, 3), ['vars', 'output', 'body']);
+  assert.ok(result.messages.some((message) => /<dream_plot>/.test(message.content)));
+  assert.equal(result.sections.promptVariableWrites.appliedCount, 4);
+});
+
+test('prompt budgeting protects the last two complete turns before optional community preset modules', () => {
+  const presetExtension = (sequence) => ({
+    sillyTavernPreset: { presetTitle: '超大社区预设', sourceFormat: 'sillytavern-preset', sequence }
+  });
+  const messages = Array.from({ length: 12 }, (_, index) => ({
+    role: index % 2 ? 'assistant' : 'user',
+    content: `历史${index}：${'连续事实'.repeat(80)}`
+  }));
+  const result = assemblePrompt({
+    promptModules: Array.from({ length: 30 }, (_, index) => ({
+      id: `optional-${index}`,
+      title: `可选润色 ${index}`,
+      enabled: true,
+      content: `可选文风约束 ${index}。${'修饰语'.repeat(180)}`,
+      extensions: presetExtension(index)
+    })),
+    characterCard: { name: '测试角色', enabled: true },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    messages,
+    userMessage: '承接刚才的行动。',
+    options: { maxPromptTokens: 4000, recentPairs: 6 }
+  });
+
+  const allContent = result.messages.map((message) => message.content).join('\n');
+  for (const index of [8, 9, 10, 11]) assert.match(allContent, new RegExp(`历史${index}：`));
+  assert.equal(result.sections.historyBudget.protectedTurns, 2);
+  assert.equal(result.sections.promptModuleBudget.moduleLimit, 18);
+  assert.equal(result.sections.promptModuleBudget.excessiveActiveModules, true);
+  assert.ok(Number(result.sections.totalPromptBudget.omittedKinds['preset-system'] || 0) > 0);
+  assert.ok(result.tokenEstimate <= 4000);
+});
+
+test('tight prompt budgets retain one high-value narrative preset rule without exposing CoT', () => {
+  const presetExtension = (sequence) => ({
+    sillyTavernPreset: { presetTitle: '社区叙事预设', sourceFormat: 'sillytavern-preset', sequence }
+  });
+  const messages = [
+    { role: 'user', content: `先前行动：${'追查线索。'.repeat(90)}` },
+    { role: 'assistant', content: `先前结果：${'线索指向旧宅。'.repeat(90)}` },
+    { role: 'user', content: `当前行动：${'进入旧宅。'.repeat(90)}` },
+    { role: 'assistant', content: `当前结果：${'门后传来脚步。'.repeat(90)}` }
+  ];
+  const result = assemblePrompt({
+    promptModules: [
+      {
+        id: 'narrative-progress', title: '叙事推进基准', enabled: true,
+        content: `每轮都要承接既有事实并推进一个可观察事件。${'不要复述。'.repeat(90)}`,
+        extensions: presetExtension(1)
+      },
+      {
+        id: 'cot-draft', title: 'COT 思维链草稿', enabled: true,
+        content: `输出内部思维链。${'逐步推理。'.repeat(120)}`,
+        extensions: presetExtension(2)
+      },
+      ...Array.from({ length: 20 }, (_, index) => ({
+        id: `decorative-${index}`, title: `可选装饰 ${index}`, enabled: true,
+        content: `修辞装饰 ${index}。${'华丽词藻。'.repeat(80)}`,
+        extensions: presetExtension(index + 3)
+      }))
+    ],
+    characterCard: { name: '闻雪照', enabled: true },
+    worldBook: [{
+      id: 'old-house', title: '旧宅规则', constant: true, enabled: true,
+      content: `旧宅的门只能从内侧打开。${'这是已确认事实。'.repeat(100)}`
+    }],
+    memory: { memoryCards: [] },
+    messages,
+    userMessage: '继续进入旧宅。',
+    options: { maxPromptTokens: 3000, recentPairs: 2 }
+  });
+
+  const allContent = result.messages.map((message) => message.content).join('\n');
+  assert.ok(result.sections.retainedPromptModuleIds.includes('narrative-progress'));
+  assert.doesNotMatch(allContent, /输出内部思维链|逐步推理/);
+  assert.match(allContent, /旧宅的门只能从内侧打开/);
+  assert.match(allContent, /当前结果：/);
+  assert.ok(result.tokenEstimate <= 3000);
+});
+
+test('scenario-container cards bind personality to worldbook NPCs instead of the root card', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: {
+      name: '绝世仙宗',
+      role: '个人创作主角',
+      personality: '日常能躺则躺，说话做事以最省力为原则。',
+      scenario: '某位长老正在突破。',
+      sourceSpec: 'chara_card_v3',
+      extensions: {
+        local_roleplay_agent: {
+          enrichment: { generatedFields: ['personality', 'scenario', 'exampleDialog'] }
+        }
+      },
+      enabled: true
+    },
+    worldBook: [
+      { id: 'sifu-base', title: '丝苻_基础信息', keywords: ['丝苻'], content: '丝苻身穿红色长袍，正在观察刘一。', enabled: true },
+      { id: 'zhuqing-base', title: '竹青_基础信息', keywords: ['竹青'], content: '竹青性情慵懒。', enabled: true },
+      { id: 'yaotai-base', title: '瑶台_基础信息', keywords: ['瑶台'], content: '瑶台修炼寒功。', enabled: true }
+    ],
+    memory: { memoryCards: [] },
+    messages: [],
+    userMessage: '我看向丝苻。'
+  });
+
+  assert.equal(result.sections.characterContentMode, 'scenario-container');
+  assert.match(result.messages[0].content, /# 多角色场景卡/);
+  assert.match(result.messages[0].content, /不是可直接发言的单一角色/);
+  assert.doesNotMatch(result.messages[0].content, /日常能躺则躺/);
+  assert.doesNotMatch(result.messages[0].content, /本轮可用角色：绝世仙宗/);
+  assert.match(result.messages[0].content, /本轮可用角色：丝苻/);
+  assert.ok(result.messages.some((message) => /丝苻身穿红色长袍/.test(message.content)));
+});
+
+test('community preset governance reports conflicting exclusive variables', () => {
+  const preset = (sequence) => ({
+    sillyTavernPreset: { presetTitle: '冲突预设', sourceFormat: 'sillytavern-preset', sequence }
+  });
+  const result = assemblePrompt({
+    promptModules: [
+      { id: 'short', title: '短篇', enabled: true, content: '{{setvar::word_count::300-500}}', extensions: preset(1) },
+      { id: 'long', title: '长篇', enabled: true, content: '{{setvar::word_count::1200-2000}}', extensions: preset(2) }
+    ],
+    characterCard: { name: '测试角色', enabled: true },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    messages: [],
+    userMessage: '继续。',
+    options: { maxPromptTokens: 8000 }
+  });
+
+  assert.deepEqual(result.sections.promptModuleBudget.conflicts.map((item) => item.variable), ['word_count']);
+});
+
+test('near-turn response contract wins over a shorter preset unless the user asks otherwise', () => {
+  const result = assemblePrompt({
+    promptModules: [{
+      id: 'short-output',
+      title: '社区短篇格式',
+      enabled: true,
+      content: '每次回复控制在 300-500 字。'
+    }],
+    characterCard: { name: '阿月', enabled: true },
+    worldBook: [],
+    memory: { memoryCards: [] },
+    messages: [],
+    userMessage: '继续处理眼前冲突。',
+    options: { responseLength: 'long' }
+  });
+
+  assert.ok(result.messages.some((message) => /300-500 字/.test(message.content)));
+  assert.match(result.messages.at(-2).content, /2000-3200 个中文字符/);
+  assert.match(result.messages.at(-2).content, /与正文篇幅冲突的规则，以本契约为准/);
+  assert.equal(result.sections.responseLengthMode, 'long');
+});
+
+test('assemblePrompt applies prompt-only regex rules by message role without changing display rules', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '闻雪照', enabled: true },
+    worldBook: [],
+    memory: { worldState: {}, memoryCards: [] },
+    persona: { enabled: true, name: '旅人' },
+    lightFrontend: {
+      regexTransforms: [
+        {
+          id: 'user-secret',
+          pattern: '秘密',
+          replacement: '{{user}}的隐情',
+          placement: 1,
+          promptOnly: true
+        },
+        {
+          id: 'assistant-clue',
+          pattern: '线索',
+          replacement: '{{char}}掌握的线索',
+          placement: 2,
+          promptOnly: true
+        },
+        {
+          id: 'display-only',
+          pattern: '正文',
+          replacement: '界面正文',
+          placement: 2,
+          markdownOnly: true
+        }
+      ]
+    },
+    messages: [
+      { role: 'user', content: '先保守秘密。' },
+      { role: 'assistant', content: '线索写在正文里。' }
+    ],
+    userMessage: '继续调查秘密。'
+  });
+
+  assert.ok(result.messages.some((message) => message.content === '先保守旅人的隐情。'));
+  assert.ok(result.messages.some((message) => message.content === '闻雪照掌握的线索写在正文里。'));
+  assert.equal(result.messages.at(-1).content, '继续调查旅人的隐情。');
+  assert.deepEqual(result.sections.promptRegexTransforms, ['user-secret', 'assistant-clue']);
 });
 
 test('assemblePrompt injects the persistent narrative route before story content', () => {
@@ -123,6 +499,9 @@ test('assemblePrompt gives an imported character card a near-turn priority ancho
   assert.equal(result.messages.at(-2).role, 'system');
   assert.match(result.messages.at(-2).content, /# 本轮导入角色卡优先级/);
   assert.match(result.messages.at(-2).content, /不得用内容包自带的专属人物、地点、开局事件或固定主线替换导入卡设定/);
+  assert.match(result.messages.at(-2).content, /角色卡与已启用世界书/);
+  assert.match(result.messages.at(-2).content, /不能保留两套互斥版本/);
+  assert.match(result.messages.at(-2).content, /隐藏秘密/);
   assert.equal(result.sections.hasCharacterSourcePriority, true);
 });
 
@@ -144,9 +523,10 @@ test('assemblePrompt resolves safe community templates from session MVU state', 
     userMessage: '我询问旧案。'
   });
 
-  assert.match(result.messages[0].content, /沈观澜可以透露旧案/);
-  assert.doesNotMatch(result.messages[0].content, /沈观澜保持戒备/);
-  assert.doesNotMatch(result.messages[0].content, /<%/);
+  const allContent = result.messages.map((message) => message.content).join('\n');
+  assert.match(allContent, /沈观澜可以透露旧案/);
+  assert.doesNotMatch(allContent, /沈观澜保持戒备/);
+  assert.doesNotMatch(allContent, /<%/);
 });
 
 test('assemblePrompt preserves SillyTavern prompt roles, sequence, and in-chat depth', () => {
@@ -202,11 +582,20 @@ test('assemblePrompt preserves SillyTavern prompt roles, sequence, and in-chat d
     userMessage: '当前用户消息。'
   });
 
-  assert.match(result.messages[0].content, /保留本地系统规则/);
+  assert.match(result.messages[1].content, /保留本地系统规则/);
   assert.doesNotMatch(result.messages[0].content, /以用户身份注入的预设/);
   assert.doesNotMatch(result.messages[0].content, /深度一的系统预设/);
   assert.deepEqual(
-    result.messages.slice(1).map((message) => [message.role, message.content]),
+    result.messages
+      .filter((message) => [
+        '以用户身份注入的预设。',
+        '上一轮用户消息。',
+        '上一轮助手消息。',
+        '深度一的系统预设。',
+        '深度一的助手预设。',
+        '当前用户消息。'
+      ].includes(message.content))
+      .map((message) => [message.role, message.content]),
     [
       ['user', '以用户身份注入的预设。'],
       ['user', '上一轮用户消息。'],
@@ -216,6 +605,7 @@ test('assemblePrompt preserves SillyTavern prompt roles, sequence, and in-chat d
       ['user', '当前用户消息。']
     ]
   );
+  assert.match(result.messages.at(-2).content, /# 本轮正文篇幅与推进契约/);
   assert.deepEqual(result.sections.promptPlacement, {
     system: ['legacy'],
     relative: ['st-relative-user'],
@@ -279,6 +669,90 @@ test('retrieveCards prefers higher priority when keyword hits are equal', () => 
   });
 
   assert.deepEqual(result.map((card) => card.id), ['high', 'low']);
+});
+
+test('retrieveCards keeps direct character matches ahead of higher-score recursive matches', () => {
+  const result = retrieveCards({
+    query: '江小鲤走进客栈。',
+    maxCards: 2,
+    maxRecursionDepth: 1,
+    worldBook: [
+      cardFixture({
+        id: 'direct-character',
+        title: '江小鲤',
+        keywords: ['江小鲤'],
+        priority: 10,
+        content: '江小鲤认识虞清寒与雷横。'
+      }),
+      cardFixture({
+        id: 'recursive-one',
+        title: '虞清寒',
+        keywords: ['虞清寒'],
+        priority: 1000,
+        content: '虞清寒的背景。'
+      }),
+      cardFixture({
+        id: 'recursive-two',
+        title: '雷横',
+        keywords: ['雷横'],
+        priority: 900,
+        content: '雷横的背景。'
+      })
+    ]
+  });
+
+  assert.deepEqual(result.map((card) => card.id), ['direct-character', 'recursive-one']);
+});
+
+test('retrieveCards honors SillyTavern recursion exclusion flags', () => {
+  const cards = [
+    cardFixture({
+      id: 'direct-source',
+      title: '直接线索',
+      keywords: ['客栈'],
+      content: '客栈里有人提到虞清寒。'
+    }),
+    cardFixture({
+      id: 'excluded-recursive',
+      title: '虞清寒',
+      keywords: ['虞清寒'],
+      content: '不应通过递归激活。',
+      extensions: { exclude_recursion: true }
+    })
+  ];
+
+  assert.deepEqual(
+    retrieveCards({ query: '我走进客栈。', worldBook: cards, maxRecursionDepth: 1 }).map((card) => card.id),
+    ['direct-source']
+  );
+  assert.deepEqual(
+    retrieveCards({ query: '我寻找虞清寒。', worldBook: cards, maxRecursionDepth: 1 }).map((card) => card.id),
+    ['excluded-recursive']
+  );
+});
+
+test('retrieveCards does not use prevent_recursion entries as recursive trigger text', () => {
+  const result = retrieveCards({
+    query: '我走进客栈。',
+    maxRecursionDepth: 1,
+    worldBook: [
+      cardFixture({
+        id: 'non-recursive-source',
+        title: '客栈线索',
+        keywords: ['客栈'],
+        content: '虞清寒正在楼上。',
+        extensions: { prevent_recursion: true }
+      }),
+      cardFixture({
+        id: 'recursive-target',
+        title: '虞清寒',
+        keywords: ['虞清寒'],
+        content: '不应被上一条内容递归触发。'
+      })
+    ]
+  });
+
+  assert.deepEqual(result.map((card) => card.id), ['non-recursive-source']);
 });
 
 test('retrieveCards supports regex matching', () => {
@@ -445,6 +919,83 @@ test('assemblePrompt renders world book entries by insertion depth', () => {
   assert.ok(result.messages.some(m => /六轮内仍要保留的设定/.test(m.content)));
 });
 
+test('assemblePrompt reserves room for triggered world simulation entries and blocks executable controllers', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '九渊行者', enabled: true },
+    worldBook: [{
+      id: 'calendar-law',
+      title: '渊历法则',
+      content: '当前渊候会影响修行、物价、伤势与人物日程。'.repeat(80),
+      constant: true,
+      enabled: true
+    }, {
+      id: 'npc-controller',
+      title: '在场NPC生成引擎',
+      content: '<% if (state.location) { %>推进人物日程<% } %>',
+      constant: true,
+      enabled: true
+    }, {
+      id: 'market-trigger',
+      title: '边境墟市经济',
+      keywords: ['墟市'],
+      content: '边境封锁导致飞票贬值，物价与过境税随势力关系变化。',
+      enabled: true,
+      depth: 2
+    }],
+    memory: { worldState: { location: { current: '边境墟市' } }, memoryCards: [] },
+    messages: [],
+    userMessage: '我进入墟市打听粮价。',
+    options: {
+      maxInjectedCards: 4,
+      maxWorldBookTokens: 120,
+      maxConstantWorldBookEntryTokens: 72,
+      maxWorldBookEntryTokens: 48
+    }
+  });
+
+  assert.ok(result.sections.injectedCardIds.includes('market-trigger'));
+  assert.equal(result.sections.injectedCardIds.includes('npc-controller'), false);
+  assert.ok(result.sections.injectedCardIds.includes('community-runtime-compatibility-contract'));
+  assert.ok(result.messages.some((message) => /飞票贬值/.test(message.content)));
+  assert.equal(result.sections.worldBookBudget.playableCompilation.blockedCount, 1);
+  assert.ok(result.sections.worldBookBudget.usedTokens <= 120);
+});
+
+test('assemblePrompt budgets constant world book entries by authored priority and insertion order', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: { name: '九渊行者', enabled: true },
+    worldBook: [{
+      id: 'late-variable-protocol',
+      title: '变量输出协议',
+      content: '变量输出协议。'.repeat(200),
+      constant: true,
+      priority: 80,
+      insertionOrder: 200,
+      enabled: true
+    }, {
+      id: 'core-world-law',
+      title: '世界法则',
+      content: '世界法则优先成立。'.repeat(200),
+      constant: true,
+      priority: 80,
+      insertionOrder: 10,
+      enabled: true
+    }],
+    memory: { worldState: {}, memoryCards: [] },
+    messages: [],
+    userMessage: '继续。',
+    options: {
+      maxWorldBookTokens: 120,
+      maxConstantWorldBookEntryTokens: 48
+    }
+  });
+
+  assert.equal(result.sections.injectedCardIds[0], 'core-world-law');
+  assert.ok(result.messages.some((message) => /世界法则优先成立/.test(message.content)));
+});
+
 test('assemblePrompt injects enabled normalized memory facts and ignores disabled facts', () => {
   const result = assemblePrompt({
     promptModules: [],
@@ -514,6 +1065,164 @@ test('assemblePrompt handles null collections and still appends final user messa
   assert.equal(result.messages.at(-1).content, '继续前进。');
   assert.deepEqual(result.injectedCards, []);
   assert.deepEqual(result.sections.promptModules, []);
+});
+
+test('assemblePrompt filters migration placeholders, resolves preset variables, and enforces the total budget', () => {
+  const result = assemblePrompt({
+    promptModules: [
+      {
+        id: 'preset-variables',
+        title: '变量初始化',
+        enabled: true,
+        content: '{{setvar::mode::director}}\n当前模式：{{getvar::mode}}'
+      },
+      {
+        id: 'migration-placeholder',
+        title: '旧模块占位',
+        enabled: true,
+        content: '本占位不参与运行，内容已迁移到主核。'
+      },
+      {
+        id: 'large-support',
+        title: '辅助规则',
+        enabled: true,
+        content: '辅助剧情约束。'.repeat(500)
+      }
+    ],
+    characterCard: { name: '沈观澜', enabled: true },
+    worldBook: [{
+      id: 'large-worldbook',
+      title: '镇武司',
+      keywords: ['镇武司'],
+      content: '镇武司世界设定。'.repeat(500),
+      enabled: true
+    }],
+    memory: {
+      rollingSummary: '过去剧情摘要。'.repeat(300),
+      worldState: {
+        relationships: Array.from({ length: 30 }, (_, index) => ({ name: `人物${index}`, trust: index })),
+        timeline: Array.from({ length: 40 }, (_, index) => ({ turn: index, event: '旧事件'.repeat(20) }))
+      },
+      memoryCards: []
+    },
+    messages: Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 ? 'assistant' : 'user',
+      content: `历史消息${index}：${'内容'.repeat(100)}`
+    })),
+    userMessage: '继续调查镇武司。',
+    options: { maxPromptTokens: 4000, recentPairs: 10, maxInjectedCards: 4 }
+  });
+
+  const allContent = result.messages.map((message) => message.content).join('\n');
+  assert.ok(result.tokenEstimate <= 4000, `token estimate ${result.tokenEstimate} should fit the configured budget`);
+  assert.match(allContent, /镇武司世界设定/);
+  assert.doesNotMatch(allContent, /\{\{\s*(setvar|addvar|incvar|decvar)\s*::/i);
+  assert.doesNotMatch(allContent, /本占位不参与运行/);
+  assert.equal(result.sections.promptVariableWrites.unresolvedCount, 0);
+  assert.equal(result.sections.promptVariableWrites.appliedCount, 1);
+  assert.deepEqual(result.sections.promptModuleBudget.noopIds, ['migration-placeholder']);
+  assert.ok(result.sections.worldStateBudget.afterTokens <= 360);
+  assert.ok(result.sections.totalPromptBudget.afterTokens <= 4000);
+});
+
+test('assemblePrompt excludes unused alternate openings and bounds large simulation prompts', () => {
+  const result = assemblePrompt({
+    promptModules: [{ id: 'core', title: '核心', enabled: true, content: '保持人物连续。' }],
+    characterCard: {
+      name: '江小鲤',
+      role: '青梅',
+      description: '与主角一同长大。',
+      firstMessage: '实际开场文本。',
+      alternateGreetings: ['未选中的超长备用开场。'.repeat(1000)],
+      enabled: true
+    },
+    worldBook: [{
+      id: 'direct-role',
+      title: '江小鲤当前关系',
+      keywords: ['江小鲤'],
+      content: '江小鲤仍在观察主角是否值得信任。',
+      enabled: true
+    }],
+    memory: {
+      worldState: { protagonist: { name: '林青阳' } },
+      memoryCards: [],
+      simulation: {
+        actors: Array.from({ length: 16 }, (_, index) => ({
+          id: `actor-${index}`,
+          name: `人物${index}`,
+          role: '场景人物',
+          goals: ['独立目标'.repeat(80)],
+          publicKnowledge: ['公开信息'.repeat(100)],
+          privateKnowledge: ['私有信息'.repeat(100)]
+        })),
+        systems: {
+          topology: {
+            nodes: Array.from({ length: 20 }, (_, index) => ({
+              id: `node-${index}`,
+              name: `地点${index}`,
+              summary: '地点规则'.repeat(120)
+            }))
+          }
+        }
+      }
+    },
+    messages: [{ role: 'assistant', content: '已经采用实际开场并进入正文。' }],
+    userMessage: '江小鲤现在怎么想？',
+    options: { maxPromptTokens: 4000, maxInjectedCards: 3 }
+  });
+
+  const allContent = result.messages.map((message) => message.content).join('\n');
+  assert.ok(result.tokenEstimate <= 4000);
+  assert.doesNotMatch(allContent, /未选中的超长备用开场/);
+  assert.doesNotMatch(allContent, /实际开场文本/);
+  assert.match(allContent, /江小鲤仍在观察主角是否值得信任/);
+  assert.deepEqual(result.sections.retainedInjectedCardIds, ['direct-role']);
+  assert.match(allContent, /沉浸式呈现契约/);
+  assert.match(allContent, /动作协议/);
+});
+
+test('assemblePrompt threads generation, character, and additional-source context into world book activation', () => {
+  const result = assemblePrompt({
+    promptModules: [],
+    characterCard: {
+      name: '沈观澜',
+      description: '左腕留有冷月印。',
+      tags: ['武侠'],
+      enabled: true
+    },
+    worldBook: [{
+      id: 'continue-note',
+      title: '续写阶段线索',
+      keywords: ['冷月印'],
+      content: '续写时应继续追踪冷月印的来源。',
+      enabled: true,
+      extensions: {
+        triggers: ['continue'],
+        match_character_description: true,
+        character_filter: { names: ['沈观澜'], tags: ['武侠'], isExclude: false }
+      }
+    }, {
+      id: 'normal-note',
+      title: '普通生成线索',
+      keywords: ['冷月印'],
+      content: '本条只应在普通生成中出现。',
+      enabled: true,
+      extensions: {
+        triggers: ['normal'],
+        match_character_description: true
+      }
+    }],
+    memory: { memoryCards: [] },
+    messages: [],
+    userMessage: '',
+    activationContext: { seed: 'continue-test', generationType: 'continue' }
+  });
+
+  assert.ok(result.sections.injectedCardIds.includes('continue-note'));
+  assert.equal(result.sections.injectedCardIds.includes('normal-note'), false);
+  assert.deepEqual(result.sections.worldBookActivation.suppressed.generationTypeIds, ['normal-note']);
+  assert.equal(result.sections.worldBookActivation.context.generationType, 'continue');
+  assert.ok(result.messages.some((message) => /继续追踪冷月印/.test(message.content)));
 });
 
 function cardFixture(patch = {}) {

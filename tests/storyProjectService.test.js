@@ -39,6 +39,36 @@ test('story projects preserve a base script and attach multiple sessions', async
   assert.equal(projects.length, 1);
   assert.equal(summary.basePackId, 'xianxia');
   assert.equal(summary.sessionCount, 2);
+  assert.equal(summary.lifecycleState, 'active');
+  assert.equal(summary.canCreateSession, true);
+});
+
+test('story projects preserve a detached lifecycle snapshot after their pack is removed', async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), 'story-project-'));
+  const service = new StoryProjectService(new JsonStore(rootDir));
+  const created = await service.createProject({ title: '旧卷', basePackId: 'custom-pack' });
+
+  const detached = await service.saveProject({
+    ...created,
+    basePackId: '',
+    lifecycle: {
+      state: 'detached',
+      detachedAt: '2026-08-03T12:00:00.000Z',
+      reason: 'content-pack-deleted',
+      sourcePack: {
+        id: 'custom-pack',
+        title: '旧剧本',
+        version: '2.0.0',
+        visualPackId: 'xianxia'
+      }
+    }
+  });
+  const summary = summarizeStoryProject(detached);
+
+  assert.equal(detached.basePackId, '');
+  assert.equal(detached.lifecycle.sourcePack.id, 'custom-pack');
+  assert.equal(summary.lifecycleState, 'detached');
+  assert.equal(summary.canCreateSession, false);
 });
 
 test('story projects require a base content pack', async () => {

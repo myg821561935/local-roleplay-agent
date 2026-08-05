@@ -4,16 +4,16 @@ import { callOpenAICompatible, streamOpenAICompatible } from './openaiCompatible
 
 export function buildProviderClient() {
   return {
-    complete: ({ provider, messages, fetchImpl }) => callProvider({ provider, messages, fetchImpl }),
+    complete: ({ provider, messages, fetchImpl, tools }) => callProvider({ provider, messages, fetchImpl, tools }),
     stream: ({ provider, messages, onToken, fetchImpl }) => streamProvider({ provider, messages, onToken, fetchImpl })
   };
 }
 
-async function callProvider({ provider, messages, fetchImpl = fetch }) {
+async function callProvider({ provider, messages, fetchImpl = fetch, tools = null }) {
   const kind = providerKind(provider);
   if (kind === 'anthropic') return callAnthropic({ provider, messages, fetchImpl });
   if (kind === 'gemini') return callGemini({ provider, messages, fetchImpl });
-  return callOpenAICompatible({ provider, messages, fetchImpl });
+  return callOpenAICompatible({ provider, messages, fetchImpl, tools });
 }
 
 async function streamProvider({ provider, messages, onToken, fetchImpl = fetch }) {

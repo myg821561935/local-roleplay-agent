@@ -1,0 +1,306 @@
+.prompt-template-center {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+.prompt-template-center-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--gold) 28%, transparent);
+}
+
+.prompt-template-center-header h3 {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--serif);
+  font-size: 17px;
+  letter-spacing: .03em;
+}
+
+.prompt-template-center-header p,
+.prompt-template-summary {
+  margin: 3px 0 0;
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.prompt-template-summary {
+  max-width: 46%;
+  text-align: right;
+}
+
+.prompt-template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.prompt-template-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-deep) 92%, transparent);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, transform .16s ease;
+}
+
+.prompt-template-card:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--gold) 55%, var(--border));
+}
+
+.prompt-template-card.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--gold));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-deep));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 72%, var(--gold));
+}
+
+.prompt-template-card-index {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 50%;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.prompt-template-card-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.prompt-template-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.prompt-template-card-meta b {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.prompt-template-card-meta em {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--subtle);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.prompt-template-card-meta em[data-fit="excellent"],
+.prompt-template-card-meta em[data-fit="good"] {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent);
+}
+
+.prompt-template-card strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.prompt-template-card strong i {
+  color: var(--ok);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.prompt-template-card small {
+  color: var(--subtle);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.prompt-template-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--gold) 26%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+
+.prompt-template-detail[hidden] {
+  display: none;
+}
+
+.prompt-template-detail-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.prompt-template-detail-heading h4 {
+  margin: 0;
+  color: var(--gold);
+  font-size: 14px;
+}
+
+.prompt-template-detail-heading p {
+  margin: 3px 0 0;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.prompt-template-reasons {
+  min-width: 180px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.prompt-template-parameters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.prompt-template-parameter {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.prompt-template-parameter select {
+  min-width: 0;
+  font-size: 11px;
+}
+
+.prompt-template-apply-row {
+  display: grid;
+  grid-template-columns: minmax(130px, .7fr) auto auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.prompt-template-apply-row label {
+  display: grid;
+  gap: 4px;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.prompt-template-preview {
+  padding: 9px 10px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 60%, var(--gold));
+  background: color-mix(in srgb, var(--panel-deep) 78%, transparent);
+}
+
+.prompt-template-preview p {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.prompt-template-change-ledger {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 5px;
+}
+
+.prompt-template-change-ledger span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.prompt-template-change-ledger b {
+  color: var(--gold);
+  font-family: var(--mono);
+}
+
+.prompt-template-warnings {
+  margin: 7px 0 0;
+  padding-left: 18px;
+  color: var(--warning, #d8aa70);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.prompt-template-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 18px;
+  border: 1px dashed var(--border);
+  color: var(--subtle);
+  font-size: 11px;
+  text-align: center;
+}
+
+.prompt-template-empty.is-error {
+  color: var(--danger);
+}
+
+.prompt-template-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.prompt-template-advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.prompt-template-advanced-body {
+  display: grid;
+  gap: 0;
+  padding-top: 11px;
+}
+
+@media (max-width: 760px) {
+  .prompt-template-grid,
+  .prompt-template-parameters {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-template-center-header,
+  .prompt-template-detail-heading {
+    display: grid;
+  }
+
+  .prompt-template-summary {
+    max-width: none;
+    text-align: left;
+  }
+
+  .prompt-template-apply-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .prompt-template-apply-row label {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prompt-template-card {
+    transition: none;
+  }
+}

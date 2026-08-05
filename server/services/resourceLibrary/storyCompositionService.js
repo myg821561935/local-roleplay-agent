@@ -6,9 +6,9 @@ import {
   createFingerprint,
   normalizeTitle
 } from './resourceConflictService.js';
+import { expandPromptResourceModules } from '../../resources/promptBundle.js';
 
 const BASE_INHERITANCE_MODES = new Set(['full', 'genre', 'none']);
-const STORY_SPECIFIC_PROMPT_PATTERN = /(?:world[-_ ]?premise|core[-_ ]?route|main[-_ ]?line|opening|prologue|固定主线|开局|世界观基调|旧案主线)/i;
 
 export class StoryCompositionService {
   constructor({ createEmptyPackSeed }) {
@@ -42,9 +42,7 @@ export class StoryCompositionService {
     return structuredClone((modules || []).filter((module) => {
       const scope = String(module?.extensions?.inheritanceScope || module?.inheritanceScope || '').trim().toLowerCase();
       if (scope === 'story' || scope === 'none') return false;
-      if (scope === 'genre' || scope === 'global') return true;
-      const identity = [module?.id, module?.title].filter(Boolean).join(' ');
-      return !STORY_SPECIFIC_PROMPT_PATTERN.test(identity);
+      return scope === 'genre' || scope === 'global';
     }));
   }
 
@@ -199,6 +197,11 @@ export class StoryCompositionService {
   }
 
   composePromptModules({ baseModules = [], resources = [] } = {}) {
+    const expandedResources = (resources || []).flatMap((resource) => (
+      expandPromptResourceModules(resource).map((module) => ({ resource, module }))
+    ));
+    const runtimeCompanions = expandedResources.filter(({ module }) => isRuntimeCompanionModule(module));
+    const promptResources = expandedResources.filter(({ module }) => !isRuntimeCompanionModule(module));
     const candidates = [
       ...(baseModules || []).map((item) => ({
         module: normalizePromptModule(item),
@@ -206,8 +209,8 @@ export class StoryCompositionService {
         resourceId: '',
         resourceTitle: '题材基线'
       })),
-      ...(resources || []).map((resource) => ({
-        module: normalizePromptModule(resource.payload || {}),
+      ...promptResources.map(({ resource, module }) => ({
+        module,
         origin: 'resource',
         resourceId: resource.id || '',
         resourceTitle: resource.title || '补充预设'
@@ -253,7 +256,8 @@ export class StoryCompositionService {
       report: {
         summary: {
           basePromptModules: Number(baseModules?.length || 0),
-          selectedPromptModules: Number(resources?.length || 0),
+          selectedPromptModules: promptResources.length,
+          runtimeCompanions: runtimeCompanions.length,
           finalPromptModules: accepted.length,
           promptExactDuplicates,
           promptIdConflicts,
@@ -263,6 +267,10 @@ export class StoryCompositionService {
       }
     };
   }
+}
+
+function isRuntimeCompanionModule(module) {
+  return Boolean(module?.extensions?.sillyTavernRuntimeCompanion);
 }
 
 function getWorldBookTriggers(entry) {

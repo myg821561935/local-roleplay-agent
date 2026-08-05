@@ -13,37 +13,45 @@ export const BACKGROUND_PRESETS = [
   { label: '星河夜空', prompt: 'milky way galaxy over mountain lake, starry night sky, reflection in water, cinematic' }
 ];
 
-export const AVAILABLE_THEMES = ['default-dark', 'wuxia-scroll', 'xianxia-scroll'];
+export const DEFAULT_READING_MODE = 'eye-care';
+
+export const AVAILABLE_THEMES = ['eye-care', 'dark', 'bright', 'soft', 'modern', 'cyber'];
+
+export const LEGACY_THEME_ALIASES = Object.freeze({
+  'default-dark': 'dark',
+  'wuxia-scroll': 'eye-care',
+  'xianxia-scroll': 'soft'
+});
 
 export const CONTENT_PACK_VISUAL_PRESETS = {
+  neutral: {
+    label: '无舞台背景',
+    backgroundImage: ''
+  },
   xuanhuan: {
     label: '神荒玄幻',
-    theme: 'wuxia-scroll',
     backgroundImage: '/assets/xuanhuan-luoyan-stage.png'
   },
   lingyi: {
     label: '民俗灵异',
-    theme: 'default-dark',
     backgroundImage: '/assets/lingyi-yongan-stage.png'
   },
   mingmo: {
     label: '明末风云',
-    theme: 'wuxia-scroll',
     backgroundImage: '/assets/mingmo-chongzhen-stage.png'
   },
   xianxia: {
     label: '太虚仙侠',
-    theme: 'xianxia-scroll',
     backgroundImage: '/assets/xianxia-stage.png'
   },
   yingxiongzhi: {
     label: '英雄志群像',
-    theme: 'default-dark',
     backgroundImage: '/assets/wuxia-stage.png'
   }
 };
 
 export const STORY_PACK_PRESENTATION = {
+  neutral: { badge: '自定义故事', accent: '#6b8afd' },
   xuanhuan: { badge: '武道玄幻', accent: '#76c1b6' },
   lingyi: { badge: '民俗悬疑', accent: '#c78f7a' },
   mingmo: { badge: '历史生存', accent: '#d4aa59' },
@@ -51,13 +59,25 @@ export const STORY_PACK_PRESENTATION = {
   yingxiongzhi: { badge: '群像武侠', accent: '#b18bd0' }
 };
 
+export function normalizeThemePreference(theme) {
+  const value = String(theme || '').trim();
+  if (AVAILABLE_THEMES.includes(value)) return value;
+  return LEGACY_THEME_ALIASES[value] || DEFAULT_READING_MODE;
+}
+
+export function loadThemePreference(storage = globalThis.localStorage) {
+  try {
+    return normalizeThemePreference(storage?.getItem('local-roleplay-agent-theme'));
+  } catch {
+    return DEFAULT_READING_MODE;
+  }
+}
+
 export function createVisualStageController({
   state,
   els,
-  apiRequest,
-  getSessionId,
   getCharacterPortraitUrl,
-  saveSessionVisualSettings,
+  saveSettingsPatch,
   setStatus,
   humanizeApiError
 }) {
@@ -116,8 +136,8 @@ export function createVisualStageController({
     }
     if (els.backgroundStatus) {
       els.backgroundStatus.textContent = isCustom
-        ? `当前：${label || '自定义舞台背景'}${fit === 'portrait' ? '，使用人物聚焦构图' : ''}。界面皮肤只影响工作台，不覆盖会话内容。`
-        : '当前：未设置舞台背景。界面皮肤只影响工作台，不覆盖会话内容。';
+        ? `当前：${label || '自定义舞台背景'}${fit === 'portrait' ? '，使用人物聚焦构图' : ''}。阅读模式独立于剧本，剧本只提供舞台背景。`
+        : '当前：未设置舞台背景。阅读模式独立于剧本，剧本只提供舞台背景。';
     }
   }
 
@@ -172,21 +192,20 @@ export function createVisualStageController({
     const bgUrl = String(url || '').trim();
     const safeFit = fit === 'portrait' ? 'portrait' : 'cover';
     try {
-      const settings = {
-        ...(state.session?.settings || {}),
+      const settingsPatch = {
         backgroundImage: bgUrl,
         backgroundFit: bgUrl ? safeFit : 'cover',
         backgroundSource: bgUrl ? String(source || 'manual') : ''
       };
-      const payload = await apiRequest('/api/session/settings', {
-        method: 'PUT',
-        body: { sessionId: getSessionId(), settings }
-      });
-      state.session = payload.session || state.session;
-      applyBackgroundImage(bgUrl, settings.backgroundFit);
+      const savedSession = await saveSettingsPatch(settingsPatch);
+      if (savedSession?.id === state.session?.id) {
+        applyBackgroundImage(bgUrl, settingsPatch.backgroundFit);
+      }
       setStatus(els.appStatus, safeFit === 'portrait' ? '已使用角色立绘作为舞台背景' : '背景已更新', 'ok');
+      return savedSession;
     } catch (error) {
       setStatus(els.appStatus, `背景保存失败：${humanizeApiError(error)}`, 'error');
+      return null;
     }
   }
 
@@ -202,7 +221,7 @@ export function createVisualStageController({
   }
 
   function normalizeTheme(theme) {
-    return AVAILABLE_THEMES.includes(theme) ? theme : 'wuxia-scroll';
+    return normalizeThemePreference(theme);
   }
 
   function applyTheme(theme) {
@@ -218,14 +237,10 @@ export function createVisualStageController({
     return value;
   }
 
-  async function saveSessionTheme(theme) {
+  function saveReadingMode(theme) {
     const value = applyTheme(theme);
-    try {
-      await saveSessionVisualSettings({ theme: value });
-      setStatus(els.appStatus, '界面皮肤已保存到当前会话', 'ok');
-    } catch (error) {
-      setStatus(els.appStatus, `界面皮肤保存失败：${humanizeApiError(error)}`, 'error');
-    }
+    setStatus(els.appStatus, '阅读模式已保存到本机，切换剧本时保持不变', 'ok');
+    return value;
   }
 
   return {
@@ -235,8 +250,9 @@ export function createVisualStageController({
     backgroundUrlsMatch,
     clearBackgroundImage,
     getBackgroundLabelForUrl,
+    normalizeTheme,
     renderBackgroundPresets,
-    saveSessionTheme,
+    saveReadingMode,
     setBackgroundImage,
     toggleBackgroundPanel,
     updateBackgroundModeUi

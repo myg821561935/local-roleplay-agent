@@ -47,13 +47,16 @@ export class BackupService {
     return { backups, invalidCount };
   }
 
-  async createBackup({ reason = 'manual' } = {}) {
-    return this.runExclusive(() => this.createBackupInternal({ reason }));
+  async createBackup({ reason = 'manual', includePaths } = {}) {
+    return this.runExclusive(() => this.createBackupInternal({ reason, includePaths }));
   }
 
   async restoreBackup(backupId) {
     return this.runExclusive(async () => {
       const payload = await this.readBackup(backupId);
+      if (backupScope(payload) === 'selected') {
+        return this.restoreSelectedBackupInternal(payload, backupId);
+      }
       const safetyBackup = await this.createBackupInternal({ reason: `pre-restore:${backupId}` });
       const restoreId = crypto.randomUUID();
       const stagingRoot = path.join(this.rootDir, `.data-restore-${restoreId}`);
@@ -92,6 +95,32 @@ export class BackupService {
     });
   }
 
+  async restoreSelectedBackupInternal(payload, backupId) {
+    if (Number(payload.dataSchemaVersion || 0) !== DATA_SCHEMA_VERSION) {
+      throw new BackupError('BACKUP_SCOPED_SCHEMA_MISMATCH');
+    }
+    const targetPaths = selectedBackupPaths(payload);
+    const safetyBackup = await this.createBackupInternal({
+      reason: `pre-restore:${backupId}`,
+      includePaths: targetPaths
+    });
+    const rollback = await captureCurrentFiles(this.dataDir, targetPaths);
+
+    try {
+      await applySelectedBackup(this.dataDir, payload);
+      return {
+        restored: summarizeBackup(payload),
+        safetyBackup,
+        dataSchemaVersion: DATA_SCHEMA_VERSION,
+        restartRecommended: true
+      };
+    } catch (error) {
+      await restoreCapturedFiles(this.dataDir, rollback).catch(() => {});
+      if (error instanceof BackupError) throw error;
+      throw new BackupError('BACKUP_RESTORE_FAILED', 500);
+    }
+  }
+
   async getBackupFile(backupId) {
     const payload = await this.readBackup(backupId);
     return {
@@ -101,10 +130,11 @@ export class BackupService {
     };
   }
 
-  async createBackupInternal({ reason }) {
+  async createBackupInternal({ reason, includePaths } = {}) {
     await migrateData({ rootDir: this.rootDir, now: this.now });
     await mkdir(this.backupDir, { recursive: true });
-    const files = await collectBackupFiles(this.dataDir);
+    const scope = Array.isArray(includePaths) ? 'selected' : 'full';
+    const { files, missingPaths } = await collectBackupFiles(this.dataDir, includePaths);
     const createdAt = this.now().toISOString();
     const id = createBackupId(createdAt);
     const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
@@ -117,10 +147,15 @@ export class BackupService {
       dataSchemaVersion: DATA_SCHEMA_VERSION,
       createdAt,
       reason: String(reason || 'manual').slice(0, 120),
+      scope,
       fileCount: files.length,
       totalBytes,
       containsSecrets: files.some((file) => file.path === 'config/providers.local.json'),
       checksum: backupChecksum(files),
+      ...(scope === 'selected' ? {
+        missingPaths,
+        selectionChecksum: selectedBackupChecksum(files, missingPaths)
+      } : {}),
       files
     };
     validateBackupPayload(payload);
@@ -160,9 +195,10 @@ export class BackupService {
   }
 }
 
-async function collectBackupFiles(dataDir) {
+async function collectBackupFiles(dataDir, includePaths) {
   const files = [];
-  await walk(dataDir, async (filePath) => {
+  const missingPaths = [];
+  const collectFile = async (filePath) => {
     if (filePath.endsWith('.tmp')) return;
     const content = await readFile(filePath);
     const relativePath = toPortablePath(path.relative(dataDir, filePath));
@@ -172,10 +208,30 @@ async function collectBackupFiles(dataDir) {
       sha256: sha256(content),
       contentBase64: content.toString('base64')
     });
-  });
+  };
+
+  if (Array.isArray(includePaths)) {
+    const selectedPaths = uniqueRelativePaths(includePaths);
+    if (!selectedPaths.length) throw new BackupError('BACKUP_EMPTY_SCOPE');
+    for (const relativePath of selectedPaths) {
+      const filePath = path.resolve(dataDir, relativePath);
+      if (!isPathInside(filePath, dataDir)) throw new BackupError('BACKUP_PATH_TRAVERSAL');
+      try {
+        const fileStat = await stat(filePath);
+        if (!fileStat.isFile()) throw new BackupError('BACKUP_SCOPE_FILE_REQUIRED');
+        await collectFile(filePath);
+      } catch (error) {
+        if (error.code === 'ENOENT') missingPaths.push(relativePath);
+        else throw error;
+      }
+    }
+  } else {
+    await walk(dataDir, collectFile);
+  }
   files.sort((left, right) => left.path.localeCompare(right.path));
+  missingPaths.sort((left, right) => left.localeCompare(right));
   enforceBackupLimits(files);
-  return files;
+  return { files, missingPaths };
 }
 
 async function walk(directory, visitFile) {
@@ -200,6 +256,8 @@ function validateBackupPayload(payload, { verifyContents = true } = {}) {
   }
   if (!BACKUP_ID_PATTERN.test(String(payload.id || ''))) throw new BackupError('BACKUP_INVALID_ID');
   if (!Array.isArray(payload.files)) throw new BackupError('BACKUP_FILES_INVALID');
+  const scope = backupScope(payload);
+  if (!['full', 'selected'].includes(scope)) throw new BackupError('BACKUP_SCOPE_INVALID');
   if (Number(payload.dataSchemaVersion || 0) > DATA_SCHEMA_VERSION) {
     throw new BackupError('BACKUP_SCHEMA_NEWER_THAN_APP');
   }
@@ -219,6 +277,22 @@ function validateBackupPayload(payload, { verifyContents = true } = {}) {
         throw new BackupError('BACKUP_CHECKSUM_MISMATCH');
       }
     }
+  }
+  const missingPaths = Array.isArray(payload.missingPaths)
+    ? uniqueRelativePaths(payload.missingPaths)
+    : [];
+  if (scope === 'selected') {
+    if (missingPaths.length !== (payload.missingPaths || []).length) {
+      throw new BackupError('BACKUP_SCOPE_PATHS_INVALID');
+    }
+    if (missingPaths.some((relativePath) => seen.has(relativePath))) {
+      throw new BackupError('BACKUP_SCOPE_PATHS_INVALID');
+    }
+    if (selectedBackupChecksum(payload.files, missingPaths) !== payload.selectionChecksum) {
+      throw new BackupError('BACKUP_CHECKSUM_MISMATCH');
+    }
+  } else if (missingPaths.length) {
+    throw new BackupError('BACKUP_SCOPE_PATHS_INVALID');
   }
   enforceBackupLimits(payload.files, totalBytes);
   if (Number(payload.fileCount) !== payload.files.length || Number(payload.totalBytes) !== totalBytes) {
@@ -246,6 +320,7 @@ function summarizeBackup(payload) {
     dataSchemaVersion: Number(payload.dataSchemaVersion || 0),
     createdAt: payload.createdAt,
     reason: payload.reason,
+    scope: backupScope(payload),
     fileCount: Number(payload.fileCount || 0),
     totalBytes: Number(payload.totalBytes || 0),
     containsSecrets: payload.containsSecrets === true,
@@ -279,6 +354,66 @@ function backupChecksum(files) {
   return sha256(Buffer.from(JSON.stringify(manifest)));
 }
 
+function selectedBackupChecksum(files, missingPaths) {
+  return sha256(Buffer.from(JSON.stringify({
+    checksum: backupChecksum(files),
+    missingPaths
+  })));
+}
+
+function backupScope(payload) {
+  return payload?.scope === undefined ? 'full' : String(payload.scope);
+}
+
+function selectedBackupPaths(payload) {
+  return uniqueRelativePaths([
+    ...(payload.files || []).map((file) => file.path),
+    ...(payload.missingPaths || [])
+  ]);
+}
+
+function uniqueRelativePaths(values) {
+  return [...new Set((values || []).map(validateRelativePath))]
+    .sort((left, right) => left.localeCompare(right));
+}
+
+async function captureCurrentFiles(dataDir, relativePaths) {
+  const captured = new Map();
+  for (const relativePath of uniqueRelativePaths(relativePaths)) {
+    const filePath = path.resolve(dataDir, relativePath);
+    if (!isPathInside(filePath, dataDir)) throw new BackupError('BACKUP_PATH_TRAVERSAL');
+    try {
+      captured.set(relativePath, await readFile(filePath));
+    } catch (error) {
+      if (error.code === 'ENOENT') captured.set(relativePath, null);
+      else throw error;
+    }
+  }
+  return captured;
+}
+
+async function restoreCapturedFiles(dataDir, captured) {
+  for (const [relativePath, content] of captured) {
+    const targetPath = path.resolve(dataDir, relativePath);
+    if (content === null) await rm(targetPath, { force: true });
+    else await writeAtomic(targetPath, content);
+  }
+}
+
+async function applySelectedBackup(dataDir, payload) {
+  for (const file of payload.files) {
+    const relativePath = validateRelativePath(file.path);
+    const targetPath = path.resolve(dataDir, relativePath);
+    if (!isPathInside(targetPath, dataDir)) throw new BackupError('BACKUP_PATH_TRAVERSAL');
+    await writeAtomic(targetPath, Buffer.from(file.contentBase64, 'base64'));
+  }
+  for (const relativePath of payload.missingPaths || []) {
+    const targetPath = path.resolve(dataDir, validateRelativePath(relativePath));
+    if (!isPathInside(targetPath, dataDir)) throw new BackupError('BACKUP_PATH_TRAVERSAL');
+    await rm(targetPath, { force: true });
+  }
+}
+
 function enforceBackupLimits(files, knownTotal) {
   if (files.length > MAX_BACKUP_FILES) throw new BackupError('BACKUP_TOO_MANY_FILES');
   const total = knownTotal ?? files.reduce((sum, file) => sum + Number(file.bytes || 0), 0);
@@ -301,7 +436,7 @@ function isPathInside(filePath, parentDir) {
 async function writeAtomic(filePath, content) {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.tmp`;
-  await writeFile(tempPath, content, 'utf8');
+  await writeFile(tempPath, content, Buffer.isBuffer(content) ? undefined : 'utf8');
   await rename(tempPath, filePath);
 }
 

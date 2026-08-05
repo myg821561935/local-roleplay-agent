@@ -88,12 +88,27 @@ export function createAssetLibraryController({
       : item.kind === 'prompt'
         ? els.resourcePackPrompts
         : null;
-    const checkbox = picker?.querySelector(`input[value="${CSS.escape(item.id)}"]`);
-    if (checkbox) checkbox.checked = true;
+    for (const resourceId of getAssetResourceIds(item)) {
+      const checkbox = picker?.querySelector(`input[value="${CSS.escape(resourceId)}"]`);
+      if (checkbox) checkbox.checked = true;
+    }
   }
 
   async function saveAssetMetadata(item, updates) {
     if (!item?.id || item.kind === 'pack') return;
+    const resourceIds = getAssetResourceIds(item);
+    if (resourceIds.length > 1) {
+      await apiRequest('/api/resource-library/resources', {
+        method: 'PATCH',
+        body: {
+          resourceIds,
+          tags: updates.tags,
+          collections: updates.collections,
+          favorite: updates.favorite
+        }
+      });
+      return;
+    }
     await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}`, {
       method: 'PATCH',
       body: updates
@@ -101,7 +116,7 @@ export function createAssetLibraryController({
   }
 
   async function saveAssetContent(item, updates) {
-    if (!item?.id || !['worldbook', 'prompt'].includes(item.kind)) return;
+    if (!item?.id || !['worldbook', 'prompt'].includes(item.raw?.kind || item.kind)) return;
     await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}/content`, {
       method: 'PATCH',
       body: updates
@@ -110,14 +125,37 @@ export function createAssetLibraryController({
 
   async function reevaluateAssetFromCenter(item) {
     if (!item?.id || item.kind === 'pack') return;
-    await apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}/reevaluate`, {
-      method: 'POST',
-      body: {}
-    });
+    await Promise.all(getAssetResourceIds(item).map((resourceId) => (
+      apiRequest(`/api/resource-library/resources/${encodeURIComponent(resourceId)}/reevaluate`, {
+        method: 'POST',
+        body: {}
+      })
+    )));
+  }
+
+  async function loadAssetRevisions(item) {
+    if (!item?.id || item.kind === 'pack') return { revisions: [] };
+    return apiRequest(`/api/resource-library/resources/${encodeURIComponent(item.id)}/revisions`);
+  }
+
+  async function rollbackAssetRevision(item, revisionId) {
+    if (!item?.id || item.kind === 'pack' || !revisionId) return null;
+    return apiRequest(
+      `/api/resource-library/resources/${encodeURIComponent(item.id)}/revisions/${encodeURIComponent(revisionId)}/rollback`,
+      { method: 'POST', body: {} }
+    );
   }
 
   async function deleteAssetFromCenter(item) {
     if (!item?.id) return;
+    const resourceIds = getAssetResourceIds(item);
+    if (item.kind !== 'pack' && resourceIds.length > 1) {
+      await apiRequest('/api/resource-library/resources', {
+        method: 'DELETE',
+        body: { resourceIds }
+      });
+      return;
+    }
     const path = item.kind === 'pack'
       ? `/api/resource-library/packs/${encodeURIComponent(item.id)}`
       : `/api/resource-library/resources/${encodeURIComponent(item.id)}`;
@@ -125,7 +163,7 @@ export function createAssetLibraryController({
   }
 
   async function saveAssetBatchMetadata(items, updates) {
-    const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
+    const resourceIds = collectAssetResourceIds(items);
     if (!resourceIds.length) return;
     await apiRequest('/api/resource-library/resources', {
       method: 'PATCH',
@@ -134,7 +172,7 @@ export function createAssetLibraryController({
   }
 
   async function exportAssetsFromCenter(items) {
-    const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
+    const resourceIds = collectAssetResourceIds(items);
     if (!resourceIds.length) return;
     const { bundle } = await apiRequest('/api/resource-library/resources/export', {
       method: 'POST',
@@ -144,7 +182,7 @@ export function createAssetLibraryController({
   }
 
   async function deleteAssetsFromCenter(items) {
-    const resourceIds = items.filter((item) => item.kind !== 'pack').map((item) => item.id);
+    const resourceIds = collectAssetResourceIds(items);
     if (!resourceIds.length) return;
     await apiRequest('/api/resource-library/resources', {
       method: 'DELETE',
@@ -156,13 +194,26 @@ export function createAssetLibraryController({
     deleteAssetFromCenter,
     deleteAssetsFromCenter,
     exportAssetsFromCenter,
+    loadAssetRevisions,
     openAssetCenter,
     openAssetComposer,
     openAssetImportPicker,
     reevaluateAssetFromCenter,
+    rollbackAssetRevision,
     saveAssetBatchMetadata,
     saveAssetContent,
     saveAssetMetadata,
     useAssetFromCenter
   };
+}
+
+function getAssetResourceIds(item) {
+  const ids = Array.isArray(item?.resourceIds) ? item.resourceIds : [item?.id];
+  return [...new Set(ids.map((id) => String(id || '')).filter(Boolean))];
+}
+
+function collectAssetResourceIds(items = []) {
+  return [...new Set(items
+    .filter((item) => item?.kind !== 'pack')
+    .flatMap(getAssetResourceIds))];
 }

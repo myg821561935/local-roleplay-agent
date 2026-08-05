@@ -549,6 +549,48 @@
   box-shadow: inset 2px 0 rgba(214, 166, 74, 0.28);
 }
 
+.immersive-director-note {
+  padding: 0;
+  overflow: hidden;
+}
+
+.immersive-director-note > summary {
+  padding: 14px 16px;
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+  list-style: none;
+}
+
+.immersive-director-note > summary::-webkit-details-marker {
+  display: none;
+}
+
+.immersive-director-note > summary::after {
+  content: '+';
+  float: right;
+  color: var(--teal);
+}
+
+.immersive-director-note[open] > summary::after {
+  content: '−';
+}
+
+.immersive-director-note-content {
+  padding: 0 16px 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.75;
+}
+
+.immersive-director-note-content > :first-child {
+  margin-top: 0;
+}
+
+.immersive-director-note-content > :last-child {
+  margin-bottom: 0;
+}
+
 .immersive-progress-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -739,4 +781,110 @@
 :root[data-theme="xianxia-scroll"] .immersive-sidebar-tab.active,
 :root[data-theme="xianxia-scroll"] .immersive-sidebar-tab:hover {
   color: var(--teal);
+}
+
+.immersive-relationship-graph {
+  overflow: hidden;
+  border: 1px solid rgba(129, 212, 202, 0.18);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(129, 212, 202, 0.08), transparent 44%),
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    rgba(4, 10, 12, 0.58);
+  background-size: auto, 24px 24px, 24px 24px, auto;
+}
+
+.immersive-relationship-graph-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border-bottom: 1px solid rgba(129, 212, 202, 0.14);
+}
+
+.immersive-relationship-graph-heading h4 {
+  margin: 0;
+  color: #f0dfba;
+  font-family: var(--display);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+
+.immersive-relationship-graph-heading span {
+  color: rgba(171, 197, 195, 0.62);
+  font-size: 9px;
+}
+
+.immersive-relationship-graph svg {
+  display: block;
+  width: 100%;
+  min-height: 300px;
+}
+
+.immersive-graph-edge {
+  stroke: rgba(129, 212, 202, 0.42);
+  stroke-width: 1.6;
+}
+
+.immersive-graph-edge.is-indirect {
+  stroke: rgba(214, 166, 74, 0.34);
+  stroke-dasharray: 7 6;
+}
+
+.immersive-graph-node {
+  color: #d8eee9;
+  cursor: pointer;
+  outline: none;
+}
+
+.immersive-graph-node circle,
+.immersive-graph-node rect {
+  fill: rgba(15, 31, 32, 0.96);
+  stroke: rgba(129, 212, 202, 0.7);
+  stroke-width: 1.8;
+  transition: fill 0.18s ease, stroke 0.18s ease, transform 0.18s ease;
+}
+
+.immersive-graph-node.is-protagonist circle {
+  fill: rgba(89, 62, 24, 0.94);
+  stroke: rgba(234, 188, 93, 0.9);
+  stroke-width: 2.4;
+}
+
+.immersive-graph-node.is-faction rect {
+  fill: rgba(52, 31, 22, 0.9);
+  stroke: rgba(214, 166, 74, 0.64);
+}
+
+.immersive-graph-node.is-indirect {
+  opacity: 0.58;
+}
+
+.immersive-graph-node:hover circle,
+.immersive-graph-node:hover rect,
+.immersive-graph-node:focus circle,
+.immersive-graph-node:focus rect {
+  fill: rgba(35, 75, 73, 0.98);
+  stroke: #a7e4dc;
+  stroke-width: 2.5;
+}
+
+.immersive-graph-node text {
+  fill: currentColor;
+  font-size: 12px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+.immersive-relationship-graph-detail,
+.immersive-relationship-graph-empty {
+  min-height: 38px;
+  margin: 0;
+  padding: 10px 13px;
+  border-top: 1px solid rgba(129, 212, 202, 0.14);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.65;
 }

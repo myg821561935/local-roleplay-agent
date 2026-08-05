@@ -29,6 +29,9 @@ import {
   mergeLightFrontendRuntimes
 } from '../compat/lightFrontendRuntime.js';
 import { enrichCharacterCard } from '../character/characterEnrichment.js';
+import {
+  applyWorldBookTagRegistry as applyWorldBookTagRegistryToPayload
+} from '../character/worldBookTagRegistry.js';
 import { APP_VERSION } from '../releaseInfo.js';
 import { ResourceRepository } from './resourceLibrary/resourceRepository.js';
 import {
@@ -37,9 +40,185 @@ import {
 } from './resourceLibrary/resourceConflictService.js';
 import { ResourceEvaluationService } from './resourceLibrary/resourceEvaluationService.js';
 import { ResourceImportService } from './resourceLibrary/resourceImportService.js';
+import { ResourceRevisionService } from './resourceLibrary/resourceRevisionService.js';
 import { StoryCompositionService } from './resourceLibrary/storyCompositionService.js';
+import {
+  compilePlayableCharacterCard,
+  compilePlayableWorldBook,
+  compileStructuredWorldSystems,
+  estimateWorldBookRuntimeProfile
+} from '../resources/playableResourceCompiler.js';
+import {
+  PROMPT_BUNDLE_KIND,
+  createPromptBundlePayload,
+  expandPromptResourceModules
+} from '../resources/promptBundle.js';
+import { planLegacyPromptBundleMigrations } from '../resources/legacyPromptBundle.js';
+import {
+  applyScriptReview,
+  getScriptGovernanceSnapshot
+} from '../security/scriptGovernance.js';
+import { TAVERN_COMPATIBILITY_CONTRACT_VERSION } from '../compat/compatibilityPolicy.js';
 
-const RESOURCE_KINDS = new Set(['character', 'worldbook', 'prompt']);
+const RESOURCE_KINDS = new Set(['character', 'worldbook', 'prompt', PROMPT_BUNDLE_KIND]);
+
+function createPackCompatibilityReview({ base = {}, selected = [], communityCompatibility = {}, lightFrontend = {} } = {}) {
+  const governance = getScriptGovernanceSnapshot({ config: { lightFrontend } });
+  const counts = {
+    missing: Number(communityCompatibility?.counts?.missing || 0),
+    review: Number(communityCompatibility?.counts?.review || 0),
+    degraded: Number(communityCompatibility?.counts?.degraded || 0)
+  };
+  const rules = governance.rules.map((rule) => ({
+    scriptId: rule.scriptId,
+    name: rule.name,
+    contentHash: rule.contentHash,
+    scope: rule.scope,
+    pattern: rule.pattern,
+    source: rule.source,
+    riskLevel: rule.riskLevel,
+    risks: rule.risks
+  }));
+  const blockers = (Array.isArray(communityCompatibility?.acceptance?.blockers)
+    ? communityCompatibility.acceptance.blockers
+    : [])
+    .map((item) => ({
+      id: String(item?.id || 'unknown-capability'),
+      label: String(item?.label || item?.id || '未知能力'),
+      impact: String(item?.impact || ''),
+      recommendation: String(item?.recommendation || ''),
+      evidence: Array.isArray(item?.evidence) ? item.evidence.map(String).slice(0, 6) : []
+    }));
+  const differences = (Array.isArray(communityCompatibility?.acceptance?.differences)
+    ? communityCompatibility.acceptance.differences
+    : [])
+    .map((item) => ({
+      id: String(item?.id || 'unknown-capability'),
+      label: String(item?.label || item?.id || '未知能力'),
+      impact: String(item?.impact || ''),
+      recommendation: String(item?.recommendation || ''),
+      evidence: Array.isArray(item?.evidence) ? item.evidence.map(String).slice(0, 6) : []
+    }));
+  const canonical = {
+    contractVersion: TAVERN_COMPATIBILITY_CONTRACT_VERSION,
+    base: {
+      version: String(base?.manifest?.version || base?.version || '')
+    },
+    resources: selected.map((resource) => ({
+      id: String(resource?.id || ''),
+      revisionId: String(resource?.revision?.headId || ''),
+      kind: String(resource?.kind || '')
+    })).sort((left, right) => left.id.localeCompare(right.id)),
+    counts,
+    scripts: rules.map((rule) => ({
+      scriptId: rule.scriptId,
+      contentHash: rule.contentHash
+    })).sort((left, right) => left.scriptId.localeCompare(right.scriptId)),
+    blockers: blockers.map((item) => item.id).sort(),
+    differences: differences.map((item) => item.id).sort()
+  };
+  return {
+    contractVersion: TAVERN_COMPATIBILITY_CONTRACT_VERSION,
+    fingerprint: `sha256:${crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex')}`,
+    counts,
+    rules,
+    sourceRuntimeBlocked: counts.missing > 0,
+    safeDerivativeAvailable: counts.missing > 0,
+    blockers,
+    differences,
+    requiresScriptApproval: rules.length > 0,
+    requiresCompatibilityAcknowledgement: counts.missing > 0
+      || counts.degraded > 0
+      || (counts.review > 0 && rules.length === 0)
+  };
+}
+
+function inspectImportedContentPackCompatibility(bundle = {}) {
+  const content = isRecord(bundle.content) ? bundle.content : {};
+  const lightFrontend = mergeLightFrontendRuntimes([
+    isRecord(content.lightFrontend) ? content.lightFrontend : {},
+    extractLightFrontendRuntime(content)
+  ]);
+  const communityCompatibility = scanCommunityDependencies(content);
+  return {
+    lightFrontend,
+    communityCompatibility,
+    compatibilityReview: createPackCompatibilityReview({
+      base: { manifest: isRecord(bundle.manifest) ? bundle.manifest : {} },
+      selected: [],
+      communityCompatibility,
+      lightFrontend
+    })
+  };
+}
+
+function applyPackCompatibilityReview(lightFrontend, input, review, now) {
+  const requiresDecision = review.requiresScriptApproval || review.requiresCompatibilityAcknowledgement;
+  if (!requiresDecision) {
+    return {
+      contractVersion: review.contractVersion,
+      fingerprint: review.fingerprint,
+      status: 'not-required',
+      approvedScriptHashes: [],
+      acknowledgedCompatibility: false,
+      sourceRuntimeBlocked: false,
+      disabledCapabilities: [],
+      compatibilityDifferences: [],
+      reviewedAt: ''
+    };
+  }
+  const decision = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  if (decision.fingerprint && decision.fingerprint !== review.fingerprint) {
+    throw createResourcePackReviewError('RESOURCE_PACK_REVIEW_STALE');
+  }
+  if (decision.fingerprint !== review.fingerprint) {
+    throw createResourcePackReviewError('RESOURCE_PACK_REVIEW_REQUIRED');
+  }
+  const approvedScriptHashes = new Set(
+    (Array.isArray(decision.approvedScriptHashes) ? decision.approvedScriptHashes : [])
+      .map((value) => String(value || ''))
+      .filter(Boolean)
+  );
+  const pendingRules = review.rules.filter((rule) => !approvedScriptHashes.has(rule.contentHash));
+  if (pendingRules.length) {
+    const error = createResourcePackReviewError('RESOURCE_PACK_SCRIPT_APPROVAL_REQUIRED');
+    error.pendingScriptIds = pendingRules.map((rule) => rule.scriptId);
+    throw error;
+  }
+  if (review.requiresCompatibilityAcknowledgement && decision.acknowledgeCompatibility !== true) {
+    throw createResourcePackReviewError('RESOURCE_PACK_COMPATIBILITY_ACK_REQUIRED');
+  }
+
+  const reviewSession = { config: { lightFrontend } };
+  const reviewedAt = now().toISOString();
+  review.rules.forEach((rule) => {
+    applyScriptReview(reviewSession, {
+      scriptId: rule.scriptId,
+      decision: 'approved',
+      reviewer: 'local-owner',
+      note: '剧本组装前兼容审核批准'
+    }, { now: new Date(reviewedAt) });
+  });
+  return {
+    contractVersion: review.contractVersion,
+    fingerprint: review.fingerprint,
+    status: review.sourceRuntimeBlocked ? 'safe-derivative-approved' : 'approved',
+    approvedScriptHashes: review.rules.map((rule) => rule.contentHash),
+    acknowledgedCompatibility: decision.acknowledgeCompatibility === true,
+    sourceRuntimeBlocked: review.sourceRuntimeBlocked === true,
+    disabledCapabilities: review.sourceRuntimeBlocked
+      ? structuredClone(review.blockers || [])
+      : [],
+    compatibilityDifferences: structuredClone(review.differences || []),
+    reviewedAt
+  };
+}
+
+function createResourcePackReviewError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
 
 export class ResourceLibraryService {
   constructor(store, {
@@ -52,6 +231,7 @@ export class ResourceLibraryService {
     conflictService = null,
     evaluationService = null,
     importService = null,
+    revisionService = null,
     storyCompositionService = null
   } = {}) {
     this.store = store;
@@ -68,6 +248,7 @@ export class ResourceLibraryService {
       evaluationService: this.evaluationService,
       now
     });
+    this.revisionService = revisionService || new ResourceRevisionService({ now });
     this.storyComposition = storyCompositionService || new StoryCompositionService({
       createEmptyPackSeed
     });
@@ -86,7 +267,12 @@ export class ResourceLibraryService {
     const normalizedKind = String(kind || '').trim().toLowerCase();
     const needle = String(query || '').trim().toLowerCase();
     return items
-      .filter((item) => !normalizedKind || item.kind === normalizedKind)
+      .map((item) => withRuntimeContextEstimate(this.revisionService.withRevisionSummary(item)))
+      .filter((item) => (
+        !normalizedKind
+        || item.kind === normalizedKind
+        || (normalizedKind === 'prompt' && item.kind === PROMPT_BUNDLE_KIND)
+      ))
       .filter((item) => {
         if (!needle) return true;
         return [item.title, item.summary, ...(item.tags || []), ...(item.collections || []), item.source?.site, item.source?.author]
@@ -122,7 +308,7 @@ export class ResourceLibraryService {
     return structuredClone(next);
   }
 
-  async updateResourcePayload(resourceId, input = {}) {
+  async updateResourcePayload(resourceId, input = {}, { changeType = 'local-edit' } = {}) {
     const id = normalizeId(resourceId);
     if (!id) return null;
     const current = await this.getResource(id);
@@ -151,16 +337,74 @@ export class ResourceLibraryService {
       });
     }
 
-    const timestamp = this.now().toISOString();
-    const next = {
-      ...current,
+    const candidate = {
+      kind: current.kind,
       title: normalizeLibraryText(input.title, current.title, 120),
+      summary: current.summary,
+      tags: current.tags,
       payload,
-      updatedAt: timestamp
+      version: current.source?.version || ''
     };
-    await this.repository.writeResource(id, next);
-    const reevaluated = await this.reevaluateResource(id);
-    return reevaluated?.resource || structuredClone(next);
+    const existing = await this.listResources();
+    const { fingerprint, conflicts } = this.conflictService.findConflicts(candidate, existing, {
+      excludeId: id
+    });
+    const adapters = await this.listAdapters();
+    const adapter = adapters.find((item) => item.id === current.format) || {
+      id: current.format || current.source?.adapterId || 'resource-library'
+    };
+    const diagnostics = this.evaluationService.evaluate(candidate, {
+      conflicts,
+      source: current.source || {},
+      adapter
+    });
+    const incoming = {
+      ...current,
+      title: candidate.title,
+      payload,
+      fingerprint,
+      diagnostics
+    };
+    const update = this.revisionService.describeUpdate(current, incoming);
+    if (!update?.diff?.changed) return structuredClone(this.revisionService.withRevisionSummary(current));
+    return this.commitResourceRevision(current, incoming, {
+      changeType,
+      diff: update.diff
+    });
+  }
+
+  async applyWorldBookTagRegistry(resourceId, input = {}) {
+    const id = normalizeId(resourceId);
+    if (!id) return null;
+    const current = await this.getResource(id);
+    if (!current) return null;
+    if (current.kind !== 'worldbook') {
+      throw new Error('RESOURCE_TAG_REGISTRY_KIND_UNSUPPORTED');
+    }
+    const registryDocument = isRecord(input.registryDocument)
+      ? input.registryDocument
+      : {};
+    const mappings = Array.isArray(input.mappings) ? input.mappings : [];
+    const applied = applyWorldBookTagRegistryToPayload(current.payload || {}, {
+      registryDocument,
+      mappings
+    });
+    if (!applied.report.suppliedMappingCount) {
+      throw new Error('RESOURCE_TAG_REGISTRY_EMPTY');
+    }
+    const resource = await this.updateResourcePayload(id, {
+      payload: applied.payload
+    }, {
+      changeType: 'tag-registry-mapping'
+    });
+    return {
+      resource,
+      report: {
+        ...applied.report,
+        resourceId: id,
+        resourceTitle: current.title || id
+      }
+    };
   }
 
   async updateResourcesMetadata(resourceIds = [], input = {}) {
@@ -249,6 +493,80 @@ export class ResourceLibraryService {
     };
   }
 
+  async ensureCurrentRevision(resource) {
+    if (!resource?.id) return null;
+    const currentRevisionId = String(resource.revision?.headId || '');
+    if (currentRevisionId) {
+      const stored = await this.repository.getResourceRevision(resource.id, currentRevisionId);
+      if (stored) return resource;
+    }
+    const initialized = this.revisionService.initialize(resource, {
+      changeType: resource.revision?.changeType || 'legacy-import'
+    });
+    await this.repository.writeResourceRevision(resource.id, initialized.revision.id, initialized.revision);
+    await this.repository.writeResource(resource.id, initialized.resource);
+    return initialized.resource;
+  }
+
+  async persistInitialResource(resource, { changeType = 'import' } = {}) {
+    const initialized = this.revisionService.initialize(resource, { changeType });
+    await this.repository.writeResourceRevision(resource.id, initialized.revision.id, initialized.revision);
+    await this.repository.writeResource(resource.id, initialized.resource);
+    return initialized.resource;
+  }
+
+  async commitResourceRevision(current, incoming, {
+    changeType = 'upstream-update',
+    diff,
+    restoredFromRevisionId = ''
+  } = {}) {
+    const base = await this.ensureCurrentRevision(current);
+    const advanced = this.revisionService.advance(base, incoming, {
+      changeType,
+      diff,
+      restoredFromRevisionId
+    });
+    await this.repository.writeResourceRevision(base.id, advanced.revision.id, advanced.revision);
+    await this.repository.writeResource(base.id, advanced.resource);
+    return structuredClone(advanced.resource);
+  }
+
+  async listResourceRevisions(resourceId) {
+    const id = normalizeId(resourceId);
+    if (!id) return null;
+    const current = await this.getResource(id);
+    if (!current) return null;
+    const versioned = await this.ensureCurrentRevision(current);
+    const revisions = await this.repository.listResourceRevisions(id);
+    return {
+      resource: structuredClone(versioned),
+      revisions: revisions
+        .sort((left, right) => Number(right.number || 0) - Number(left.number || 0))
+        .map(({ snapshot: _snapshot, ...revision }) => ({
+          ...structuredClone(revision),
+          current: revision.id === versioned.revision?.headId
+        }))
+    };
+  }
+
+  async rollbackResource(resourceId, revisionId) {
+    const id = normalizeId(resourceId);
+    const targetId = normalizeId(revisionId);
+    if (!id || !targetId) return null;
+    const current = await this.getResource(id);
+    if (!current) return null;
+    const versioned = await this.ensureCurrentRevision(current);
+    if (versioned.revision?.headId === targetId) {
+      throw new Error('RESOURCE_REVISION_ALREADY_CURRENT');
+    }
+    const target = await this.repository.getResourceRevision(id, targetId);
+    if (!target) throw new Error('RESOURCE_REVISION_NOT_FOUND');
+    const prepared = this.revisionService.restore(versioned, target);
+    await this.repository.writeResourceRevision(id, prepared.revision.id, prepared.revision);
+    await this.repository.writeResource(id, prepared.resource);
+    return structuredClone(prepared.resource);
+  }
+
   async exportResourceBundle(resourceIds = []) {
     const ids = uniqueStrings(resourceIds).map(normalizeId).filter(Boolean).slice(0, 500);
     const resources = [];
@@ -281,13 +599,17 @@ export class ResourceLibraryService {
     }
     if (preview?.kind === 'content-pack') {
       const inspection = await this.inspectContentPackBundle(preview.importData?.contentPackBundle || {});
+      const runtimeInspection = inspectImportedContentPackCompatibility(
+        preview.importData?.contentPackBundle || {}
+      );
       return {
         ...packageInspection(adapter, inspection, {
           kind: 'content-pack',
           title: inspection.manifest.title,
           payload: preview.importData?.contentPackBundle || {}
         }),
-        communityCompatibility: scanCommunityDependencies(preview.importData?.contentPackBundle?.content || {})
+        communityCompatibility: runtimeInspection.communityCompatibility,
+        compatibilityReview: runtimeInspection.compatibilityReview
       };
     }
     const candidates = buildPreviewCandidates(preview, source);
@@ -296,9 +618,33 @@ export class ResourceLibraryService {
       source,
       adapter
     });
+    const resources = evaluation.resources.map((resource, index) => {
+      const candidate = candidates[index];
+      const target = this.revisionService.findUpdateTarget(candidate, existing, source);
+      if (!target) return resource;
+      const incoming = {
+        ...target,
+        kind: candidate.kind,
+        title: candidate.title,
+        summary: candidate.summary,
+        tags: candidate.tags,
+        payload: structuredClone(candidate.payload),
+        fingerprint: resource.fingerprint,
+        diagnostics: resource.diagnostics,
+        source: {
+          ...(target.source || {}),
+          ...source,
+          version: String(source.version || candidate.version || target.source?.version || '')
+        }
+      };
+      const update = this.revisionService.describeUpdate(target, incoming);
+      return update?.available ? { ...resource, update } : resource;
+    });
     return {
       adapter,
       ...evaluation,
+      resources,
+      updateCount: resources.filter((item) => item.update?.available).length,
     };
   }
 
@@ -316,20 +662,60 @@ export class ResourceLibraryService {
       const candidate = candidates[index];
       const inspected = inspection.resources[index];
       const duplicate = existing.find((item) => item.kind === candidate.kind && item.fingerprint === inspected.fingerprint);
+      const inspectedTargetId = normalizeId(inspected.update?.targetResourceId);
+      let updateTarget = inspectedTargetId ? await this.getResource(inspectedTargetId) : null;
+      const portraitTarget = updateTarget || duplicate;
+      const portraitChanged = candidate.kind === 'character'
+        && candidate.payload?.portrait?.url
+        && candidate.payload.portrait.url !== portraitTarget?.payload?.portrait?.url;
+      if (!updateTarget && duplicate && portraitChanged) {
+        updateTarget = await this.getResource(duplicate.id);
+      }
+
+      if (updateTarget && (inspected.update?.available || portraitChanged)) {
+        const replacementConflict = this.conflictService.findConflicts(candidate, existing, {
+          excludeId: updateTarget.id
+        });
+        const replacementDiagnostics = this.evaluationService.evaluate(candidate, {
+          conflicts: replacementConflict.conflicts,
+          source: batchSource,
+          adapter: inspection.adapter
+        });
+        const imported = this.importService.createResourceRecord(
+          candidate,
+          {
+            ...inspected,
+            fingerprint: replacementConflict.fingerprint,
+            diagnostics: replacementDiagnostics
+          },
+          inspection.adapter,
+          batchSource,
+          importedAt
+        );
+        const incoming = {
+          ...imported,
+          id: updateTarget.id,
+          title: updateTarget.title || imported.title,
+          summary: updateTarget.summary || imported.summary,
+          tags: uniqueStrings([...(updateTarget.tags || []), ...(imported.tags || [])]),
+          collections: uniqueStrings(updateTarget.collections),
+          favorite: updateTarget.favorite === true,
+          createdAt: updateTarget.createdAt || imported.createdAt
+        };
+        const update = this.revisionService.describeUpdate(updateTarget, incoming);
+        const updated = await this.commitResourceRevision(updateTarget, incoming, {
+          changeType: portraitChanged && updateTarget.fingerprint === replacementConflict.fingerprint
+            ? 'portrait-update'
+            : 'upstream-update',
+          diff: update?.diff
+        });
+        resources.push({ ...updated, importStatus: 'updated' });
+        const existingIndex = existing.findIndex((item) => item.id === updated.id);
+        if (existingIndex >= 0) existing[existingIndex] = updated;
+        continue;
+      }
+
       if (duplicate) {
-        const portraitChanged = candidate.kind === 'character'
-          && candidate.payload?.portrait?.url
-          && candidate.payload.portrait.url !== duplicate.payload?.portrait?.url;
-        if (portraitChanged) {
-          const updated = {
-            ...duplicate,
-            payload: structuredClone(candidate.payload),
-            updatedAt: importedAt
-          };
-          await this.repository.writeResource(duplicate.id, updated);
-          resources.push({ ...updated, importStatus: 'updated' });
-          continue;
-        }
         resources.push({ ...duplicate, importStatus: 'duplicate' });
         continue;
       }
@@ -341,8 +727,9 @@ export class ResourceLibraryService {
         batchSource,
         importedAt
       );
-      await this.repository.writeResource(resource.id, resource);
-      resources.push({ ...resource, importStatus: 'created' });
+      const versioned = await this.persistInitialResource(resource);
+      existing.push(versioned);
+      resources.push({ ...versioned, importStatus: 'created' });
     }
 
     return { inspection, resources };
@@ -366,7 +753,9 @@ export class ResourceLibraryService {
   async removeResource(resourceId) {
     const id = normalizeId(resourceId);
     if (!id) return false;
-    return this.repository.removeResource(id);
+    const removed = await this.repository.removeResource(id);
+    if (removed) await this.repository.removeResourceRevisions(id);
+    return removed;
   }
 
   async removeResources(resourceIds = []) {
@@ -399,6 +788,88 @@ export class ResourceLibraryService {
       .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
   }
 
+  async listPackCompatibilityOverview() {
+    const packs = await this.loadStoredPacks();
+    const items = [];
+    for (const pack of packs) {
+      try {
+        items.push(await this.inspectPackStartReadiness(pack.id));
+      } catch (error) {
+        items.push({
+          packId: pack.id,
+          title: pack.title || pack.id,
+          status: 'blocked',
+          label: '复审失败',
+          tone: 'error',
+          reason: String(error?.message || '无法读取历史组装记录'),
+          canStartNewStory: false,
+          action: 'inspect',
+          contractVersion: Number(
+            pack.resourceManifest?.composition?.compatibilityReview?.contractVersion || 0
+          ),
+          scriptCount: 0,
+          disabledCapabilityCount: 0,
+          changedRevisionCount: 0,
+          unknownRevisionCount: 0,
+          issues: [String(error?.code || error?.message || 'RESOURCE_PACK_UPGRADE_PREVIEW_FAILED')]
+        });
+      }
+    }
+    const summary = items.reduce((result, item) => {
+      result.total += 1;
+      if (item.status === 'audited') result.audited += 1;
+      else if (item.status === 'safe-derivative') result.safeDerivative += 1;
+      else if (item.status === 'upgrade-available') result.upgradeAvailable += 1;
+      else if (item.status === 'script-review-required') result.scriptReviewRequired += 1;
+      else result.blocked += 1;
+      if (!item.canStartNewStory) result.attention += 1;
+      return result;
+    }, {
+      total: 0,
+      audited: 0,
+      safeDerivative: 0,
+      upgradeAvailable: 0,
+      scriptReviewRequired: 0,
+      blocked: 0,
+      attention: 0
+    });
+    return {
+      spec: 'lra.pack-compatibility-overview/v1',
+      contractVersion: TAVERN_COMPATIBILITY_CONTRACT_VERSION,
+      generatedAt: this.now().toISOString(),
+      summary,
+      packs: items.sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'))
+    };
+  }
+
+  async inspectPackStartReadiness(packId) {
+    const pack = await this.getPack(packId);
+    if (!pack) return null;
+    if (pack.custom !== true) {
+      return {
+        packId: pack.id,
+        title: pack.title || pack.id,
+        status: 'native',
+        label: '原生内容包',
+        tone: 'native',
+        reason: '由项目内置并随当前版本共同发布。',
+        canStartNewStory: true,
+        action: 'none',
+        contractVersion: TAVERN_COMPATIBILITY_CONTRACT_VERSION,
+        scriptCount: 0,
+        disabledCapabilityCount: 0,
+        changedRevisionCount: 0,
+        unknownRevisionCount: 0,
+        issues: []
+      };
+    }
+    const audited = summarizeStoredPackCompatibilityAudit(pack);
+    if (audited) return audited;
+    return summarizePackCompatibilityUpgradePreview(
+      await this.inspectPackCompatibilityUpgrade(pack.id)
+    );
+  }
+
   async getPack(packId) {
     const id = normalizeId(packId);
     if (!id) return null;
@@ -407,8 +878,314 @@ export class ResourceLibraryService {
     const openingTemplate = createCustomOpeningTemplate(pack);
     return {
       ...pack,
+      worldSystems: pack.worldSystems || compileStructuredWorldSystems(pack.worldBook),
       openingTemplate,
       manifest: createContentPackManifest(pack)
+    };
+  }
+
+  async inspectPackCompatibilityUpgrade(packId) {
+    const id = normalizeId(packId);
+    if (!id) return null;
+    const sourcePack = await this.getPack(id);
+    if (!sourcePack) return null;
+    if (sourcePack.custom !== true) {
+      throw createResourcePackUpgradeError('RESOURCE_PACK_UPGRADE_CUSTOM_ONLY');
+    }
+    const prepared = await this.preparePackCompatibilityUpgrade(sourcePack);
+    const composition = prepared.rebuildable
+      ? await this.inspectPackComposition(prepared.input, {
+          basePack: prepared.basePack,
+          resourceOverrides: prepared.resourceOverrides
+        })
+      : null;
+    return {
+      spec: 'lra.compatibility-upgrade-preview/v1',
+      sourcePack: {
+        id: sourcePack.id,
+        title: sourcePack.title,
+        version: sourcePack.manifest?.version || '1.0.0',
+        createdAt: sourcePack.createdAt || '',
+        compatibilityReview: structuredClone(
+          sourcePack.resourceManifest?.composition?.compatibilityReview || null
+        )
+      },
+      rebuildable: prepared.rebuildable,
+      issues: structuredClone(prepared.issues),
+      resourceRevisionChanges: structuredClone(prepared.resourceRevisionChanges),
+      promptBundleMigration: structuredClone(prepared.promptBundleMigration),
+      composition,
+      compatibilityReview: structuredClone(composition?.compatibilityReview || null),
+      assemblyInput: prepared.rebuildable ? structuredClone(prepared.assemblyInput) : null,
+      requiresScriptApproval: Boolean(composition?.compatibilityReview?.requiresScriptApproval),
+      createsNewPack: true,
+      keepsExistingBindings: true
+    };
+  }
+
+  async createPackCompatibilityUpgrade(packId, decision = {}) {
+    const id = normalizeId(packId);
+    if (!id) return null;
+    const sourcePack = await this.getPack(id);
+    if (!sourcePack) return null;
+    if (sourcePack.custom !== true) {
+      throw createResourcePackUpgradeError('RESOURCE_PACK_UPGRADE_CUSTOM_ONLY');
+    }
+    const prepared = await this.preparePackCompatibilityUpgrade(sourcePack);
+    if (!prepared.rebuildable) {
+      throw createResourcePackUpgradeError('RESOURCE_PACK_UPGRADE_NOT_REBUILDABLE', {
+        issues: prepared.issues
+      });
+    }
+    const title = normalizeLibraryText(
+      decision.title,
+      `${sourcePack.title || '自定义剧本'} · 兼容复审版`,
+      80
+    );
+    const description = normalizeLibraryText(
+      decision.description,
+      `由“${sourcePack.title || sourcePack.id}”按酒馆兼容契约 v${TAVERN_COMPATIBILITY_CONTRACT_VERSION} 重新预检生成；旧剧本与会话未迁移。`,
+      300
+    );
+    const pack = await this.createPack({
+      ...prepared.input,
+      title,
+      description,
+      sessionTitle: title,
+      compatibilityReview: decision.compatibilityReview
+    }, {
+      basePack: prepared.basePack,
+      resourceOverrides: prepared.resourceOverrides,
+      persistResourceOverrides: true
+    });
+    pack.resourceManifest.compatibilityUpgrade = {
+      sourcePackId: sourcePack.id,
+      sourcePackTitle: sourcePack.title || sourcePack.id,
+      sourcePackVersion: sourcePack.manifest?.version || '1.0.0',
+      contractVersion: TAVERN_COMPATIBILITY_CONTRACT_VERSION,
+      resourceRevisionChanges: structuredClone(prepared.resourceRevisionChanges),
+      promptBundleMigration: structuredClone(prepared.promptBundleMigration),
+      createdAt: this.now().toISOString()
+    };
+    await this.repository.writePack(pack.id, pack);
+    return structuredClone(pack);
+  }
+
+  async preparePackCompatibilityUpgrade(sourcePack) {
+    const manifest = isRecord(sourcePack?.resourceManifest) ? sourcePack.resourceManifest : {};
+    const characterResourceId = normalizeId(manifest.characterResourceId);
+    const worldBookResourceIds = uniqueStrings(manifest.worldBookResourceIds).map(normalizeId).filter(Boolean);
+    const promptResourceIds = uniqueStrings(manifest.promptResourceIds).map(normalizeId).filter(Boolean);
+    const resourceIds = uniqueStrings([
+      characterResourceId,
+      ...worldBookResourceIds,
+      ...promptResourceIds
+    ]).filter(Boolean);
+    const resources = new Map();
+    const issues = [];
+    for (const resourceId of resourceIds) {
+      const resource = await this.getResource(resourceId);
+      if (resource) resources.set(resourceId, resource);
+      else issues.push({
+        code: 'RESOURCE_PACK_UPGRADE_RESOURCE_MISSING',
+        resourceId,
+        message: `原组装素材 ${resourceId} 已不在本地素材库中`
+      });
+    }
+
+    const basePackId = normalizeId(manifest.basePackId);
+    const basePack = basePackId
+      ? this.resolveBuiltInPack(basePackId) || await this.getPack(basePackId)
+      : null;
+    if (basePackId && !basePack) {
+      issues.push({
+        code: 'RESOURCE_PACK_UPGRADE_BASE_MISSING',
+        resourceId: basePackId,
+        message: `原组装基线 ${basePackId} 已不存在`
+      });
+    }
+    const expectedRevisions = isRecord(manifest.resourceRevisionIds)
+      ? manifest.resourceRevisionIds
+      : {};
+    const sourceResources = new Map(
+      (Array.isArray(manifest.sourceResources) ? manifest.sourceResources : [])
+        .map((resource) => [normalizeId(resource?.id), resource])
+        .filter(([resourceId]) => resourceId)
+    );
+    const resourceRevisionChanges = resourceIds
+      .filter((resourceId) => resources.has(resourceId))
+      .map((resourceId) => {
+        const current = resources.get(resourceId);
+        const source = sourceResources.get(resourceId);
+        const expectedRevisionId = String(
+          expectedRevisions[resourceId]
+          || source?.revision?.id
+          || ''
+        );
+        const currentRevisionId = String(current?.revision?.headId || '');
+        const expectedFingerprint = String(source?.fingerprint || '');
+        const currentFingerprint = String(current?.fingerprint || '');
+        const hasRevisionComparison = Boolean(expectedRevisionId && currentRevisionId);
+        const hasFingerprintComparison = Boolean(expectedFingerprint && currentFingerprint);
+        const comparisonBasis = hasRevisionComparison
+          ? 'revision'
+          : hasFingerprintComparison
+            ? 'fingerprint'
+            : 'unknown';
+        const changed = hasRevisionComparison
+          ? expectedRevisionId !== currentRevisionId
+          : hasFingerprintComparison
+            ? expectedFingerprint !== currentFingerprint
+            : false;
+        return {
+          resourceId,
+          expectedRevisionId,
+          currentRevisionId,
+          expectedFingerprint,
+          currentFingerprint,
+          comparisonBasis,
+          fingerprintConfirmed: comparisonBasis === 'fingerprint' && !changed,
+          changed,
+          revisionUnknown: comparisonBasis === 'unknown'
+        };
+      });
+    const legacyPromptPlan = planLegacyPromptBundleMigrations(
+      promptResourceIds.map((resourceId) => resources.get(resourceId)).filter(Boolean)
+    );
+    const preparedPromptBundles = await this.prepareLegacyPromptBundleResources(legacyPromptPlan.plans);
+    const bundledPromptResourceIds = legacyPromptPlan.promptResourceIds.map((resourceId) => (
+      preparedPromptBundles.targetIds.get(resourceId) || resourceId
+    ));
+    const baseInheritanceMode = String(manifest.baseInheritanceMode || '').trim()
+      || (manifest.includeBaseContent === false ? 'none' : basePackId ? 'full' : 'none');
+    const input = {
+      creationMode: manifest.creationMode === 'independent-copy' ? 'independent-copy' : 'composed',
+      basePackId,
+      baseInheritanceMode,
+      includeBaseContent: baseInheritanceMode !== 'none',
+      worldBookMergeMode: manifest.worldBookMergeMode || 'smart',
+      characterResourceId,
+      worldBookResourceIds,
+      promptResourceIds: bundledPromptResourceIds,
+      visualPackId: String(sourcePack.visualPackId || 'neutral'),
+      useCharacterPortraitAsBackground: manifest.useCharacterPortraitAsBackground === true
+        || Boolean(
+          characterResourceId
+          && sourcePack.stageBackground?.url
+          && sourcePack.stageBackground?.source === 'character-portrait'
+        ),
+      customBaseline: basePackId
+        ? undefined
+        : deriveCompatibilityUpgradeBaseline(sourcePack, manifest.customBaseline)
+    };
+    return {
+      rebuildable: issues.length === 0,
+      issues,
+      resourceRevisionChanges,
+      input,
+      assemblyInput: {
+        ...structuredClone(input),
+        promptResourceIds
+      },
+      basePack,
+      resourceOverrides: preparedPromptBundles.resourceOverrides,
+      promptBundleMigration: preparedPromptBundles.summary
+    };
+  }
+
+  async prepareLegacyPromptBundleResources(plans = []) {
+    const sourcePlans = Array.isArray(plans) ? plans : [];
+    const resourceOverrides = new Map();
+    const targetIds = new Map();
+    if (!sourcePlans.length) {
+      return {
+        resourceOverrides,
+        targetIds,
+        summary: {
+          schema: 'local-roleplay-agent.prompt-bundle-migration-summary/v1',
+          sourceResourceCount: 0,
+          targetBundleCount: 0,
+          moduleCount: 0,
+          enabledModuleCount: 0,
+          runtimeCompanionCount: 0,
+          items: []
+        }
+      };
+    }
+
+    const existing = await this.listResources();
+    const items = [];
+    for (const plan of sourcePlans) {
+      const duplicate = existing.find((resource) => (
+        resource.kind === PROMPT_BUNDLE_KIND
+        && resource.fingerprint === plan.fingerprint
+      ));
+      let resource = duplicate;
+      let reusedExisting = Boolean(duplicate);
+      if (!resource) {
+        const adapter = {
+          id: plan.sourceFormat || plan.source?.adapterId || 'sillytavern-prompt-preset'
+        };
+        const inspection = this.importService.inspectCandidates([plan.candidate], existing, {
+          source: plan.source,
+          adapter
+        });
+        const createdAt = String(plan.createdAt || plan.source?.importedAt || this.now().toISOString());
+        const updatedAt = String(plan.updatedAt || createdAt);
+        const record = this.importService.createResourceRecord(
+          plan.candidate,
+          inspection.resources[0],
+          adapter,
+          plan.source,
+          createdAt
+        );
+        const initialized = this.revisionService.initialize({
+          ...record,
+          id: plan.resourceId,
+          fingerprint: plan.fingerprint,
+          createdAt,
+          updatedAt,
+          revision: {
+            headId: plan.revisionId,
+            number: 1,
+            count: 1,
+            changeType: 'legacy-prompt-bundle',
+            changedAt: updatedAt
+          },
+          lineage: {
+            kind: 'legacy-prompt-bundle',
+            schema: plan.schema,
+            sourceResourceIds: structuredClone(plan.sourceResourceIds)
+          }
+        }, { changeType: 'legacy-prompt-bundle' });
+        resource = initialized.resource;
+        resourceOverrides.set(resource.id, resource);
+        reusedExisting = false;
+      }
+      targetIds.set(plan.resourceId, resource.id);
+      items.push({
+        title: plan.title,
+        sourceResourceCount: plan.sourceResourceCount,
+        targetResourceId: resource.id,
+        moduleCount: plan.moduleCount,
+        enabledModuleCount: plan.enabledModuleCount,
+        runtimeCompanionCount: plan.runtimeCompanionCount,
+        regexRuleCount: plan.regexRuleCount,
+        reusedExisting
+      });
+    }
+    return {
+      resourceOverrides,
+      targetIds,
+      summary: {
+        schema: 'local-roleplay-agent.prompt-bundle-migration-summary/v1',
+        sourceResourceCount: items.reduce((sum, item) => sum + item.sourceResourceCount, 0),
+        targetBundleCount: items.length,
+        moduleCount: items.reduce((sum, item) => sum + item.moduleCount, 0),
+        enabledModuleCount: items.reduce((sum, item) => sum + item.enabledModuleCount, 0),
+        runtimeCompanionCount: items.reduce((sum, item) => sum + item.runtimeCompanionCount, 0),
+        items
+      }
     };
   }
 
@@ -437,8 +1214,22 @@ export class ResourceLibraryService {
     return structuredClone(next);
   }
 
-  async createPack(input = {}, { basePack = null } = {}) {
-    const { character, worldBooks, prompts, selected } = await this.resolvePackResources(input);
+  async createPack(input = {}, {
+    basePack = null,
+    resourceOverrides = new Map(),
+    persistResourceOverrides = false
+  } = {}) {
+    const overrides = resourceOverrides instanceof Map ? resourceOverrides : new Map();
+    const resolved = await this.resolvePackResources(input, { resourceOverrides: overrides });
+    const selected = [];
+    for (const resource of resolved.selected) {
+      selected.push(overrides.has(resource.id)
+        ? structuredClone(resource)
+        : await this.ensureCurrentRevision(resource));
+    }
+    const character = selected.find((item) => item.id === input.characterResourceId && item.kind === 'character');
+    const worldBooks = selected.filter((item) => item.kind === 'worldbook');
+    const prompts = selected.filter((item) => item.kind === 'prompt' || item.kind === PROMPT_BUNDLE_KIND);
     const includeBaseContent = input.includeBaseContent !== false;
     const baseInheritanceMode = basePack
       ? this.storyComposition.normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
@@ -470,12 +1261,46 @@ export class ResourceLibraryService {
     const communityCompatibility = aggregateCommunityCompatibility(
       selected.map((item) => item.diagnostics?.communityCompatibility)
     );
-    const characterCard = character?.payload
+    const playableWorldBook = compilePlayableWorldBook(composition.entries);
+    const playableCharacter = character?.payload
+      ? compilePlayableCharacterCard(character.payload)
+      : null;
+    const characterCard = playableCharacter?.card
       || (baseInheritanceMode === 'none' ? {} : base.characterCard);
     const lightFrontend = mergeLightFrontendRuntimes([
       baseInheritanceMode === 'full' ? base.lightFrontend || {} : {},
-      ...selected.map((item) => extractLightFrontendRuntime(item.payload || {}))
+      ...selected.flatMap((item) => {
+        const promptModules = expandPromptResourceModules(item);
+        const payloads = promptModules.length ? promptModules : [item.payload || {}];
+        return payloads.map((payload) => extractLightFrontendRuntime(payload));
+      })
     ]);
+    const compatibilityReview = createPackCompatibilityReview({
+      base,
+      selected,
+      communityCompatibility,
+      lightFrontend
+    });
+    const compatibilityReviewRecord = applyPackCompatibilityReview(
+      lightFrontend,
+      input.compatibilityReview,
+      compatibilityReview,
+      () => this.now()
+    );
+    if (persistResourceOverrides) {
+      for (const resource of overrides.values()) {
+        const current = await this.getResource(resource.id);
+        if (current) {
+          if (current.fingerprint !== resource.fingerprint) {
+            throw createResourcePackUpgradeError('RESOURCE_PACK_UPGRADE_BUNDLE_CHANGED', {
+              resourceId: resource.id
+            });
+          }
+          continue;
+        }
+        await this.persistInitialResource(resource, { changeType: 'legacy-prompt-bundle' });
+      }
+    }
     const stageBackground = input.useCharacterPortraitAsBackground === true
       ? createCharacterStageBackground(characterCard, character?.title)
       : null;
@@ -487,16 +1312,24 @@ export class ResourceLibraryService {
       description: String(input.description || '由本地素材库组合生成。').trim().slice(0, 300),
       sessionTitle: String(input.sessionTitle || input.title || '新的故事').trim().slice(0, 80),
       characterCard: normalizeCharacterCard(characterCard || {}),
+      characterPresets: baseInheritanceMode === 'full' && Array.isArray(base.characterPresets)
+        ? structuredClone(base.characterPresets)
+        : [],
+      groupMembers: baseInheritanceMode === 'full' && Array.isArray(base.groupMembers)
+        ? structuredClone(base.groupMembers)
+        : [],
       stageBackground,
-      worldBook: composition.entries.map(normalizeWorldBookEntry),
+      worldBook: playableWorldBook.entries.map(normalizeWorldBookEntry),
+      worldSystems: structuredClone(playableWorldBook.worldSystems),
       promptModules: promptModules.map(normalizePromptModule),
       lightFrontend,
       memory: this.storyComposition.createComposedMemory(base, id, baseInheritanceMode),
       ruleSystem: this.storyComposition.createComposedRuleSystem(base, id, baseInheritanceMode, basePack?.id || ''),
-      visualPackId: String(input.visualPackId || base.visualPackId || base.id || 'xuanhuan'),
+      visualPackId: String(input.visualPackId || base.visualPackId || base.id || 'neutral'),
       custom: true,
       resourceManifest: {
         creationMode: input.creationMode === 'independent-copy' ? 'independent-copy' : 'composed',
+        customBaseline: basePack ? null : normalizeCustomBaseline(input.customBaseline),
         basePackId: baseInheritanceMode === 'none' ? '' : basePack?.id || '',
         includeBaseContent: baseInheritanceMode !== 'none',
         baseInheritanceMode,
@@ -504,11 +1337,19 @@ export class ResourceLibraryService {
         characterResourceId: character?.id || '',
         worldBookResourceIds: worldBooks.map((item) => item.id),
         promptResourceIds: prompts.map((item) => item.id),
+        useCharacterPortraitAsBackground: input.useCharacterPortraitAsBackground === true,
+        resourceRevisionIds: Object.fromEntries(selected.map((item) => [
+          item.id,
+          item.revision?.headId || ''
+        ])),
         sourceResources: selected.map(summarizePackSourceResource),
         composition: {
           ...structuredClone(composition.report.summary),
           promptModules: structuredClone(promptComposition.report.summary),
-          communityCompatibility
+          communityCompatibility,
+          compatibilityReview: compatibilityReviewRecord,
+          playableCharacter: playableCharacter?.report || null,
+          playableWorldBook: playableWorldBook.report
         }
       },
       createdAt: timestamp,
@@ -530,8 +1371,8 @@ export class ResourceLibraryService {
     return structuredClone(pack);
   }
 
-  async inspectPackComposition(input = {}, { basePack = null } = {}) {
-    const { character, worldBooks, prompts } = await this.resolvePackResources(input);
+  async inspectPackComposition(input = {}, { basePack = null, resourceOverrides = new Map() } = {}) {
+    const { character, worldBooks, prompts } = await this.resolvePackResources(input, { resourceOverrides });
     const includeBaseContent = input.includeBaseContent !== false;
     const baseInheritanceMode = basePack
       ? this.storyComposition.normalizeBaseInheritanceMode(input.baseInheritanceMode, includeBaseContent)
@@ -562,6 +1403,25 @@ export class ResourceLibraryService {
         .filter(Boolean)
         .map((item) => item.diagnostics?.communityCompatibility)
     );
+    const selected = [character, ...worldBooks, ...prompts].filter(Boolean);
+    const lightFrontend = mergeLightFrontendRuntimes([
+      baseInheritanceMode === 'full' ? base.lightFrontend || {} : {},
+      ...selected.flatMap((item) => {
+        const promptModules = expandPromptResourceModules(item);
+        const payloads = promptModules.length ? promptModules : [item.payload || {}];
+        return payloads.map((payload) => extractLightFrontendRuntime(payload));
+      })
+    ]);
+    const compatibilityReview = createPackCompatibilityReview({
+      base,
+      selected,
+      communityCompatibility,
+      lightFrontend
+    });
+    const playableWorldBook = compilePlayableWorldBook(composition.entries);
+    const playableCharacter = character?.payload
+      ? compilePlayableCharacterCard(character.payload)
+      : null;
     return {
       mode: composition.report.mode,
       baseInheritanceMode,
@@ -583,11 +1443,15 @@ export class ResourceLibraryService {
         selected: prompts.length,
         final: promptComposition.modules.length
       },
-      communityCompatibility
+      playableCharacter: playableCharacter?.report || null,
+      playableWorldBook: playableWorldBook.report,
+      communityCompatibility,
+      compatibilityReview
     };
   }
 
-  async resolvePackResources(input = {}) {
+  async resolvePackResources(input = {}, { resourceOverrides = new Map() } = {}) {
+    const overrides = resourceOverrides instanceof Map ? resourceOverrides : new Map();
     const selectedIds = uniqueStrings([
       input.characterResourceId,
       ...(Array.isArray(input.worldBookResourceIds) ? input.worldBookResourceIds : []),
@@ -595,14 +1459,14 @@ export class ResourceLibraryService {
     ]);
     const selected = [];
     for (const resourceId of selectedIds) {
-      const resource = await this.getResource(resourceId);
+      const resource = overrides.get(resourceId) || await this.getResource(resourceId);
       if (!resource) throw new Error(`RESOURCE_NOT_FOUND:${resourceId}`);
       selected.push(resource);
     }
 
     const character = selected.find((item) => item.id === input.characterResourceId && item.kind === 'character');
     const worldBooks = selected.filter((item) => item.kind === 'worldbook');
-    const prompts = selected.filter((item) => item.kind === 'prompt');
+    const prompts = selected.filter((item) => item.kind === 'prompt' || item.kind === PROMPT_BUNDLE_KIND);
     return { character, worldBooks, prompts, selected };
   }
 
@@ -665,7 +1529,10 @@ export class ResourceLibraryService {
     return this.inspectContentPackBundle(bundle, { checkInstallConflicts: false });
   }
 
-  async installContentPackBundle(bundle, source = {}, { inspection: suppliedInspection = null } = {}) {
+  async installContentPackBundle(bundle, source = {}, {
+    inspection: suppliedInspection = null,
+    compatibilityReview: compatibilityDecision = null
+  } = {}) {
     const inspection = suppliedInspection || await this.inspectContentPackBundle(bundle);
     if (!inspection.canInstall) {
       const error = new Error('CONTENT_PACK_INCOMPATIBLE');
@@ -684,6 +1551,19 @@ export class ResourceLibraryService {
     const timestamp = this.now().toISOString();
     const existing = inspection.existingPackId ? await this.getPack(inspection.existingPackId) : null;
     const pack = contentPackFromBundle(bundle, internalId, { importedAt: timestamp, source });
+    const runtimeInspection = inspectImportedContentPackCompatibility(bundle);
+    pack.lightFrontend = runtimeInspection.lightFrontend;
+    const compatibilityReview = applyPackCompatibilityReview(
+      pack.lightFrontend,
+      compatibilityDecision,
+      runtimeInspection.compatibilityReview,
+      () => this.now()
+    );
+    pack.resourceManifest.composition = {
+      communityCompatibility: runtimeInspection.communityCompatibility,
+      compatibilityReview
+    };
+    if (!pack.openingTemplate) pack.openingTemplate = createCustomOpeningTemplate(pack);
     if (existing?.createdAt) pack.createdAt = existing.createdAt;
     await this.repository.writePack(internalId, pack);
     return {
@@ -757,27 +1637,42 @@ function buildPreviewCandidates(preview, source) {
     }];
   }
 
-  if (preview?.kind === 'prompt-preset') {
+  if (preview?.kind === 'prompt-preset' || preview?.kind === 'regex-preset') {
     const preset = preview.importData?.promptPreset || {};
     const prompts = Array.isArray(preview.importData?.promptModules)
       ? preview.importData.promptModules
       : [];
-    return prompts.map((item, index) => {
-      const prompt = normalizePromptModule(item);
-      return {
-        kind: 'prompt',
-        title: prompt.title || `${preview.title || '导入预设'} · ${index + 1}`,
-        summary: summarizeText(prompt.content),
-        tags: uniqueStrings([
-          'SillyTavern',
-          '提示词预设',
-          preset.sourceFormat,
-          prompt.role
-        ]),
-        payload: prompt,
-        version: source.version
-      };
-    });
+    const promptModules = prompts.map((item) => normalizePromptModule(item));
+    const runtimeCompanions = promptModules.filter((prompt) => (
+      prompt.extensions?.sillyTavernRuntimeCompanion
+    ));
+    const regexRuleCount = runtimeCompanions.reduce((sum, prompt) => (
+      sum + Number(prompt.extensions?.sillyTavernRuntimeCompanion?.ruleCount || 0)
+    ), 0);
+    const title = String(preset.title || preview.title || source.title || '导入的预设').trim();
+    return [{
+      kind: PROMPT_BUNDLE_KIND,
+      title,
+      summary: [
+        `${promptModules.length} 个内部模块`,
+        runtimeCompanions.length ? `${runtimeCompanions.length} 个运行伴侣` : '',
+        regexRuleCount ? `${regexRuleCount} 条 Regex 规则` : ''
+      ].filter(Boolean).join(' · '),
+      tags: uniqueStrings([
+        'SillyTavern',
+        preview.kind === 'regex-preset' ? 'Regex 配套' : '提示词预设',
+        runtimeCompanions.length ? '安全运行时' : '',
+        preset.sourceFormat
+      ]),
+      collections: uniqueStrings([title]),
+      payload: createPromptBundlePayload({
+        title,
+        sourceKind: preview.kind,
+        preset,
+        promptModules
+      }),
+      version: source.version
+    }];
   }
 
   throw new Error('UNSUPPORTED_RESOURCE_PREVIEW');
@@ -799,6 +1694,36 @@ function diagnoseCandidate(candidate, conflicts, options = {}) {
   return evaluateResourceCandidate(candidate, { conflicts, ...options });
 }
 
+function withRuntimeContextEstimate(resource = {}) {
+  if (resource.kind === 'worldbook') {
+    const runtimeProfile = estimateWorldBookRuntimeProfile(resource.payload?.entries || []);
+    const storedPayloadEstimatedTokens = Number(resource.diagnostics?.storedPayloadEstimatedTokens
+      ?? resource.diagnostics?.estimatedTokens
+      ?? 0);
+    return {
+      ...resource,
+      diagnostics: {
+        ...(resource.diagnostics || {}),
+        estimatedTokens: runtimeProfile.estimatedPerTurnTokens,
+        storedPayloadEstimatedTokens,
+        worldBookRuntime: runtimeProfile
+      }
+    };
+  }
+  if (resource.kind !== 'character') return resource;
+  const runtimeEstimatedTokens = estimateResourceTokens(resource.payload, { kind: 'character' });
+  const storedPayloadEstimatedTokens = Number(resource.diagnostics?.estimatedTokens || 0);
+  if (!storedPayloadEstimatedTokens || storedPayloadEstimatedTokens === runtimeEstimatedTokens) return resource;
+  return {
+    ...resource,
+    diagnostics: {
+      ...(resource.diagnostics || {}),
+      estimatedTokens: runtimeEstimatedTokens,
+      storedPayloadEstimatedTokens
+    }
+  };
+}
+
 function summarizePackSourceResource(resource = {}) {
   const source = resource.source || {};
   return {
@@ -806,6 +1731,12 @@ function summarizePackSourceResource(resource = {}) {
     kind: String(resource.kind || '').trim(),
     title: String(resource.title || '').trim(),
     fingerprint: String(resource.fingerprint || '').trim(),
+    revision: {
+      id: String(resource.revision?.headId || '').trim(),
+      number: Number(resource.revision?.number || 1),
+      changedAt: String(resource.revision?.changedAt || resource.updatedAt || '').trim(),
+      securityReview: structuredClone(resource.revision?.securityReview || {})
+    },
     source: {
       adapterId: String(source.adapterId || '').trim(),
       community: String(source.community || '').trim(),
@@ -879,6 +1810,7 @@ function createCustomOpeningTemplate(pack = {}) {
     .filter((item) => !isOpeningMetaEntry(item.title))
     .sort((left, right) => right.score - left.score || left.index - right.index);
   const genre = inferCustomOpeningGenre(pack, visibleEntries);
+  const protagonist = inferCustomOpeningProtagonist(character, visibleEntries);
   const packTitle = String(pack.title || character.name || '自定义剧本').trim().slice(0, 80);
   const characterName = String(character.name || '').trim();
   const narrativeLead = summarizeOpeningText(
@@ -890,26 +1822,35 @@ function createCustomOpeningTemplate(pack = {}) {
     140
   );
   const tabs = buildCustomOpeningTabs(visibleEntries, character);
-  const destinyCards = buildCustomDestinyCards(visibleEntries, character, packTitle);
+  const destinyCards = buildCustomDestinyCards(visibleEntries);
 
   return {
     source: 'custom-pack',
     packId: String(pack.id || ''),
     genre,
+    genreLabel: '角色卡原生剧本',
     title: packTitle,
-    subtitle: characterName ? `${characterName} · 独立角色剧本` : '角色卡世界 · 独立开局',
+    subtitle: protagonist.mode === 'scenario-role'
+      ? `${protagonist.role || protagonist.name || '玩家身份'} · ${characterName || '场景角色卡'}`
+      : (characterName ? `${characterName} · 独立角色剧本` : '角色卡世界 · 独立开局'),
     tagline: narrativeLead || '以当前角色卡、世界书与已选设定为边界，生成这段故事的第一幕。',
     buttonText: '[ 封存当前设定 · 开始故事 ]',
     tabs,
-    fields: buildCustomOpeningFields(character, visibleEntries),
+    protagonist,
+    fields: buildCustomOpeningFields(character, visibleEntries, protagonist),
     destinyCards: {
-      label: `开局抉择 · ${packTitle}`,
-      hint: '候选取自当前角色卡和世界书；选择后会写入开局提示与长期事实。',
-      maxSelections: Math.min(3, Math.max(1, destinyCards.length)),
+      stepLabel: '开局要素',
+      counterLabel: '要素',
+      sectionLabel: '已选开局要素',
+      label: `开局要素 · ${packTitle}`,
+      hint: destinyCards.length
+        ? '基础设定会自动加载；这里只选择真正可选的开局目标、危机、关系或机缘。'
+        : '基础设定会自动加载；当前角色卡没有定义额外的可选开局要素。',
+      maxSelections: Math.min(2, destinyCards.length),
       cards: destinyCards
     },
     sidebar: {
-      tabs: customOpeningSidebarTabs(genre)
+      tabs: customOpeningSidebarTabs(genre, protagonist)
     }
   };
 }
@@ -924,7 +1865,6 @@ function inferCustomOpeningGenre(pack, entries = []) {
     character.description,
     character.personality,
     character.scenario,
-    character.systemPrompt,
     ...(character.tags || [])
   ].filter(Boolean).join(' ');
   const entryTitles = entries.slice(0, 32).map((item) => item.title).filter(Boolean).join(' ');
@@ -934,7 +1874,7 @@ function inferCustomOpeningGenre(pack, entries = []) {
     yingxiongzhi: /英雄志|怒苍|正统军|五朝旧账/,
     mingmo: /明末|崇祯|大明|辽东|密诏|饷银|东林/,
     lingyi: /灵异|恐怖|诡异|怪谈|鬼怪|鬼物|鬼魂|阴阳|禁忌|凶宅|民俗|邪祟|诅咒/,
-    xianxia: /修仙|仙侠|仙途|飞升|灵根|金丹|元婴|宗门|道侣|炉鼎|灵气|渡劫|境界|神宫|功法|法宝/,
+    xianxia: /修仙|仙侠|仙途|飞升|灵根|金丹|元婴|宗门|道侣|炉鼎|灵气|渡劫|境界|功法|法宝/,
     xuanhuan: /玄幻|武道|斗气|魔法|异界|神荒|江湖|武侠/
   };
   const scores = Object.fromEntries(Object.keys(patterns).map((genre) => [genre, 0]));
@@ -947,6 +1887,65 @@ function inferCustomOpeningGenre(pack, entries = []) {
   return Object.entries(scores)
     .sort((left, right) => right[1] - left[1])
     .find(([, score]) => score > 0)?.[0] || 'xuanhuan';
+}
+
+function inferCustomOpeningProtagonist(character, entries = []) {
+  const openingConfig = character.extensions?.local_roleplay_agent?.opening || {};
+  const profileEntry = findCustomProtagonistEntry(entries);
+  const profileText = String(profileEntry?.entry?.content || '');
+  const sourceText = [
+    character.scenario,
+    character.firstMessage,
+    ...(Array.isArray(character.alternateGreetings) ? character.alternateGreetings : [])
+  ].filter(Boolean).join('\n');
+  const authoredName = extractOpeningProfileValue(profileText, ['姓名', '名字', '称谓']);
+  const authoredRole = extractOpeningProfileValue(profileText, ['角色', '当前身份', '身份']);
+  const configuredMode = String(openingConfig.protagonistMode || '').trim().toLowerCase();
+  const placeholderRole = !character.role || character.role === '个人创作主角';
+  const addressee = inferOpeningAddressee(sourceText);
+  const looksLikeScenarioCard = /之家|庄园|世界|群像|剧本|沙盒|模拟/.test(String(character.name || ''))
+    || /收件人|提交人|部门架构|人员配置|财务报表|庄园当前/.test(sourceText);
+  const scenarioRole = ['scenario', 'scenario-role', 'world', 'group'].includes(configuredMode)
+    || (!profileEntry && placeholderRole && Boolean(addressee) && looksLikeScenarioCard);
+  const fixed = configuredMode === 'fixed' || openingConfig.requiresGeneration === false;
+
+  if (scenarioRole) {
+    const name = authoredName || addressee || '主角';
+    const role = authoredRole || inferScenarioPlayerRole(name, sourceText);
+    return {
+      mode: 'scenario-role',
+      label: '角色卡已定义玩家身份，可直接确认或编辑',
+      name,
+      role,
+      allowSystemRandom: false,
+      canSkipGeneration: true
+    };
+  }
+
+  return {
+    mode: fixed ? 'fixed' : (profileEntry ? 'authored' : 'character'),
+    label: fixed ? '角色卡已给定主角资料，可直接开始' : '资料来自当前角色卡与同批世界书',
+    name: authoredName || String(character.name || '').trim(),
+    role: authoredRole || (placeholderRole ? '' : summarizeOpeningText(character.role, 90)),
+    allowSystemRandom: openingConfig.allowSystemRandom === true,
+    canSkipGeneration: true
+  };
+}
+
+function inferOpeningAddressee(content) {
+  const source = String(content || '').replace(/[*_`【】]/g, '');
+  const explicit = source.match(/(?:收件人|玩家身份|用户身份|对用户称呼|称呼)\s*[：:]\s*([^\s，,。；;：:\n]{1,16})/);
+  if (explicit?.[1]) return explicit[1].trim();
+  if (/\{\{\s*user\s*\}\}/i.test(source)) return '主角';
+  if (/(?:^|[，。；：:\s])主人(?:[，。；：:\s]|$)/.test(source)) return '主人';
+  return '';
+}
+
+function inferScenarioPlayerRole(addressee, content) {
+  const source = String(content || '');
+  if (addressee === '主人' && /庄园/.test(source)) return '庄园主人';
+  if (/调查|案件|证据|现场/.test(source)) return `${addressee || '主角'} / 调查参与者`;
+  return `${addressee || '主角'} / 当前故事参与者`;
 }
 
 function countOpeningGenreMatches(text, pattern) {
@@ -974,15 +1973,16 @@ function buildCustomOpeningTabs(entries, character) {
   ]));
 }
 
-function buildCustomOpeningFields(character, entries = []) {
+function buildCustomOpeningFields(character, entries = [], protagonist = inferCustomOpeningProtagonist(character, entries)) {
   const profileText = findCustomProtagonistEntry(entries)?.entry?.content || '';
   const openingText = selectCharacterOpeningText(character);
   const generatedFields = character.extensions?.local_roleplay_agent?.enrichment?.generatedFields || [];
   const authoredScenario = generatedFields.includes('scenario')
     ? ''
     : summarizeOpeningText(character.scenario, 110);
-  const role = extractOpeningProfileValue(profileText, ['角色', '当前身份', '身份'])
-    || summarizeOpeningText(character.role || character.description, 90);
+  const role = protagonist.role
+    || extractOpeningProfileValue(profileText, ['角色', '当前身份', '身份'])
+    || summarizeOpeningText(character.role === '个人创作主角' ? character.description : (character.role || character.description), 90);
   const background = extractOpeningProfileValue(profileText, ['背景与家庭生活', '背景经历', '背景', '来历', '出身'])
     || summarizeOpeningText(character.description, 110);
   const appearance = extractOpeningProfileValue(profileText, ['外貌与衣着', '外貌', '容貌', '形貌'])
@@ -1011,8 +2011,23 @@ function buildCustomOpeningFields(character, entries = []) {
   const explicitOpening = findOpeningEntryValue(entries, /开局|当前处境|起始|第一幕|初始场景/, /开局|当前|正在|即将|必须|危机|处境/);
   const openingPressure = explicitOpening || openingText;
 
-  return {
-    name: createCustomOpeningField('姓名 / 称谓', '输入角色姓名', character.name),
+  if (protagonist.mode === 'scenario-role') {
+    const scenarioGoal = inferScenarioOpeningGoal(character, openingText);
+    return compactCustomOpeningFields({
+      name: createCustomOpeningField('称谓', '输入你在故事中的称谓', protagonist.name),
+      role: createCustomOpeningField('当前身份', '角色卡定义的玩家身份', protagonist.role),
+      goal: createCustomOpeningField('当前目标', '回应角色卡给出的开局事件', scenarioGoal),
+      relationshipStyle: createCustomOpeningField(
+        '关系模式',
+        '你与当前角色群体的关系',
+        inferScenarioRelationship(protagonist, character)
+      ),
+      openingPressure: createCustomOpeningField('开局处境', '角色卡给出的第一幕', openingPressure)
+    });
+  }
+
+  return compactCustomOpeningFields({
+    name: createCustomOpeningField('姓名 / 称谓', '输入角色姓名', protagonist.name || character.name),
     role: createCustomOpeningField('当前身份', '在当前世界中的公开身份', role),
     background: createCustomOpeningField('来历与经历', '从何处来，背负什么旧事', background),
     appearance: createCustomOpeningField('外貌与衣着', '外貌、服饰与显眼特征', appearance),
@@ -1024,7 +2039,32 @@ function buildCustomOpeningFields(character, entries = []) {
     secret: createCustomOpeningField('秘密 / 风险', '不愿公开的事实或迫近的危险', secret),
     relationshipStyle: createCustomOpeningField('关系模式', '角色与他人建立关系的方式', relationship),
     openingPressure: createCustomOpeningField('开局处境', '第一幕发生时正在面对的压力', openingPressure)
-  };
+  });
+}
+
+function compactCustomOpeningFields(fields) {
+  return Object.fromEntries(Object.entries(fields).filter(([, field]) => {
+    return Boolean(String(field?.defaultValue || '').trim())
+      || (Array.isArray(field?.values) && field.values.length > 1)
+      || (Array.isArray(field?.rolls) && field.rolls.length);
+  }));
+}
+
+function inferScenarioOpeningGoal(character, openingText) {
+  const source = [character.scenario, character.firstMessage, openingText].filter(Boolean).join('\n');
+  if (/庄园/.test(source) && /报告|人员配置|部门架构|预算|财务/.test(source)) {
+    return '审阅庄园人员配置与财务报告，处理当前待决事项。';
+  }
+  return findOpeningSentence(source, /必须|需要|目标|任务|审阅|调查|处理|决定|寻找|逃离|保护/)
+    || '回应角色卡给出的开局事件，并决定下一步行动。';
+}
+
+function inferScenarioRelationship(protagonist, character) {
+  const source = [character.scenario, character.firstMessage].filter(Boolean).join('\n');
+  if (protagonist.name === '主人' && /庄园|女仆|管家/.test(source)) {
+    return '作为庄园主人，与管家及庄园成员保持管理、雇佣与私人关系。';
+  }
+  return '';
 }
 
 function createCustomOpeningField(label, placeholder, value, alternatives = []) {
@@ -1142,12 +2182,13 @@ function trimOpeningClause(value, maxLength) {
     .trim();
 }
 
-function buildCustomDestinyCards(entries, character, packTitle) {
-  const hookPattern = /世界|基调|主角|人设|角色|地点|物品|体质|境界|势力|关系|危机|事件|任务|开局|规则|秘密|线索|因果|目标|禁忌/;
-  const prioritized = [
-    ...entries.filter((item) => hookPattern.test(item.title)),
-    ...entries.filter((item) => !hookPattern.test(item.title))
-  ];
+function buildCustomDestinyCards(entries) {
+  const optionalHookPattern = /开局|危机|事件|任务|目标|秘密|线索|关系|机缘|抉择|困境|压力|选择|路线|契约|委托|追索/;
+  const mandatorySettingPattern = /世界法则|世界观|角色速览|人物总览|历史年表|地图|势力|宗门|设定|规则|运行契约|状态栏|格式|模板/;
+  const prioritized = entries.filter((item) => (
+    optionalHookPattern.test(item.title)
+    && !mandatorySettingPattern.test(item.title)
+  ));
   const seen = new Set();
   const cards = [];
   prioritized.forEach((item) => {
@@ -1158,25 +2199,11 @@ function buildCustomDestinyCards(entries, character, packTitle) {
       id: `custom-world-hook-${cards.length + 1}`,
       title: item.title,
       content: summarizeOpeningText(item.content, 180),
-      defaultSelected: cards.length < 3
+      defaultSelected: false
     });
   });
 
-  if (cards.length) return cards;
-  const fallbackCards = [
-    ['角色来历', character.description],
-    ['开局处境', character.scenario || character.firstMessage],
-    ['性格底线', character.personality]
-  ].filter(([, content]) => summarizeOpeningText(content, 180));
-  if (!fallbackCards.length) {
-    fallbackCards.push(['世界初动', `${packTitle}的第一幕将从主角眼前正在发生的事件开始。`]);
-  }
-  return fallbackCards.map(([title, content], index) => ({
-    id: `custom-character-hook-${index + 1}`,
-    title,
-    content: summarizeOpeningText(content, 180),
-    defaultSelected: index < 3
-  }));
+  return cards;
 }
 
 function normalizeOpeningEntryTitle(value, characterName = '') {
@@ -1214,7 +2241,10 @@ function scoreOpeningEntry(entry, title, content) {
   return constantWeight + priorityWeight + hookWeight + contentWeight;
 }
 
-function customOpeningSidebarTabs(genre) {
+function customOpeningSidebarTabs(genre, protagonist = {}) {
+  if (protagonist.mode === 'scenario-role') {
+    return ['主角信息', '互动角色', '世界规则', '关系与势力', '故事线索'];
+  }
   const tabsByGenre = {
     xianxia: ['主角信息', '互动角色', '世界规则', '关系与势力', '故事线索'],
     lingyi: ['调查者档案', '互动角色', '禁忌规则', '线索证物', '事件进度'],
@@ -1284,6 +2314,8 @@ function createEmptyPackSeed(id) {
     promptModules: [],
     worldBook: [],
     characterCard: {},
+    characterPresets: [],
+    groupMembers: [],
     memory: {
       rollingSummary: '',
       unsummarizedTurnCount: 0,
@@ -1382,8 +2414,183 @@ function normalizeCustomBaseline(input = {}) {
     premise: String(input?.premise || '').trim().slice(0, 5000),
     proseStyle: String(input?.proseStyle || '').trim().slice(0, 2500),
     hardRules: String(input?.hardRules || '').trim().slice(0, 2500),
-    visualPackId: String(input?.visualPackId || 'xuanhuan').trim() || 'xuanhuan'
+    visualPackId: String(input?.visualPackId || 'neutral').trim() || 'neutral'
   };
+}
+
+function summarizeStoredPackCompatibilityAudit(pack = {}) {
+  const review = pack.resourceManifest?.composition?.compatibilityReview;
+  if (!isRecord(review) || Number(review.contractVersion || 0) !== TAVERN_COMPATIBILITY_CONTRACT_VERSION) {
+    return null;
+  }
+  const disabledCapabilities = Array.isArray(review.disabledCapabilities)
+    ? review.disabledCapabilities.filter(isRecord)
+    : [];
+  const approvedScriptHashes = Array.isArray(review.approvedScriptHashes)
+    ? review.approvedScriptHashes.filter(Boolean)
+    : [];
+  const sourceRuntimeBlocked = review.sourceRuntimeBlocked === true;
+  const safeDerivative = sourceRuntimeBlocked
+    && review.status === 'safe-derivative-approved'
+    && review.acknowledgedCompatibility === true
+    && disabledCapabilities.length > 0;
+  const directlyAudited = !sourceRuntimeBlocked
+    && ['not-required', 'approved'].includes(String(review.status || ''))
+    && Boolean(review.fingerprint);
+  if (!safeDerivative && !directlyAudited) return null;
+  return {
+    packId: pack.id,
+    title: pack.title || pack.id,
+    status: safeDerivative ? 'safe-derivative' : 'audited',
+    label: safeDerivative ? '安全派生已审核' : 'v2 已审核',
+    tone: safeDerivative ? 'warning' : 'ok',
+    reason: safeDerivative
+      ? `原资源运行时已阻断，并明确禁用 ${disabledCapabilities.length} 项能力。`
+      : approvedScriptHashes.length
+        ? `${approvedScriptHashes.length} 个第三方脚本哈希已在组装前逐项批准。`
+        : '组装记录符合当前酒馆兼容契约。',
+    canStartNewStory: true,
+    action: 'none',
+    contractVersion: Number(review.contractVersion || 0),
+    reviewedAt: String(review.reviewedAt || ''),
+    scriptCount: approvedScriptHashes.length,
+    disabledCapabilityCount: disabledCapabilities.length,
+    changedRevisionCount: 0,
+    unknownRevisionCount: 0,
+    issues: []
+  };
+}
+
+function summarizePackCompatibilityUpgradePreview(preview = {}) {
+  const review = isRecord(preview.compatibilityReview) ? preview.compatibilityReview : {};
+  const promptBundleMigration = isRecord(preview.promptBundleMigration)
+    ? preview.promptBundleMigration
+    : {};
+  const revisionChanges = Array.isArray(preview.resourceRevisionChanges)
+    ? preview.resourceRevisionChanges
+    : [];
+  const issues = Array.isArray(preview.issues)
+    ? preview.issues.map((item) => String(item?.message || item?.code || item)).filter(Boolean)
+    : [];
+  const common = {
+    packId: String(preview.sourcePack?.id || ''),
+    title: String(preview.sourcePack?.title || preview.sourcePack?.id || '历史自定义剧本'),
+    contractVersion: Number(preview.sourcePack?.compatibilityReview?.contractVersion || 0),
+    reviewedAt: String(preview.sourcePack?.compatibilityReview?.reviewedAt || ''),
+    scriptCount: Array.isArray(review.rules) ? review.rules.length : 0,
+    disabledCapabilityCount: Array.isArray(review.blockers) ? review.blockers.length : 0,
+    changedRevisionCount: revisionChanges.filter((item) => item.changed).length,
+    fingerprintConfirmedCount: revisionChanges.filter((item) => item.fingerprintConfirmed).length,
+    unknownRevisionCount: revisionChanges.filter((item) => item.revisionUnknown).length,
+    legacyPromptSourceCount: Number(promptBundleMigration.sourceResourceCount || 0),
+    promptBundleTargetCount: Number(promptBundleMigration.targetBundleCount || 0),
+    issues
+  };
+  const migrationReason = common.legacyPromptSourceCount
+    ? `${common.legacyPromptSourceCount} 个旧预设分片将在新剧本中折叠为 ${common.promptBundleTargetCount} 个预设包。`
+    : '';
+  if (preview.rebuildable !== true) {
+    return {
+      ...common,
+      status: 'blocked',
+      label: '素材缺失',
+      tone: 'error',
+      reason: issues.join('；') || '原组装素材或基线缺失，不能可靠生成兼容新版。',
+      canStartNewStory: false,
+      action: 'inspect'
+    };
+  }
+  if (preview.requiresScriptApproval === true) {
+    return {
+      ...common,
+      status: 'script-review-required',
+      label: '脚本待逐项审核',
+      tone: 'review',
+      reason: [
+        `发现 ${common.scriptCount} 个第三方脚本候选，必须查看源码并按内容哈希逐项批准。`,
+        common.fingerprintConfirmedCount
+          ? `${common.fingerprintConfirmedCount} 份历史素材已通过内容指纹确认未变化。`
+          : '',
+        migrationReason
+      ].filter(Boolean).join(' '),
+      canStartNewStory: false,
+      action: 'review-scripts'
+    };
+  }
+  return {
+    ...common,
+    status: 'upgrade-available',
+    label: '需要 v2 复审',
+    tone: 'warning',
+    reason: [
+      common.changedRevisionCount || common.unknownRevisionCount
+        ? `可以生成兼容新版；${common.changedRevisionCount} 份素材已更新，${common.unknownRevisionCount} 份缺少历史 revision。`
+        : '历史包缺少当前契约审计，可以无损生成兼容新版。',
+      migrationReason
+    ].filter(Boolean).join(' '),
+    canStartNewStory: false,
+    action: 'upgrade'
+  };
+}
+
+function deriveCompatibilityUpgradeBaseline(pack = {}, storedBaseline = null) {
+  if (isRecord(storedBaseline)) return normalizeCustomBaseline(storedBaseline);
+  const worldState = isRecord(pack.memory?.worldState) ? pack.memory.worldState : {};
+  const worldBook = Array.isArray(pack.worldBook) ? pack.worldBook : [];
+  const promptModules = Array.isArray(pack.promptModules) ? pack.promptModules : [];
+  const premiseEntry = worldBook.find((entry) => (
+    String(entry?.id || '').endsWith('-world-premise')
+    || (String(entry?.source || '') === 'custom-baseline' && /世界总纲/u.test(String(entry?.title || '')))
+  ));
+  const hardRulesEntry = worldBook.find((entry) => (
+    String(entry?.id || '').endsWith('-hard-rules')
+    || (String(entry?.source || '') === 'custom-baseline' && /不可违背规则/u.test(String(entry?.title || '')))
+  ));
+  const narrativeModule = promptModules.find((module) => (
+    String(module?.id || '').endsWith('-narrative-baseline')
+    || String(module?.title || '') === '原创世界叙事基线'
+  ));
+  const narrativeContent = String(narrativeModule?.content || '');
+  const inferredGenre = String(
+    worldState.genre
+    || worldState.flags?.genre
+    || extractBaselineField(narrativeContent, '题材边界')
+    || ''
+  ).trim();
+  const premiseContent = String(premiseEntry?.content || '').trim();
+  const premisePrefix = inferredGenre ? `类型与时代：${inferredGenre}` : '';
+  const premise = premisePrefix && premiseContent.startsWith(premisePrefix)
+    ? premiseContent.slice(premisePrefix.length).trim()
+    : premiseContent.replace(/^类型与时代：[^\n]+\n*/u, '').trim();
+  return normalizeCustomBaseline({
+    worldName: worldState.worldName || pack.title || '',
+    genre: inferredGenre === 'custom' ? '' : inferredGenre,
+    premise,
+    proseStyle: extractBaselineField(narrativeContent, '叙事风格'),
+    hardRules: String(hardRulesEntry?.content || '').trim()
+      || extractBaselineField(narrativeContent, '硬性规则'),
+    visualPackId: pack.visualPackId || 'neutral'
+  });
+}
+
+function extractBaselineField(content, label) {
+  const escaped = String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(content || '').match(new RegExp(
+    `(?:^|\\n\\n)${escaped}：([\\s\\S]*?)(?=\\n\\n(?:题材边界|叙事风格|硬性规则)：|$)`,
+    'u'
+  ));
+  return String(match?.[1] || '').trim();
+}
+
+function createResourcePackUpgradeError(code, details = {}) {
+  const error = new Error(code);
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function dedupeByFingerprint(items) {

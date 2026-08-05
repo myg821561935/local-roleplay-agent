@@ -998,7 +998,32 @@ const contentPacks = {
   }
 };
 
+const STORY_SCOPED_PROMPT_IDS = new Set([
+  'world-premise',
+  'xuanhuan-core-route-contract',
+  'lingyi-core-route-contract',
+  'mingmo-core-route-contract',
+  'xianxia-core-route-contract',
+  'yingxiongzhi-core-route-contract',
+  'yingxiongzhi-old-debts',
+  'yingxiongzhi-node-scheduler'
+]);
+
 for (const pack of Object.values(contentPacks)) {
+  pack.worldBook = pack.worldBook.map((entry) => ({
+    ...entry,
+    extensions: {
+      ...(entry.extensions || {}),
+      inheritanceScope: 'story'
+    }
+  }));
+  pack.promptModules = pack.promptModules.map((module) => ({
+    ...module,
+    extensions: {
+      ...(module.extensions || {}),
+      inheritanceScope: STORY_SCOPED_PROMPT_IDS.has(module.id) ? 'story' : 'genre'
+    }
+  }));
   if (!Array.isArray(pack.characterPresets) || !pack.characterPresets.length) {
     pack.characterPresets = buildContentPackCharacterPresets(pack.id, pack.characterCard);
   }

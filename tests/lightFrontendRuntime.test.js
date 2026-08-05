@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyDisplayTransforms,
+  applyPromptTransforms,
   applyMvuPatch,
   expandQuickReply,
   extractLightFrontendRuntime,
@@ -56,6 +57,73 @@ test('display transforms affect presentation without mutating the raw message', 
   assert.equal(raw, '正文<state>{"favor":10}</state>');
 });
 
+test('SillyTavern regex placement and prompt/display modes retain their original boundaries', () => {
+  const runtime = normalizeLightFrontendRuntime({
+    regexTransforms: [
+      {
+        id: 'user-prompt',
+        pattern: '秘密',
+        replacement: '{{user}}的隐情',
+        placement: 1,
+        promptOnly: true
+      },
+      {
+        id: 'assistant-prompt',
+        pattern: '线索',
+        replacement: '{{char}}掌握的线索',
+        placement: 2,
+        promptOnly: true
+      },
+      {
+        id: 'assistant-display',
+        pattern: '<status/>',
+        replacement: '<div><strong>境界</strong>：筑基</div>',
+        placement: 2,
+        markdownOnly: true
+      }
+    ]
+  });
+  const context = { user: '旅人', char: '闻雪照' };
+
+  assert.equal(
+    applyPromptTransforms('秘密与线索', runtime.regexTransforms, { role: 'user', context }),
+    '旅人的隐情与线索'
+  );
+  assert.equal(
+    applyPromptTransforms('秘密与线索', runtime.regexTransforms, { role: 'assistant', context }),
+    '秘密与闻雪照掌握的线索'
+  );
+  assert.equal(
+    applyDisplayTransforms('秘密与线索', runtime.regexTransforms, { role: 'assistant', context }),
+    '秘密与线索'
+  );
+  const display = applyDisplayTransforms('<status/>', runtime.regexTransforms, {
+    role: 'assistant',
+    context
+  });
+  assert.match(display, /境界/);
+  assert.match(display, /筑基/);
+  assert.doesNotMatch(display, /<div>|<strong>/);
+});
+
+test('executable regex replacements are flagged for sandboxed rendering instead of being dropped', () => {
+  const runtime = normalizeLightFrontendRuntime({
+    regexTransforms: [{
+      id: 'unsafe-widget',
+      pattern: '<widget/>',
+      replacement: '<script>window.run()</script>',
+      placement: 2,
+      markdownOnly: true
+    }]
+  });
+
+  assert.equal(runtime.regexTransforms.length, 1);
+  assert.equal(runtime.regexTransforms[0].requiresSandbox, true);
+  assert.equal(runtime.regexTransforms[0].markdownOnly, true);
+  assert.ok(runtime.diagnostics.some((item) => item.code === 'executable-regex-replacement-sandboxed'));
+  assert.equal(runtime.executesThirdPartyCode, false);
+});
+
 test('display transform replacements can read MVU state without executing code', () => {
   const runtime = normalizeLightFrontendRuntime({
     regexTransforms: [{ pattern: '<favor/>', replacement: '好感 <%= mvu.favor %>', flags: 'g' }]
@@ -66,9 +134,9 @@ test('display transform replacements can read MVU state without executing code',
   assert.equal(applyLightFrontendDisplayTransforms('状态：<favor/>', runtime, { context }), '状态：好感 18');
 });
 
-test('display transform replacements expand user and char macros on server and browser', () => {
+test('display transform replacements expand user and character-name macros on server and browser', () => {
   const runtime = normalizeLightFrontendRuntime({
-    regexTransforms: [{ pattern: '<speaker/>', replacement: '{{char}}回应{{user}}', flags: 'g' }]
+    regexTransforms: [{ pattern: '<speaker/>', replacement: '{{character name}}回应{{user}}', flags: 'g' }]
   });
   const context = { char: '闻雪照', user: '旅人' };
 
@@ -225,6 +293,46 @@ test('common heavy frontend status markup becomes native sidebar panels without 
   assert.equal(JSON.stringify(runtime.panels).includes('onclick'), false);
   assert.ok(runtime.adapters.find((item) => item.id === 'static-status-panel'));
   assert.ok(runtime.diagnostics.some((item) => item.code === 'third-party-executable-disabled'));
+});
+
+test('generation-time status templates are deferred instead of exposed as live sidebar state', () => {
+  const runtime = extractLightFrontendRuntime({
+    worldBook: [{
+      title: '状态栏',
+      content: `<StatusBlock><CharacterStatus><details>
+        <summary>---{{character name}}状态栏---</summary>
+        角色：{{character name}}<br>
+        人物特质：{{用4到6个词组标签突出角色特色}}<br>
+        催眠等级：{{严格按照催眠等级体系词条执行}}<br>
+        当前目标：{{结合剧情填写当前目标}}
+      </details></CharacterStatus></StatusBlock>`
+    }]
+  });
+
+  assert.deepEqual(runtime.panels, []);
+  assert.ok(runtime.diagnostics.some((item) => item.code === 'static-status-template-deferred'));
+
+  const stalePanel = resolveLightFrontendPanel({
+    title: '---{{character name}}状态栏---',
+    kind: 'stats',
+    fields: [
+      { label: '角色', value: '{{character name}}' },
+      { label: '人物特质', value: '{{用4到6个词组标签突出角色特色}}' },
+      { label: '催眠等级', value: '{{严格按照催眠等级体系词条执行}}' }
+    ]
+  }, { char: '林夏' });
+  assert.equal(stalePanel, null);
+});
+
+test('character name compatibility alias resolves in concrete declarative panels', () => {
+  const panel = resolveLightFrontendPanel({
+    title: '{{character name}}状态',
+    kind: 'stats',
+    fields: [{ label: '地点', value: '旧城区' }]
+  }, { char: '林夏' });
+
+  assert.equal(panel.title, '林夏状态');
+  assert.deepEqual(panel.fields, [{ id: '', label: '地点', value: '旧城区', tone: 'default', wide: false }]);
 });
 
 test('unknown community adapter namespaces are not promoted into executable runtimes', () => {

@@ -14,6 +14,12 @@ test('asset center builds a unified catalog for resources and content packs', ()
       favorite: true,
       diagnostics: { score: 91, estimatedTokens: 1800 },
       source: { community: '类脑社区', author: '测试作者' },
+      revision: {
+        headId: 'revision-2',
+        number: 2,
+        count: 2,
+        securityReview: { required: true }
+      },
       payload: { role: '问剑人' },
       updatedAt: '2026-07-20T08:00:00.000Z'
     },
@@ -37,8 +43,11 @@ test('asset center builds a unified catalog for resources and content packs', ()
   assert.deepEqual(catalog.map((item) => item.kind), ['character', 'worldbook', 'pack']);
   assert.equal(catalog[0].sourceLabel, '类脑社区');
   assert.equal(catalog[0].favorite, true);
+  assert.equal(catalog[0].revisionCount, 2);
+  assert.equal(catalog[0].securityReviewRequired, true);
   assert.equal(catalog[2].diagnostics.stats.entryCount, 48);
   assert.equal(catalog[2].diagnostics.stats.characterCount, 4);
+  assert.equal(catalog[2].compatibilityAudit.status, 'native');
 });
 
 test('asset center filters collections, source and kind while keeping favorites first', () => {
@@ -102,4 +111,34 @@ test('asset center groups same-title revisions and links companion worldbooks fr
   assert.equal(first.versionCount, 2);
   assert.equal(first.companionWorldbookCount, 1);
   assert.deepEqual(filterAssetCatalog(catalog, { sort: 'versions' }).slice(0, 2).map((item) => item.kind), ['character', 'character']);
+});
+
+test('asset center presents stored and legacy prompt presets as one top-level asset', () => {
+  const catalog = buildAssetCatalog([
+    {
+      id: 'bundle-1',
+      kind: 'prompt-bundle',
+      title: '新预设',
+      payload: { promptModules: [{ id: 'one', content: '一' }, { id: 'two', content: '二' }] }
+    },
+    {
+      id: 'legacy-a',
+      kind: 'prompt',
+      title: '模块 A',
+      source: { importBatchId: 'legacy-batch' },
+      payload: { content: 'A', extensions: { sillyTavernPreset: { presetTitle: '旧预设' } } }
+    },
+    {
+      id: 'legacy-b',
+      kind: 'prompt',
+      title: '模块 B',
+      source: { importBatchId: 'legacy-batch' },
+      payload: { content: 'B', extensions: { sillyTavernPreset: { presetTitle: '旧预设' } } }
+    }
+  ]);
+
+  assert.equal(catalog.length, 2);
+  assert.deepEqual(catalog.map((item) => item.kind), ['prompt', 'prompt']);
+  assert.equal(catalog.find((item) => item.title === '新预设').resourceKind, 'prompt-bundle');
+  assert.deepEqual(catalog.find((item) => item.title === '旧预设').resourceIds, ['legacy-a', 'legacy-b']);
 });

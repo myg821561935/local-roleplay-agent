@@ -1,3 +1,9 @@
+import {
+  collectSillyTavernRegexRules,
+  createSillyTavernRegexCompanion,
+  importSillyTavernRegexPreset
+} from './regexPresetImport.js';
+
 const PLACEHOLDER_IDS = new Set([
   'worldInfoBefore',
   'personaDescription',
@@ -6,7 +12,8 @@ const PLACEHOLDER_IDS = new Set([
   'scenario',
   'worldInfoAfter',
   'dialogueExamples',
-  'chatHistory'
+  'chatHistory',
+  'enhanceDefinitions'
 ]);
 
 const PROMPT_ID_ALIASES = {
@@ -50,6 +57,10 @@ export function importSillyTavernPreset(document, { fileName = '' } = {}) {
     .sort(comparePresetPrompts);
   const dependencySignals = summarizeExtensionSignals(document);
   const generationSettings = normalizeGenerationSettings(document);
+  const regexRules = collectSillyTavernRegexRules(document);
+  const regexPreset = regexRules.length
+    ? importSillyTavernRegexPreset(regexRules, { fileName: title })
+    : null;
   const promptLayout = prompts.map((prompt) => ({
     id: prompt.id,
     name: prompt.name,
@@ -78,13 +89,15 @@ export function importSillyTavernPreset(document, { fileName = '' } = {}) {
           sourceFormat,
           promptId: prompt.id,
           originalIndex: prompt.originalIndex,
-          sequence: index,
-          generationSettings,
-          promptLayout,
-          dependencySignals
+          sequence: index
         }
       }
     }));
+  const runtimeCompanion = createSillyTavernRegexCompanion(regexRules, {
+    title,
+    sourceFormat
+  });
+  if (runtimeCompanion) promptModules.push(runtimeCompanion);
 
   return {
     title,
@@ -93,12 +106,19 @@ export function importSillyTavernPreset(document, { fileName = '' } = {}) {
     promptLayout,
     generationSettings,
     dependencySignals,
+    regexCompatibility: regexPreset?.compatibility || null,
     counts: {
       prompts: prompts.length,
       enabled: prompts.filter((prompt) => prompt.enabled).length,
-      modules: promptModules.length,
+      modules: promptModules.length - (runtimeCompanion ? 1 : 0),
+      runtimeCompanions: runtimeCompanion ? 1 : 0,
       placeholders: prompts.filter((prompt) => prompt.placeholder).length,
       regexScripts: dependencySignals.regex_scripts?.count || 0,
+      safeRegexScripts: regexPreset?.counts.safe || 0,
+      degradedRegexScripts: regexPreset?.counts.degraded || 0,
+      sandboxedRegexScripts: regexPreset?.counts.sandboxed || 0,
+      blockedRegexScripts: regexPreset?.counts.blocked || 0,
+      truncatedRegexScripts: regexPreset?.counts.truncated || 0,
       tavernHelperScripts: dependencySignals.tavern_helper?.scriptCount || 0
     }
   };

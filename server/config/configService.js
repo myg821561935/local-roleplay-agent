@@ -2,12 +2,22 @@ import crypto from 'node:crypto';
 import { defaultCharacterCard, defaultPersona, defaultPromptModules, defaultProviders, defaultQuickReplies, defaultWorldBook } from './defaults.js';
 import { dedupeWorldBookEntries } from '../agent/factCards.js';
 
+const CONFIG_CACHE_TTL_MS = 200;
+
 export class ConfigService {
   constructor(store) {
     this.store = store;
+    this._cache = null;
+    this._cacheExpiresAt = 0;
+  }
+
+  _invalidateCache() {
+    this._cache = null;
+    this._cacheExpiresAt = 0;
   }
 
   async getAll() {
+    if (this._cache && Date.now() < this._cacheExpiresAt) return this._cache;
     const providers = await this.store.read('config/providers.local.json', defaultProviders);
     const promptModules = await this.store.read('config/prompt-modules.json', defaultPromptModules);
     const worldBook = await this.store.read('config/world-book.json', defaultWorldBook);
@@ -20,7 +30,9 @@ export class ConfigService {
     const macroTemplates = await this.store.read('config/macro-templates.json', []);
     const vectorMemory = await this.store.read('config/vector-memory.json', { enabled: false, providerId: '', topK: 5 });
     const mcpServers = await this.store.read('config/mcp-servers.json', []);
-    return { providers, promptModules, worldBook, characterCard, persona, quickReplies, characterPresets, promptPresets, groupMembers, macroTemplates, vectorMemory, mcpServers };
+    this._cache = { providers, promptModules, worldBook, characterCard, persona, quickReplies, characterPresets, promptPresets, groupMembers, macroTemplates, vectorMemory, mcpServers };
+    this._cacheExpiresAt = Date.now() + CONFIG_CACHE_TTL_MS;
+    return this._cache;
   }
 
   async saveMacroTemplates(macroTemplates) {
@@ -32,12 +44,16 @@ export class ConfigService {
         description: String(t.description || '').trim(),
         createdAt: t.createdAt || new Date().toISOString()
       }));
-    return this.store.write('config/macro-templates.json', normalized);
+    const result = await this.store.write('config/macro-templates.json', normalized);
+    this._invalidateCache();
+    return result;
   }
 
   async saveVectorMemory(vectorMemory) {
     const source = isPlainObject(vectorMemory) ? vectorMemory : {};
-    return this.store.write('config/vector-memory.json', normalizeVectorMemory(source));
+    const result = await this.store.write('config/vector-memory.json', normalizeVectorMemory(source));
+    this._invalidateCache();
+    return result;
   }
 
   async saveMcpServers(mcpServers) {
@@ -45,22 +61,18 @@ export class ConfigService {
     const normalized = source
       .filter((s) => isPlainObject(s) && String(s.id || '').trim())
       .map((s) => normalizeMcpServer(s));
-    return this.store.write('config/mcp-servers.json', normalized);
+    const result = await this.store.write('config/mcp-servers.json', normalized);
+    this._invalidateCache();
+    return result;
   }
 
   async saveGroupMembers(groupMembers) {
     const normalized = (Array.isArray(groupMembers) ? groupMembers : [])
       .filter((m) => isPlainObject(m) && String(m.name || '').trim())
-      .map((m) => ({
-        id: String(m.id || `member-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`),
-        name: String(m.name).trim().slice(0, 30),
-        role: String(m.role || '').trim().slice(0, 60),
-        description: String(m.description || '').trim(),
-        personality: String(m.personality || '').trim(),
-        systemPrompt: String(m.systemPrompt || '').trim(),
-        enabled: m.enabled !== false
-      }));
-    return this.store.write('config/group-members.json', normalized);
+      .map(normalizeGroupMember);
+    const result = await this.store.write('config/group-members.json', normalized);
+    this._invalidateCache();
+    return result;
   }
 
   async savePromptPresets(promptPresets) {
@@ -72,7 +84,9 @@ export class ConfigService {
         promptModules: p.promptModules.map(normalizePromptModule),
         createdAt: p.createdAt || new Date().toISOString()
       }));
-    return this.store.write('config/prompt-presets.json', normalized);
+    const result = await this.store.write('config/prompt-presets.json', normalized);
+    this._invalidateCache();
+    return result;
   }
 
   async saveCharacterPresets(presets) {
@@ -86,31 +100,45 @@ export class ConfigService {
         promptModules: Array.isArray(p.promptModules) ? p.promptModules : [],
         createdAt: p.createdAt || new Date().toISOString()
       }));
-    return this.store.write('config/character-presets.json', normalized);
+    const result = await this.store.write('config/character-presets.json', normalized);
+    this._invalidateCache();
+    return result;
   }
 
   async saveProviders(providers) {
-    return this.store.write('config/providers.local.json', normalizeProviders(providers));
+    const result = await this.store.write('config/providers.local.json', normalizeProviders(providers));
+    this._invalidateCache();
+    return result;
   }
 
   async savePromptModules(promptModules) {
-    return this.store.write('config/prompt-modules.json', promptModules.map(normalizePromptModule));
+    const result = await this.store.write('config/prompt-modules.json', promptModules.map(normalizePromptModule));
+    this._invalidateCache();
+    return result;
   }
 
   async saveWorldBook(worldBook) {
-    return this.store.write('config/world-book.json', worldBook.map(normalizeWorldBookEntry));
+    const result = await this.store.write('config/world-book.json', worldBook.map(normalizeWorldBookEntry));
+    this._invalidateCache();
+    return result;
   }
 
   async saveCharacterCard(characterCard) {
-    return this.store.write('config/character-card.json', normalizeCharacterCard(characterCard));
+    const result = await this.store.write('config/character-card.json', normalizeCharacterCard(characterCard));
+    this._invalidateCache();
+    return result;
   }
 
   async savePersona(persona) {
-    return this.store.write('config/persona.json', normalizePersona(persona));
+    const result = await this.store.write('config/persona.json', normalizePersona(persona));
+    this._invalidateCache();
+    return result;
   }
 
   async saveQuickReplies(quickReplies) {
-    return this.store.write('config/quick-replies.json', normalizeQuickReplies(quickReplies));
+    const result = await this.store.write('config/quick-replies.json', normalizeQuickReplies(quickReplies));
+    this._invalidateCache();
+    return result;
   }
 
   async importCharacterCard({ characterCard, worldBook = [] }) {
@@ -152,6 +180,7 @@ function normalizeProviders(value) {
       model: String(provider.model || ''),
       temperature: normalizeFiniteNumber(provider.temperature, 0.9),
       maxTokens: normalizePositiveFiniteNumber(provider.maxTokens, 2000),
+      reasoningMode: normalizeReasoningMode(provider.reasoningMode),
       headers: isPlainObject(provider.headers) ? provider.headers : {}
     })) : []
   };
@@ -172,11 +201,67 @@ function normalizeProviderKind(kind) {
   return ['openai-compatible', 'anthropic', 'gemini'].includes(value) ? value : 'openai-compatible';
 }
 
+function normalizeReasoningMode(value) {
+  const mode = String(value || 'auto').trim().toLowerCase();
+  return ['auto', 'enabled', 'disabled'].includes(mode) ? mode : 'auto';
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function normalizePersona(value) {
+const GROUP_MEMBER_COMPATIBILITY_FIELDS = [
+  'speechStyle',
+  'exampleDialog',
+  'knowledge',
+  'goals',
+  'relationships',
+  'relationship',
+  'location',
+  'status',
+  'publicKnowledge',
+  'privateKnowledge',
+  'schedule',
+  'agenda',
+  'extensions'
+];
+
+function normalizeGroupMember(member) {
+  const normalized = {
+    id: String(member.id || `member-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`),
+    name: String(member.name).trim().slice(0, 30),
+    role: String(member.role || '').trim().slice(0, 60),
+    description: String(member.description || '').trim(),
+    personality: String(member.personality || '').trim(),
+    systemPrompt: String(member.systemPrompt || '').trim(),
+    enabled: member.enabled !== false
+  };
+
+  for (const field of GROUP_MEMBER_COMPATIBILITY_FIELDS) {
+    if (!Object.hasOwn(member, field)) continue;
+    const value = normalizeJsonMetadata(member[field]);
+    if (value !== undefined) normalized[field] = value;
+  }
+  return normalized;
+}
+
+function normalizeJsonMetadata(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (Array.isArray(value)) {
+    return value
+      .map(normalizeJsonMetadata)
+      .filter((item) => item !== undefined);
+  }
+  if (!isPlainObject(value)) return undefined;
+
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !['__proto__', 'constructor', 'prototype'].includes(key))
+    .map(([key, item]) => [key, normalizeJsonMetadata(item)])
+    .filter(([, item]) => item !== undefined));
+}
+
+export function normalizePersona(value) {
   const persona = isPlainObject(value) ? value : {};
   return {
     name: String(persona.name || '').trim(),
@@ -248,7 +333,22 @@ export function normalizePromptModule(module) {
   if (module.depth !== undefined) normalized.depth = normalizeFiniteNumber(module.depth, 0);
   if (module.order !== undefined) normalized.order = normalizeFiniteNumber(module.order, 0);
   if (module.source) normalized.source = String(module.source);
-  if (isPlainObject(module.extensions)) normalized.extensions = structuredClone(module.extensions);
+  if (isPlainObject(module.extensions)) normalized.extensions = normalizePromptModuleExtensions(module.extensions);
+  return normalized;
+}
+
+function normalizePromptModuleExtensions(extensions) {
+  const normalized = structuredClone(extensions);
+  const preset = normalized.sillyTavernPreset;
+  if (isPlainObject(preset)) {
+    // Bundle-level metadata is stored once on prompt-bundle.payload. Keeping the
+    // same layout/settings copy on every module made large community presets grow
+    // quadratically on disk and in memory.
+    delete preset.generationSettings;
+    delete preset.promptLayout;
+    delete preset.dependencySignals;
+    delete preset.regexCompatibility;
+  }
   return normalized;
 }
 

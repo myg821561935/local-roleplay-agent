@@ -1,41 +1,233 @@
-:root[data-theme="wuxia-scroll"] {
-  --bg: #100d0a;
-  --bg-soft: #1d1912;
-  --panel: rgba(25, 21, 17, 0.9);
-  --panel-raised: rgba(43, 34, 24, 0.92);
-  --panel-deep: #100f0d;
-  --line: rgba(222, 181, 100, 0.28);
-  --line-strong: rgba(204, 149, 63, 0.72);
-  --text: #f3ead8;
-  --muted: #c5b89f;
-  --subtle: #ad9d84;
-  --gold: #e2b45f;
-  --gold-deep: #8d5f22;
-  --teal: #78b8ad;
-  --blue: #8aa9c0;
-  --danger: #d17967;
-  --ok: #92bd89;
-  --shadow: 0 22px 54px rgba(0, 0, 0, 0.34);
-  --display: "Songti SC", "STSong", "Noto Serif CJK SC", "KaiTi", serif;
+:root[data-theme="eye-care"] {
+  color-scheme: dark;
+  --bg: #171c19;
+  --bg-soft: #1d2420;
+  --panel: #222925;
+  --panel-raised: #2a332d;
+  --panel-deep: #141916;
+  --line: #3a463e;
+  --line-strong: #718070;
+  --text: #d2d8cf;
+  --muted: #a8b0a6;
+  --subtle: #869187;
+  --gold: #c2ad7f;
+  --gold-deep: #847557;
+  --teal: #8fb3a5;
+  --blue: #91a7ad;
+  --accent: #9db8a1;
+  --danger: #c98c7e;
+  --ok: #91b292;
+  --shadow: 0 18px 42px rgba(5, 10, 7, 0.24);
+  --reading-surface: rgba(28, 35, 30, 0.9);
+  --reading-assistant: rgba(34, 40, 34, 0.92);
+  --reading-user: rgba(31, 43, 39, 0.92);
+  --reading-border: rgba(164, 180, 164, 0.19);
+  --reading-content: #cbd1c7;
+  --reading-strong: #d8c9a7;
+  --reading-emphasis: #b9c8c2;
+  --reading-composer: rgba(27, 34, 29, 0.9);
+  --reading-header: rgba(26, 33, 28, 0.84);
+  --reading-stage-effect: linear-gradient(180deg, rgba(24, 31, 26, 0.12), rgba(18, 24, 20, 0.28));
+  --reading-radius: 12px;
+  --reading-role-shadow: none;
+  --reading-app-shell:
+    linear-gradient(145deg, rgba(139, 169, 145, 0.07), transparent 340px),
+    linear-gradient(180deg, rgba(192, 177, 133, 0.045), transparent 280px),
+    #171c19;
 }
 
-:root[data-theme="xianxia-scroll"] {
-  --bg: #091018;
-  --bg-soft: #111a23;
-  --panel: rgba(13, 20, 27, 0.9);
-  --panel-raised: rgba(22, 32, 42, 0.92);
-  --panel-deep: #0b1118;
-  --line: rgba(133, 191, 210, 0.28);
-  --line-strong: rgba(206, 176, 92, 0.66);
-  --text: #edf5f4;
-  --muted: #b6c8c7;
-  --subtle: #92a7ac;
-  --gold: #d7b86a;
-  --gold-deep: #947637;
-  --teal: #81d4ca;
-  --blue: #9ab8da;
-  --danger: #d17967;
-  --ok: #92bd89;
-  --shadow: 0 22px 54px rgba(0, 0, 0, 0.34);
-  --display: "Songti SC", "STSong", "Noto Serif CJK SC", "KaiTi", serif;
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #07090b;
+  --bg-soft: #0c0f12;
+  --panel: #101419;
+  --panel-raised: #171c22;
+  --panel-deep: #080b0e;
+  --line: #293038;
+  --line-strong: #635052;
+  --text: #d9dce0;
+  --muted: #a3a8ae;
+  --subtle: #7d858d;
+  --gold: #b99b6a;
+  --gold-deep: #735f40;
+  --teal: #749c94;
+  --blue: #7d91a8;
+  --accent: #ab8587;
+  --danger: #c8736d;
+  --ok: #789b7c;
+  --shadow: 0 26px 64px rgba(0, 0, 0, 0.58);
+  --reading-surface: rgba(8, 11, 14, 0.94);
+  --reading-assistant: rgba(13, 16, 20, 0.95);
+  --reading-user: rgba(12, 21, 21, 0.94);
+  --reading-border: rgba(174, 137, 139, 0.22);
+  --reading-content: #d1d5da;
+  --reading-strong: #cfb484;
+  --reading-emphasis: #aebdc7;
+  --reading-composer: rgba(7, 10, 13, 0.94);
+  --reading-header: rgba(5, 7, 9, 0.9);
+  --reading-stage-effect:
+    radial-gradient(circle at 50% 32%, transparent 0 24%, rgba(2, 3, 4, 0.18) 66%, rgba(1, 2, 3, 0.54) 100%),
+    linear-gradient(180deg, rgba(13, 8, 10, 0.1), rgba(2, 4, 5, 0.38));
+  --reading-radius: 3px 14px 14px 3px;
+  --reading-role-shadow: 0 1px 8px rgba(0, 0, 0, 0.82);
+  --reading-app-shell:
+    radial-gradient(circle at 74% 4%, rgba(92, 45, 49, 0.08), transparent 34%),
+    linear-gradient(160deg, #0b0d10 0%, #050607 68%);
+}
+
+:root[data-theme="bright"] {
+  color-scheme: light;
+  --bg: #e7ecee;
+  --bg-soft: #eef2f3;
+  --panel: #f5f7f7;
+  --panel-raised: #ffffff;
+  --panel-deep: #dfe6e8;
+  --line: #c5ced2;
+  --line-strong: #7f98a3;
+  --text: #263035;
+  --muted: #5f6d73;
+  --subtle: #78878e;
+  --gold: #8f6b31;
+  --gold-deep: #6d5126;
+  --teal: #3e7775;
+  --blue: #517a9e;
+  --accent: #597f97;
+  --danger: #a84f48;
+  --ok: #4e7957;
+  --shadow: 0 18px 44px rgba(42, 57, 63, 0.18);
+  --reading-surface: rgba(244, 247, 247, 0.94);
+  --reading-assistant: rgba(249, 248, 244, 0.95);
+  --reading-user: rgba(232, 243, 242, 0.95);
+  --reading-border: rgba(69, 91, 101, 0.24);
+  --reading-content: #2c3539;
+  --reading-strong: #75572c;
+  --reading-emphasis: #476377;
+  --reading-composer: rgba(246, 248, 248, 0.95);
+  --reading-header: rgba(240, 244, 245, 0.9);
+  --reading-stage-effect: linear-gradient(180deg, rgba(233, 240, 241, 0.02), rgba(27, 39, 43, 0.16));
+  --reading-radius: 12px;
+  --reading-role-shadow: none;
+  --reading-app-shell:
+    linear-gradient(145deg, rgba(84, 128, 148, 0.1), transparent 360px),
+    linear-gradient(180deg, #edf1f2 0%, #e3e9eb 100%);
+}
+
+:root[data-theme="soft"] {
+  color-scheme: dark;
+  --bg: #1b161b;
+  --bg-soft: #241d23;
+  --panel: #2a2228;
+  --panel-raised: #352a32;
+  --panel-deep: #171217;
+  --line: #4b3b46;
+  --line-strong: #9b7488;
+  --text: #eadfe5;
+  --muted: #c4b1bb;
+  --subtle: #a18c97;
+  --gold: #d3b593;
+  --gold-deep: #92715b;
+  --teal: #9fbeb9;
+  --blue: #aaa9c9;
+  --accent: #d0a3b8;
+  --danger: #d48686;
+  --ok: #9db99d;
+  --shadow: 0 20px 52px rgba(21, 10, 18, 0.34);
+  --reading-surface: rgba(42, 33, 40, 0.9);
+  --reading-assistant: rgba(50, 38, 47, 0.93);
+  --reading-user: rgba(39, 48, 49, 0.92);
+  --reading-border: rgba(220, 174, 195, 0.24);
+  --reading-content: #e5dbe0;
+  --reading-strong: #efd0b2;
+  --reading-emphasis: #cbc5df;
+  --reading-composer: rgba(45, 34, 42, 0.91);
+  --reading-header: rgba(45, 34, 42, 0.84);
+  --reading-stage-effect: linear-gradient(135deg, rgba(88, 52, 71, 0.12), rgba(35, 55, 57, 0.18));
+  --reading-radius: 22px;
+  --reading-role-shadow: none;
+  --reading-app-shell:
+    radial-gradient(circle at 12% 0%, rgba(210, 154, 181, 0.11), transparent 32%),
+    radial-gradient(circle at 92% 12%, rgba(145, 177, 181, 0.08), transparent 30%),
+    #1b161b;
+}
+
+:root[data-theme="modern"] {
+  color-scheme: dark;
+  --bg: #11151a;
+  --bg-soft: #171c22;
+  --panel: #1c2229;
+  --panel-raised: #252c34;
+  --panel-deep: #0e1216;
+  --line: #36404a;
+  --line-strong: #5e7d98;
+  --text: #e0e5ea;
+  --muted: #abb5bf;
+  --subtle: #84919c;
+  --gold: #c7a66d;
+  --gold-deep: #816b48;
+  --teal: #79b9b2;
+  --blue: #83a9cc;
+  --accent: #83a9cc;
+  --danger: #d17f75;
+  --ok: #88b593;
+  --shadow: 0 20px 52px rgba(2, 7, 12, 0.38);
+  --reading-surface: rgba(20, 26, 32, 0.91);
+  --reading-assistant: rgba(25, 31, 38, 0.94);
+  --reading-user: rgba(20, 38, 42, 0.93);
+  --reading-border: rgba(133, 166, 194, 0.22);
+  --reading-content: #dce3e9;
+  --reading-strong: #e2c58f;
+  --reading-emphasis: #bdd0df;
+  --reading-composer: rgba(17, 22, 28, 0.92);
+  --reading-header: rgba(18, 23, 29, 0.86);
+  --reading-stage-effect: linear-gradient(180deg, rgba(14, 25, 34, 0.08), rgba(10, 16, 22, 0.28));
+  --reading-radius: 10px;
+  --reading-role-shadow: none;
+  --reading-app-shell:
+    linear-gradient(145deg, rgba(74, 118, 155, 0.09), transparent 360px),
+    linear-gradient(180deg, #13181e 0%, #0f1317 100%);
+}
+
+:root[data-theme="cyber"] {
+  color-scheme: dark;
+  --bg: #060a10;
+  --bg-soft: #0a1019;
+  --panel: #0d1520;
+  --panel-raised: #111e2a;
+  --panel-deep: #05080d;
+  --line: #24404e;
+  --line-strong: #317f8d;
+  --text: #d3e3e6;
+  --muted: #91afb4;
+  --subtle: #6b8991;
+  --gold: #d1ae62;
+  --gold-deep: #7f693b;
+  --teal: #55c5c4;
+  --blue: #5d9fd2;
+  --accent: #55c5c4;
+  --danger: #d66f93;
+  --ok: #6ebd91;
+  --shadow: 0 22px 58px rgba(0, 4, 9, 0.56);
+  --reading-surface: rgba(5, 12, 19, 0.94);
+  --reading-assistant: rgba(7, 16, 24, 0.95);
+  --reading-user: rgba(7, 25, 29, 0.94);
+  --reading-border: rgba(78, 196, 197, 0.26);
+  --reading-content: #c8dde0;
+  --reading-strong: #e0bd70;
+  --reading-emphasis: #a8c5db;
+  --reading-composer: rgba(5, 13, 20, 0.95);
+  --reading-header: rgba(4, 10, 16, 0.91);
+  --reading-stage-effect:
+    repeating-linear-gradient(180deg, rgba(70, 205, 202, 0.025) 0 1px, transparent 1px 4px),
+    linear-gradient(120deg, rgba(0, 194, 201, 0.07), transparent 45%, rgba(196, 54, 124, 0.06));
+  --reading-radius: 2px;
+  --reading-role-shadow: 0 0 10px rgba(55, 184, 185, 0.16);
+  --reading-app-shell:
+    linear-gradient(rgba(65, 199, 199, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(65, 199, 199, 0.025) 1px, transparent 1px),
+    radial-gradient(circle at 86% 0%, rgba(195, 52, 125, 0.1), transparent 30%),
+    #060a10;
+}
+
+:root[data-theme="cyber"] .app-shell {
+  background-size: 32px 32px, 32px 32px, auto, auto;
 }

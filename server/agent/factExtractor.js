@@ -2,7 +2,7 @@ import { createDefaultMemory } from './memoryUpdater.js';
 import { normalizeFactCards, worldBookIdentity } from './factCards.js';
 import { buildNarrativeMaintenanceAnchor, normalizeNarrativeMode } from './narrativeControl.js';
 
-export function buildFactExtractionPrompt({ worldState, messages, narrativeContext }) {
+export function buildFactExtractionPrompt({ worldState, messages, narrativeContext, canonicalContext = '' }) {
   const transcript = messages.map((message) => `${message.role}: ${message.content}`).join('\n');
   const narrativeAnchor = buildNarrativeMaintenanceAnchor(narrativeContext);
   return [
@@ -10,8 +10,11 @@ export function buildFactExtractionPrompt({ worldState, messages, narrativeConte
       role: 'system',
       content: [
         '你是长篇角色扮演的事实提取器。',
+        '事实优先级固定为：角色卡与已启用世界书 > 用户明确确认的事实与行动 > 不冲突的既有会话事实 > 模型生成的摘要、World State 和预设补充。低优先级内容与高优先级来源冲突时必须舍弃，不能把两个互斥版本同时保留。',
         '只提取对后续创作稳定有用的新事实：人物状态、地点、关系、任务、阵营、物品、伤势、承诺、旗标、资源权属、制度职位和未清债务。',
         '不要补充对话中没有确认的设定。',
+        'characters 只登记已经实际登场、与主角互动或被可靠确认的人物；仅在世界书名单中出现、尚未见面的角色不得标记 encountered=true。每名本幕登场角色都应使用角色卡或世界书中的规范名称写入 characters，并同步维护 relationships。',
+        '隐藏身份、秘密、幕后动机和未公开物品不得写入 worldState、memoryCards 或动态 worldBook，也不得写成主角已知状态；除非正文中已经发生了可观察的揭露。原始角色卡和世界书会继续承担导演侧约束。',
         'memoryCards 用于给创作者审阅；worldBook 用于可被关键词触发的动态世界书条目。',
         '如果新事实需要长期按关键词注入，请同时写入 worldBook。worldBook 条目至少包含 title、keywords、content、depth；depth 表示插入深度，通常为 6。',
         narrativeAnchor ? `【叙事路线门禁】\n${narrativeAnchor}` : '',
@@ -20,12 +23,12 @@ export function buildFactExtractionPrompt({ worldState, messages, narrativeConte
         '只有用户明确选择/确认，或已经形成不可逆且可观察后果的事实，stability 才能写 confirmed；仅由模型在单轮中提出的新支线一律写 candidate。',
         'supporting 条目必须写明 returnsToPillar，说明它回流到哪一项主线、资源、关系或证据；偏航内容标为 drift，不得写入 worldBook。',
         '资源和制度事实尽量写入 worldState.resourceLedger、worldState.obligations、worldState.institutionLedger；必须注明来源、当前持有者/责任人、权属或职权、限制和未清后果。',
-        '只输出 JSON，不要输出解释。JSON 形如：{"worldState":{"protagonist":{},"location":{},"relationships":[],"quests":[],"factions":[],"flags":{},"timeline":[],"resourceLedger":[],"obligations":[],"institutionLedger":[]},"memoryCards":[{"title":"","content":"","extensions":{"stability":"candidate","genre":"","narrativeRole":"supporting","returnsToPillar":""}}],"worldBook":[{"title":"","keywords":[],"content":"","depth":6,"extensions":{"stability":"confirmed","genre":"","narrativeRole":"core","returnsToPillar":""}}]}'
+        '只输出 JSON，不要输出解释。JSON 形如：{"worldState":{"protagonist":{},"location":{},"characters":[{"name":"","role":"","encountered":true,"status":""}],"relationships":[],"quests":[],"factions":[],"flags":{},"timeline":[],"resourceLedger":[],"obligations":[],"institutionLedger":[]},"memoryCards":[{"title":"","content":"","extensions":{"stability":"candidate","genre":"","narrativeRole":"supporting","returnsToPillar":""}}],"worldBook":[{"title":"","keywords":[],"content":"","depth":6,"extensions":{"stability":"confirmed","genre":"","narrativeRole":"core","returnsToPillar":""}}]}'
       ].join('\n')
     },
     {
       role: 'user',
-      content: `当前 World State：\n${JSON.stringify(worldState || {}, null, 2)}\n\n新增对话：\n${transcript}\n\n请输出需要合并的新事实 JSON。`
+      content: `${canonicalContext ? `角色卡与世界书事实源：\n${canonicalContext}\n\n` : ''}当前 World State：\n${JSON.stringify(worldState || {}, null, 2)}\n\n新增对话：\n${transcript}\n\n请先用事实源消解冲突，再输出需要合并的新事实 JSON。`
     }
   ];
 }
@@ -125,16 +128,16 @@ function tryExtractFirstJsonObject(text) {
   return null;
 }
 
-function mergeWorldState(current, patch) {
-  if (Array.isArray(current) || Array.isArray(patch)) return mergeArrays(current, patch);
+function mergeWorldState(current, patch, path = []) {
+  if (Array.isArray(current) || Array.isArray(patch)) return mergeArrays(current, patch, path.at(-1));
   if (!isPlainObject(current) || !isPlainObject(patch)) return patch ?? current;
 
   const next = { ...current };
   for (const [key, value] of Object.entries(patch)) {
     if (Array.isArray(value)) {
-      next[key] = mergeArrays(next[key], value);
+      next[key] = mergeArrays(next[key], value, key);
     } else if (isPlainObject(value)) {
-      next[key] = mergeWorldState(isPlainObject(next[key]) ? next[key] : {}, value);
+      next[key] = mergeWorldState(isPlainObject(next[key]) ? next[key] : {}, value, [...path, key]);
     } else if (value !== undefined && value !== null && value !== '') {
       next[key] = value;
     }
@@ -197,19 +200,42 @@ function canAutoPromoteWorldBookEntry(entry, narrativeContext) {
   return true;
 }
 
-function mergeArrays(current, patch) {
+function mergeArrays(current, patch, field = '') {
   const existing = Array.isArray(current) ? current : [];
   const incoming = Array.isArray(patch) ? patch : [];
-  const seen = new Set(existing.map(stableKey));
   const merged = [...existing];
+  const indexes = new Map(merged.map((item, index) => [worldStateArrayKey(field, item), index]));
   incoming.forEach((item) => {
-    const key = stableKey(item);
-    if (!seen.has(key)) {
-      seen.add(key);
+    const key = worldStateArrayKey(field, item);
+    if (!indexes.has(key)) {
+      indexes.set(key, merged.length);
       merged.push(item);
+      return;
     }
+    const index = indexes.get(key);
+    const previous = merged[index];
+    merged[index] = isPlainObject(previous) && isPlainObject(item)
+      ? mergeWorldState(previous, item, [field])
+      : item;
   });
   return merged;
+}
+
+function worldStateArrayKey(field, value) {
+  if (!isPlainObject(value)) return stableKey(value);
+  if (field === 'characters') return `character:${stringValue(value.name || value.character) || stableKey(value)}`;
+  if (field === 'relationships') return `relationship:${stringValue(value.name || value.character || value.target) || stableKey(value)}`;
+  if (field === 'quests') return `quest:${stringValue(value.id || value.title || value.name) || stableKey(value)}`;
+  if (field === 'factions') return `faction:${stringValue(value.id || value.name) || stableKey(value)}`;
+  if (field === 'resourceLedger') return `resource:${stringValue(value.id || value.item) || stableKey(value)}`;
+  if (field === 'obligations') {
+    const explicitId = stringValue(value.id);
+    if (explicitId) return `obligation:${explicitId}`;
+    const identity = [value.type, value.debtor, value.creditor].map(stringValue).filter(Boolean).join('|');
+    return `obligation:${identity || stableKey(value)}`;
+  }
+  if (field === 'institutionLedger') return `institution:${stringValue(value.id || value.institution) || stableKey(value)}`;
+  return stableKey(value);
 }
 
 function stableKey(value) {

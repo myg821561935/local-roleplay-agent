@@ -11,10 +11,34 @@ export const INSPECTOR_GROUPS = {
   },
   debug: {
     label: '调试',
-    description: '记忆、事实与调用观测',
-    tabs: ['memory', 'facts', 'usage']
+    description: '健康、记忆、事实与调用观测',
+    tabs: ['health', 'memory', 'facts', 'usage']
   }
 };
+
+export function createInspectorTabSelectSync({
+  tabSelect,
+  panel,
+  workspace,
+  documentObject = globalThis.document
+} = {}) {
+  return function syncInspectorTabSelect(activeTab) {
+    if (!tabSelect) return;
+    const mode = workspace?.dataset.workMode || 'creative';
+    const buttons = Array.from(panel?.querySelectorAll('.tab-button[data-tab]') || [])
+      .filter((button) => String(button.dataset.modeGroups || '').split(/\s+/).includes(mode));
+    tabSelect.innerHTML = '';
+    buttons.forEach((button) => {
+      const option = documentObject.createElement('option');
+      option.value = button.dataset.tab;
+      option.textContent = button.textContent.trim();
+      tabSelect.append(option);
+    });
+    if (buttons.some((button) => button.dataset.tab === activeTab)) {
+      tabSelect.value = activeTab;
+    }
+  };
+}
 
 export const WORLD_BOOK_ENTRY_FIELDS = [
   { key: 'title', label: '标题', type: 'text', mode: 'simple' },
@@ -34,7 +58,14 @@ export function getInspectorGroupForTab(tab) {
   return Object.entries(INSPECTOR_GROUPS).find(([, group]) => group.tabs.includes(tab))?.[0] || 'core';
 }
 
-export function createInspectorController({ panel, tabSelect, syncTabSelect, activateResourceView, openAdvancedTool } = {}) {
+export function createInspectorController({
+  panel,
+  tabSelect,
+  syncTabSelect,
+  activateResourceView,
+  openAdvancedTool,
+  onGroupChange
+} = {}) {
   function activateGroup(groupName, options = {}) {
     const safeGroup = INSPECTOR_GROUPS[groupName] ? groupName : 'core';
     if (panel) panel.dataset.inspectorGroup = safeGroup;
@@ -55,6 +86,7 @@ export function createInspectorController({ panel, tabSelect, syncTabSelect, act
       const activeTab = tabButtons.find((button) => button.classList.contains('active'))?.dataset.tab;
       if (getInspectorGroupForTab(activeTab) !== safeGroup) activateTab(INSPECTOR_GROUPS[safeGroup].tabs[0], { syncGroup: false });
     }
+    if (options.notifyMode === true) onGroupChange?.(safeGroup);
     return safeGroup;
   }
 
@@ -87,12 +119,16 @@ export function createInspectorController({ panel, tabSelect, syncTabSelect, act
 
   function bindEvents() {
     Array.from(panel?.querySelectorAll('.inspector-group-button[data-inspector-group]') || []).forEach((button) => {
-      button.addEventListener('click', () => activateGroup(button.dataset.inspectorGroup));
+      button.addEventListener('click', () => activateGroup(button.dataset.inspectorGroup, { notifyMode: true }));
     });
     Array.from(panel?.querySelectorAll('.tab-button[data-tab]') || []).forEach((button) => {
       button.addEventListener('click', () => activateTab(button.dataset.tab));
     });
-    tabSelect?.addEventListener('change', () => activateTab(tabSelect.value));
+    tabSelect?.addEventListener('change', () => {
+      const tab = tabSelect.value;
+      activateGroup(getInspectorGroupForTab(tab), { activateDefault: false, notifyMode: true });
+      activateTab(tab, { syncGroup: false });
+    });
     Array.from(panel?.querySelectorAll('[data-open-provider-section]') || []).forEach((button) => {
       button.addEventListener('click', () => openAdvancedTool?.(button.dataset.openProviderSection));
     });

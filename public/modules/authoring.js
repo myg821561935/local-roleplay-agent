@@ -17,7 +17,16 @@ const EMPTY_LEDGER = {
   updatedAt: ''
 };
 
-export function createAuthoringController({ state, els, apiRequest, setStatus, getSessionId } = {}) {
+export function createAuthoringController({
+  state,
+  els,
+  apiRequest,
+  setStatus,
+  getSessionId,
+  replaceSession = () => {
+    throw new Error('SESSION_REPLACE_REQUIRED');
+  }
+} = {}) {
   let profiles = [];
   let draft = null;
   let loadedSessionId = '';
@@ -118,7 +127,7 @@ export function createAuthoringController({ state, els, apiRequest, setStatus, g
         method: 'PUT',
         body: { ledger, agentProfileId: activeProfileId }
       });
-      state.session = payload.session || state.session;
+      replaceSession(payload.session, { fallback: state.session });
       draft = cloneLedger(payload.ledger || ledger);
       loadedSessionId = String(state.session?.id || getSessionId?.() || 'main');
       sourceStamp = JSON.stringify(draft);

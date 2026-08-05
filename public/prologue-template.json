@@ -1,9 +1,4 @@
 {
-  "themeGenreMap": {
-    "wuxia-scroll": "xuanhuan",
-    "xianxia-scroll": "xianxia",
-    "default-dark": "xuanhuan"
-  },
   "genres": {
     "xuanhuan": {
       "title": "神 荒 武 界",
@@ -229,10 +224,5 @@
         ]
       }
     }
-  },
-  "themes": {
-    "wuxia-scroll": "xuanhuan",
-    "xianxia-scroll": "xianxia",
-    "default-dark": "xuanhuan"
   }
 }

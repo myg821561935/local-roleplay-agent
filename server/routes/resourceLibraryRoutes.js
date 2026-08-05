@@ -10,6 +10,7 @@ export async function handleResourceLibraryRoutes({
   res,
   url,
   resourceLibraryService,
+  contentLifecycleService,
   resolveContentPack,
   summarizeResolvedPack
 }) {
@@ -119,6 +120,11 @@ export async function handleResourceLibraryRoutes({
     return true;
   }
 
+  if (req.method === 'GET' && path === '/api/resource-library/packs/compatibility-overview') {
+    writeJson(res, 200, await resourceLibraryService.listPackCompatibilityOverview());
+    return true;
+  }
+
   if (req.method === 'GET' && path === '/api/resource-library/packs') {
     writeJson(res, 200, { packs: await resourceLibraryService.listPacks() });
     return true;
@@ -135,10 +141,66 @@ export async function handleResourceLibraryRoutes({
     return true;
   }
 
+  const tagRegistryRoute = matchResourceTagRegistryRoute(path);
+  if (tagRegistryRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new ApiError(400, 'RESOURCE_TAG_REGISTRY_INVALID');
+    }
+    try {
+      const result = await resourceLibraryService.applyWorldBookTagRegistry(
+        tagRegistryRoute.resourceId,
+        body
+      );
+      if (!result) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
+      writeJson(res, 200, result);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (error.message === 'RESOURCE_TAG_REGISTRY_KIND_UNSUPPORTED') {
+        throw new ApiError(409, error.message);
+      }
+      throw new ApiError(400, error.message || 'RESOURCE_TAG_REGISTRY_INVALID');
+    }
+    return true;
+  }
+
   const reevaluationRoute = matchResourceReevaluationRoute(path);
   if (reevaluationRoute && req.method === 'POST') {
     validateMutatingRequest(req);
     const result = await resourceLibraryService.reevaluateResource(reevaluationRoute.resourceId);
+    if (!result) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
+    writeJson(res, 200, result);
+    return true;
+  }
+
+  const revisionRollbackRoute = matchResourceRevisionRollbackRoute(path);
+  if (revisionRollbackRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    await readRequestJson(req);
+    try {
+      const resource = await resourceLibraryService.rollbackResource(
+        revisionRollbackRoute.resourceId,
+        revisionRollbackRoute.revisionId
+      );
+      if (!resource) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
+      writeJson(res, 200, { resource });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (error.message === 'RESOURCE_REVISION_NOT_FOUND') {
+        throw new ApiError(404, 'RESOURCE_REVISION_NOT_FOUND');
+      }
+      if (error.message === 'RESOURCE_REVISION_ALREADY_CURRENT') {
+        throw new ApiError(409, 'RESOURCE_REVISION_ALREADY_CURRENT');
+      }
+      throw new ApiError(400, error.message || 'RESOURCE_REVISION_ROLLBACK_FAILED');
+    }
+    return true;
+  }
+
+  const revisionRoute = matchResourceRevisionRoute(path);
+  if (revisionRoute && req.method === 'GET') {
+    const result = await resourceLibraryService.listResourceRevisions(revisionRoute.resourceId);
     if (!result) throw new ApiError(404, 'RESOURCE_NOT_FOUND');
     writeJson(res, 200, result);
     return true;
@@ -216,8 +278,63 @@ export async function handleResourceLibraryRoutes({
       if (String(error.message || '').startsWith('RESOURCE_NOT_FOUND:')) {
         throw new ApiError(404, 'RESOURCE_NOT_FOUND', error.message.split(':').slice(1).join(':'));
       }
+      if (String(error.code || '').startsWith('RESOURCE_PACK_')) {
+        throw new ApiError(409, error.code, error.message);
+      }
       throw new ApiError(400, 'RESOURCE_PACK_INVALID', error.message);
     }
+    return true;
+  }
+
+  const compatibilityUpgradeRoute = matchPackCompatibilityUpgradeRoute(path);
+  if (compatibilityUpgradeRoute && req.method === 'GET') {
+    try {
+      const preview = await resourceLibraryService.inspectPackCompatibilityUpgrade(
+        compatibilityUpgradeRoute.packId
+      );
+      if (!preview) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+      writeJson(res, 200, { preview });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (String(error.code || '').startsWith('RESOURCE_PACK_UPGRADE_')) {
+        throw new ApiError(409, error.code, error.message);
+      }
+      throw new ApiError(400, 'RESOURCE_PACK_UPGRADE_PREVIEW_FAILED', error.message);
+    }
+    return true;
+  }
+
+  if (compatibilityUpgradeRoute && req.method === 'POST') {
+    validateMutatingRequest(req);
+    const body = await readRequestJson(req);
+    try {
+      const pack = await resourceLibraryService.createPackCompatibilityUpgrade(
+        compatibilityUpgradeRoute.packId,
+        body
+      );
+      if (!pack) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+      writeJson(res, 200, { pack, summary: summarizeResolvedPack(pack) });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (
+        String(error.code || '').startsWith('RESOURCE_PACK_UPGRADE_')
+        || String(error.code || '').startsWith('RESOURCE_PACK_')
+      ) {
+        throw new ApiError(409, error.code, error.message);
+      }
+      if (String(error.message || '').startsWith('RESOURCE_NOT_FOUND:')) {
+        throw new ApiError(409, 'RESOURCE_PACK_UPGRADE_NOT_REBUILDABLE', error.message);
+      }
+      throw new ApiError(400, 'RESOURCE_PACK_UPGRADE_FAILED', error.message);
+    }
+    return true;
+  }
+
+  const packDeletionImpactRoute = matchPackDeletionImpactRoute(path);
+  if (packDeletionImpactRoute && req.method === 'GET') {
+    const impact = await contentLifecycleService.inspectPackDeletion(packDeletionImpactRoute.packId);
+    if (!impact) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    writeJson(res, 200, { impact });
     return true;
   }
 
@@ -233,9 +350,20 @@ export async function handleResourceLibraryRoutes({
 
   if (packRoute && req.method === 'DELETE') {
     validateMutatingRequest(req);
-    const removed = await resourceLibraryService.removePack(packRoute.packId);
-    if (!removed) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
-    writeJson(res, 200, { ok: true });
+    const body = await readRequestJson(req);
+    let result;
+    try {
+      result = await contentLifecycleService.deletePack(packRoute.packId, {
+        confirmDetach: body.confirmDetach === true
+      });
+    } catch (error) {
+      if (error.code === 'CONTENT_DELETE_CONFIRMATION_REQUIRED') {
+        throw new ApiError(409, error.code);
+      }
+      throw error;
+    }
+    if (!result) throw new ApiError(404, 'CONTENT_PACK_NOT_FOUND');
+    writeJson(res, 200, result);
     return true;
   }
 
@@ -252,13 +380,41 @@ function matchResourceReevaluationRoute(pathname) {
   return match ? { resourceId: decodeURIComponent(match[1]) } : null;
 }
 
+function matchResourceTagRegistryRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/tag-registry$/);
+  return match ? { resourceId: decodeURIComponent(match[1]) } : null;
+}
+
 function matchResourceContentRoute(pathname) {
   const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/content$/);
   return match ? { resourceId: decodeURIComponent(match[1]) } : null;
 }
 
+function matchResourceRevisionRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/revisions$/);
+  return match ? { resourceId: decodeURIComponent(match[1]) } : null;
+}
+
+function matchResourceRevisionRollbackRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/resources\/([^/]+)\/revisions\/([^/]+)\/rollback$/);
+  return match ? {
+    resourceId: decodeURIComponent(match[1]),
+    revisionId: decodeURIComponent(match[2])
+  } : null;
+}
+
 function matchPackRoute(pathname) {
   const match = pathname.match(/^\/api\/resource-library\/packs\/([^/]+)$/);
+  return match ? { packId: decodeURIComponent(match[1]) } : null;
+}
+
+function matchPackDeletionImpactRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/packs\/([^/]+)\/deletion-impact$/);
+  return match ? { packId: decodeURIComponent(match[1]) } : null;
+}
+
+function matchPackCompatibilityUpgradeRoute(pathname) {
+  const match = pathname.match(/^\/api\/resource-library\/packs\/([^/]+)\/compatibility-upgrade$/);
   return match ? { packId: decodeURIComponent(match[1]) } : null;
 }
 

@@ -1,3 +1,8 @@
+import {
+  normalizeWorldBookTagRegistry,
+  resolveWorldBookCharacterFilter
+} from './worldBookTagRegistry.js';
+
 export function importWorldBookFromPayload(payload = {}) {
   const rawBook = readJsonPayload(payload);
   return normalizeWorldBook(rawBook);
@@ -5,10 +10,11 @@ export function importWorldBookFromPayload(payload = {}) {
 
 export function normalizeWorldBook(rawBook = {}) {
   const entries = readWorldBookEntries(rawBook);
-  const fallbackDepth = normalizePositiveNumber(rawBook.scan_depth ?? rawBook.depth, 4);
+  const fallbackScanDepth = normalizePositiveNumber(rawBook.scan_depth, 4);
+  const tagRegistry = normalizeWorldBookTagRegistry(rawBook);
   return entries
-    .filter((entry) => entry && entry.enabled !== false && stringValue(entry.content))
-    .map((entry, index) => normalizeWorldBookEntry(entry, index, fallbackDepth));
+    .filter((entry) => entry && entry.enabled !== false && entry.disable !== true && stringValue(entry.content))
+    .map((entry, index) => normalizeWorldBookEntry(entry, index, fallbackScanDepth, tagRegistry));
 }
 
 function readWorldBookEntries(rawBook) {
@@ -18,10 +24,27 @@ function readWorldBookEntries(rawBook) {
   return [];
 }
 
-function normalizeWorldBookEntry(entry, index, fallbackDepth) {
+function normalizeWorldBookEntry(entry, index, fallbackScanDepth, tagRegistry) {
   const keywords = normalizeStringArray(entry.keys ?? entry.key);
   const secondaryKeywords = normalizeStringArray(entry.secondary_keys ?? entry.keysecondary);
   const title = stringValue(entry.name || entry.comment || keywords[0] || `世界书条目 ${index + 1}`);
+  const extensions = normalizeWorldBookExtensions(entry, fallbackScanDepth);
+  const entryTagRegistry = [
+    ...tagRegistry,
+    ...(Array.isArray(extensions.character_filter_tag_registry)
+      ? extensions.character_filter_tag_registry
+      : [])
+  ];
+  const characterFilterResolution = resolveWorldBookCharacterFilter(
+    extensions.character_filter,
+    { tagRegistry: entryTagRegistry }
+  );
+  const characterFilter = characterFilterResolution.filter;
+  if (characterFilter) extensions.character_filter = characterFilter;
+  if (characterFilterResolution.mappings.length) {
+    extensions.character_filter_tag_registry = characterFilterResolution.mappings;
+  }
+  const triggers = normalizeStringArray(extensions.triggers);
 
   return {
     id: `worldbook-${entry.uid ?? entry.id ?? index}-${slugify(title)}`,
@@ -34,17 +57,69 @@ function normalizeWorldBookEntry(entry, index, fallbackDepth) {
     logic: normalizeLogic(entry),
     content: stringValue(entry.content),
     priority: normalizePositiveNumber(entry.priority ?? entry.order, 50),
-    depth: normalizePositiveNumber(entry.depth ?? entry.scan_depth, fallbackDepth),
+    depth: normalizePositiveNumber(entry.extensions?.depth ?? entry.depth, 4),
     insertionOrder: normalizePositiveNumber(entry.insertion_order ?? entry.order, index),
     constant: entry.constant === true,
-    caseSensitive: entry.case_sensitive === true || entry.caseSensitive === true,
+    caseSensitive: normalizeOptionalBoolean(
+      entry.caseSensitive ?? entry.case_sensitive ?? extensions.case_sensitive
+    ),
+    matchWholeWords: normalizeOptionalBoolean(
+      entry.matchWholeWords ?? entry.match_whole_words ?? extensions.match_whole_words
+    ),
+    characterFilter,
+    triggers,
     position: normalizePosition(entry.position),
     scope: stringValue(entry.scope || 'prompt'),
     enabled: true,
     source: stringValue(entry.source || 'sillytavern-worldbook'),
-    extensions: isPlainObject(entry.extensions) ? entry.extensions : {},
+    extensions,
     updatedAt: new Date().toISOString()
   };
+}
+
+function normalizeWorldBookExtensions(entry, fallbackScanDepth) {
+  const extensions = isPlainObject(entry.extensions) ? { ...entry.extensions } : {};
+  const aliases = {
+    scan_depth: [entry.scan_depth],
+    probability: [entry.probability],
+    useProbability: [entry.useProbability, entry.use_probability],
+    group: [entry.group],
+    group_override: [entry.groupOverride, entry.group_override],
+    group_weight: [entry.groupWeight, entry.group_weight],
+    use_group_scoring: [entry.useGroupScoring, entry.use_group_scoring],
+    sticky: [entry.sticky],
+    cooldown: [entry.cooldown],
+    delay: [entry.delay],
+    exclude_recursion: [entry.excludeRecursion, entry.exclude_recursion],
+    prevent_recursion: [entry.preventRecursion, entry.prevent_recursion],
+    delay_until_recursion: [entry.delayUntilRecursion, entry.delay_until_recursion],
+    case_sensitive: [entry.caseSensitive, entry.case_sensitive],
+    match_whole_words: [entry.matchWholeWords, entry.match_whole_words],
+    character_filter: [entry.characterFilter, entry.character_filter],
+    triggers: [entry.triggers],
+    match_persona_description: [entry.matchPersonaDescription, entry.match_persona_description],
+    match_character_description: [entry.matchCharacterDescription, entry.match_character_description],
+    match_character_personality: [entry.matchCharacterPersonality, entry.match_character_personality],
+    match_character_depth_prompt: [entry.matchCharacterDepthPrompt, entry.match_character_depth_prompt],
+    match_scenario: [entry.matchScenario, entry.match_scenario],
+    match_creator_notes: [entry.matchCreatorNotes, entry.match_creator_notes]
+  };
+  Object.entries(aliases).forEach(([key, values]) => {
+    if (extensions[key] !== undefined) return;
+    const value = values.find((item) => item !== undefined && item !== null);
+    if (value !== undefined) extensions[key] = value;
+  });
+  if (extensions.scan_depth === undefined) {
+    extensions.scan_depth = fallbackScanDepth;
+    extensions.scan_depth_inherited = true;
+  }
+  return extensions;
+}
+
+function normalizeOptionalBoolean(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+  return Boolean(value);
 }
 
 function normalizeMatchMode(entry) {
@@ -77,7 +152,10 @@ function normalizeLogicValue(value) {
 }
 
 function normalizePosition(position) {
-  if (typeof position === 'number') return position === 1 ? 'after_prompt' : 'after_character';
+  if (typeof position === 'number') {
+    // SillyTavern 规范：0 = before_char（角色描述前）、1 = after_char（角色描述后）
+    return position === 1 ? 'after_character' : 'before_character';
+  }
   return stringValue(position || 'after_character');
 }
 

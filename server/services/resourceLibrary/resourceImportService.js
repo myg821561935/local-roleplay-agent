@@ -44,7 +44,7 @@ export class ResourceImportService {
       title: candidate.title,
       summary: candidate.summary,
       tags: uniqueStrings(candidate.tags),
-      collections: [],
+      collections: uniqueStrings(candidate.collections),
       favorite: false,
       format: adapter.id,
       fingerprint: inspected.fingerprint,

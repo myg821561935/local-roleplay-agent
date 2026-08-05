@@ -1,14 +1,16 @@
 import crypto from 'node:crypto';
 
 export const SIMULATION_SPEC = 'lra.simulation/v1';
+export const WORLD_SYSTEMS_SPEC = 'narrative-engine.world-systems/v1';
 
-export function createSimulationState({ actors = [], clock } = {}) {
+export function createSimulationState({ actors = [], clock, systems } = {}) {
   const normalizedActors = normalizeActors(actors);
   return {
     spec: SIMULATION_SPEC,
     revision: 0,
     clock: normalizeClock(clock),
     actors: normalizedActors,
+    systems: normalizeWorldSystems(systems),
     backstageEvents: [],
     settings: {
       autoAdvanceMinutes: 0,
@@ -18,13 +20,16 @@ export function createSimulationState({ actors = [], clock } = {}) {
   };
 }
 
-export function ensureSimulationMemory(memory, { characterCard, groupMembers, characterPresets } = {}) {
+export function ensureSimulationMemory(memory, { characterCard, groupMembers, characterPresets, worldSystems } = {}) {
   const next = structuredClone(memory && typeof memory === 'object' ? memory : {});
   const existing = next.simulation && typeof next.simulation === 'object'
     ? next.simulation
     : createSimulationState();
   const seedActors = buildActorSeeds({ characterCard, groupMembers, characterPresets });
   const actors = normalizeActors(existing.actors);
+  const systems = hasWorldSystemContent(existing.systems)
+    ? normalizeWorldSystems(existing.systems)
+    : normalizeWorldSystems(worldSystems);
   const rosterInitialized = existing.settings?.rosterInitialized === true
     || actors.length > 0
     || normalizeInteger(existing.revision, 0) > 0;
@@ -43,6 +48,7 @@ export function ensureSimulationMemory(memory, { characterCard, groupMembers, ch
     revision: normalizeInteger(existing.revision, 0),
     clock: normalizeClock(existing.clock),
     actors,
+    systems,
     backstageEvents: normalizeBackstageEvents(existing.backstageEvents),
     settings: {
       autoAdvanceMinutes: clampInteger(existing.settings?.autoAdvanceMinutes, 0, 1440, 0),
@@ -83,6 +89,47 @@ export function normalizeActors(input) {
     });
   }
   return actors;
+}
+
+export function normalizeWorldSystems(input) {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  return {
+    spec: WORLD_SYSTEMS_SPEC,
+    topology: {
+      nodes: normalizeSystemRecords(source.topology?.nodes, 240),
+      edges: normalizeSystemEdges(source.topology?.edges, 400),
+      currentNodeId: String(source.topology?.currentNodeId || '').slice(0, 160)
+    },
+    population: {
+      profiles: normalizePopulationProfiles(source.population?.profiles, 160),
+      scheduleRules: normalizeSystemRecords(source.population?.scheduleRules, 80)
+    },
+    factions: {
+      entities: normalizeSystemRecords(source.factions?.entities, 120),
+      relations: normalizeFactionRelations(source.factions?.relations, 240)
+    },
+    calendar: {
+      name: String(source.calendar?.name || '').slice(0, 120),
+      era: String(source.calendar?.era || '').slice(0, 120),
+      dayLabel: String(source.calendar?.dayLabel || '').slice(0, 120),
+      rules: normalizeSystemRecords(source.calendar?.rules, 80)
+    },
+    economy: {
+      currencies: uniqueStrings(source.economy?.currencies, 30, 80),
+      markets: normalizeSystemRecords(source.economy?.markets, 80),
+      rules: normalizeSystemRecords(source.economy?.rules, 100)
+    },
+    cultivation: {
+      paths: normalizeSystemRecords(source.cultivation?.paths, 100),
+      scales: uniqueStrings(source.cultivation?.scales, 40, 80),
+      backlash: normalizeSystemRecords(source.cultivation?.backlash, 40),
+      rules: normalizeSystemRecords(source.cultivation?.rules, 120)
+    },
+    source: {
+      entryCount: clampInteger(source.source?.entryCount, 0, 100000, 0),
+      mappedCount: clampInteger(source.source?.mappedCount, 0, 100000, 0)
+    }
+  };
 }
 
 export function advanceSimulationClock(simulationInput, { minutes = 60, reason = 'manual', now = () => new Date() } = {}) {
@@ -153,20 +200,26 @@ export function projectSimulation(simulationInput, { director = false } = {}) {
   return {
     ...simulation,
     actors,
+    systems: projectWorldSystems(simulation.systems, { director }),
     backstageEvents: simulation.backstageEvents.filter((event) => director || event.visibility === 'public')
   };
 }
 
 export function renderSimulationPrompt(memory, { targetSpeaker } = {}) {
   const simulation = normalizeSimulation(memory?.simulation);
-  if (!simulation.actors.length) return '';
+  if (!simulation.actors.length && !hasWorldSystemContent(simulation.systems)) return '';
   const lines = [
-    '# 世界时钟与 NPC 状态',
+    '# 结构化世界状态',
     `时间：${simulation.clock.label}（修订 ${simulation.revision}）`,
-    '以下“私有”内容只用于保持角色动机与信息边界，不得直接向用户泄露；只能通过可观察行为、调查或角色主动透露进入正文。'
+    '以下资料来自安全转换后的世界书与当前模拟状态。它们是叙事约束，不代表原卡的 JavaScript 或 EJS 已执行。',
+    '世界演化必须通过世界状态、角色日程、动作协议与事件账本落地；以下“私有”内容不得直接向用户泄露。'
   ];
   const target = String(targetSpeaker || '').trim();
-  for (const actor of simulation.actors.filter((item) => item.enabled).slice(0, 16)) {
+  const enabledActors = simulation.actors.filter((item) => item.enabled);
+  const orderedActors = target
+    ? [...enabledActors.filter((item) => item.name === target), ...enabledActors.filter((item) => item.name !== target)]
+    : enabledActors;
+  for (const actor of orderedActors.slice(0, 16)) {
     const privateFacts = actor.privateKnowledge.slice(0, 8).join('；');
     const agenda = actor.agenda.filter((item) => item.status === 'active').slice(0, 4).map((item) => item.title).join('；');
     lines.push([
@@ -180,6 +233,7 @@ export function renderSimulationPrompt(memory, { targetSpeaker } = {}) {
       agenda ? `幕后议程：${agenda}` : ''
     ].filter(Boolean).join('\n'));
   }
+  appendWorldSystemsPrompt(lines, simulation.systems);
   return lines.join('\n\n');
 }
 
@@ -221,6 +275,7 @@ function normalizeSimulation(input) {
     revision: normalizeInteger(source.revision, 0),
     clock: normalizeClock(source.clock),
     actors: normalizeActors(source.actors),
+    systems: normalizeWorldSystems(source.systems),
     backstageEvents: normalizeBackstageEvents(source.backstageEvents),
     settings: {
       autoAdvanceMinutes: clampInteger(source.settings?.autoAdvanceMinutes, 0, 1440, 0),
@@ -230,6 +285,140 @@ function normalizeSimulation(input) {
         || normalizeInteger(source.revision, 0) > 0
     }
   };
+}
+
+function appendWorldSystemsPrompt(lines, systemsInput) {
+  const systems = normalizeWorldSystems(systemsInput);
+  appendSystemRecordPrompt(lines, '地点拓扑', systems.topology.nodes, 12);
+  appendSystemRecordPrompt(lines, 'NPC 与日程规则', systems.population.profiles, 10);
+  appendSystemRecordPrompt(lines, '势力演化', systems.factions.entities, 10);
+  appendSystemRecordPrompt(lines, '历法与天候', systems.calendar.rules, 8);
+  appendSystemRecordPrompt(lines, '经济规则', systems.economy.rules, 8);
+  appendSystemRecordPrompt(lines, '修行与反噬', systems.cultivation.rules, 10);
+  if (systems.economy.currencies.length) lines.push(`经济单位：${systems.economy.currencies.join('、')}`);
+  if (systems.cultivation.scales.length) lines.push(`不可逆/状态刻度：${systems.cultivation.scales.join('、')}`);
+}
+
+function appendSystemRecordPrompt(lines, title, records, limit) {
+  const visible = records.filter((record) => record.visibility !== 'director').slice(0, limit);
+  const director = records.filter((record) => record.visibility === 'director').slice(0, Math.max(0, limit - visible.length));
+  const selected = [...visible, ...director];
+  if (!selected.length) return;
+  lines.push([
+    `## ${title}`,
+    ...selected.map((record) => `- ${record.name}${record.summary ? `：${record.summary}` : ''}${record.visibility === 'director' ? '（私有）' : ''}`)
+  ].join('\n'));
+}
+
+function projectWorldSystems(input, { director }) {
+  const systems = normalizeWorldSystems(input);
+  if (director) return systems;
+  const publicRecords = (records) => records.filter((record) => record.visibility !== 'director');
+  return {
+    ...systems,
+    topology: { ...systems.topology, nodes: publicRecords(systems.topology.nodes) },
+    population: {
+      ...systems.population,
+      profiles: publicRecords(systems.population.profiles),
+      scheduleRules: publicRecords(systems.population.scheduleRules)
+    },
+    factions: { ...systems.factions, entities: publicRecords(systems.factions.entities) },
+    calendar: { ...systems.calendar, rules: publicRecords(systems.calendar.rules) },
+    economy: {
+      ...systems.economy,
+      markets: publicRecords(systems.economy.markets),
+      rules: publicRecords(systems.economy.rules)
+    },
+    cultivation: {
+      ...systems.cultivation,
+      paths: publicRecords(systems.cultivation.paths),
+      backlash: publicRecords(systems.cultivation.backlash),
+      rules: publicRecords(systems.cultivation.rules)
+    }
+  };
+}
+
+function hasWorldSystemContent(input) {
+  const systems = normalizeWorldSystems(input);
+  return systems.topology.nodes.length > 0
+    || systems.population.profiles.length > 0
+    || systems.factions.entities.length > 0
+    || systems.calendar.rules.length > 0
+    || systems.economy.rules.length > 0
+    || systems.cultivation.rules.length > 0;
+}
+
+function normalizeSystemRecords(input, limit) {
+  return (Array.isArray(input) ? input : []).slice(0, limit).map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const name = String(entry.name || entry.title || '').trim().slice(0, 120);
+    if (!name) return null;
+    return {
+      id: String(entry.id || `system-${index + 1}`).slice(0, 160),
+      name,
+      summary: String(entry.summary || entry.description || '').trim().slice(0, 500),
+      sourceEntryId: String(entry.sourceEntryId || '').slice(0, 160),
+      constant: entry.constant === true,
+      priority: clampInteger(entry.priority, -100000, 100000, 50),
+      visibility: normalizeVisibility(entry.visibility)
+    };
+  }).filter(Boolean);
+}
+
+function normalizePopulationProfiles(input, limit) {
+  return (Array.isArray(input) ? input : []).slice(0, limit).map((entry, index) => {
+    const [record] = normalizeSystemRecords([entry], 1);
+    if (!record) return null;
+    return {
+      ...record,
+      id: String(entry.id || `population-${index + 1}`).slice(0, 160),
+      schedules: normalizeScheduleSlots(entry.schedules)
+    };
+  }).filter(Boolean);
+}
+
+function normalizeScheduleSlots(input) {
+  return (Array.isArray(input) ? input : []).slice(0, 24).map((entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const at = normalizeTime(entry.at || entry.time);
+    if (!at) return null;
+    return {
+      at,
+      activity: String(entry.activity || entry.status || '').trim().slice(0, 160)
+    };
+  }).filter(Boolean);
+}
+
+function normalizeSystemEdges(input, limit) {
+  return (Array.isArray(input) ? input : []).slice(0, limit).map((entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const from = String(entry.from || '').slice(0, 160);
+    const to = String(entry.to || '').slice(0, 160);
+    if (!from || !to) return null;
+    return {
+      from,
+      to,
+      relation: String(entry.relation || entry.type || 'connected').slice(0, 80),
+      cost: clampInteger(entry.cost, 0, 1000000, 1),
+      visibility: normalizeVisibility(entry.visibility)
+    };
+  }).filter(Boolean);
+}
+
+function normalizeFactionRelations(input, limit) {
+  return (Array.isArray(input) ? input : []).slice(0, limit).map((entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const from = String(entry.from || '').slice(0, 160);
+    const to = String(entry.to || '').slice(0, 160);
+    if (!from || !to) return null;
+    return {
+      from,
+      to,
+      stance: clampInteger(entry.stance, -100, 100, 0),
+      reason: String(entry.reason || '').slice(0, 300),
+      visibility: normalizeVisibility(entry.visibility)
+    };
+  }).filter(Boolean);
 }
 
 function normalizeClock(input) {

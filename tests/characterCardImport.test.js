@@ -19,6 +19,7 @@ test('imports Character Card V2 JSON into local character card and world book en
   assert.equal(imported.characterCard.firstMessage, '夜雨打在刀鞘上。');
   assert.deepEqual(imported.characterCard.alternateGreetings, ['雨还没停。']);
   assert.equal(imported.characterCard.systemPrompt, '保持武侠叙事。');
+  assert.equal(imported.characterCard.extensions.local_roleplay_agent.sourceFileName, 'shen.json');
   assert.equal(imported.worldBook.length, 1);
   assert.equal(imported.worldBook[0].title, '镇武司暗线');
   assert.deepEqual(imported.worldBook[0].keywords, ['镇武司']);
@@ -38,6 +39,7 @@ test('imports Character Card V2 from PNG Chara metadata', () => {
 
   assert.equal(imported.characterCard.name, '沈观澜');
   assert.equal(imported.characterCard.sourceSpec, 'chara_card_v2');
+  assert.equal(imported.characterCard.extensions.local_roleplay_agent.sourceFileName, 'shen.png');
   assert.equal(imported.worldBook[0].source, 'character-card-v2');
 });
 
@@ -73,6 +75,30 @@ test('extracts the original PNG portrait and keeps its pixels when exporting an 
   assert.equal(reimported.characterCard.firstMessage, '新开场。');
 });
 
+test('removes embedded character metadata before persisting a large PNG portrait', () => {
+  const oversizedMetadata = Buffer.alloc(12 * 1024 * 1024 + 1, 0x41);
+  const original = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    createChunk('tEXt', Buffer.concat([Buffer.from('chara\0', 'latin1'), oversizedMetadata])),
+    createChunk('tEXt', Buffer.from('author\0community', 'latin1')),
+    createChunk('IDAT', Buffer.from('portrait-pixels')),
+    createChunk('IEND', Buffer.alloc(0))
+  ]);
+
+  const extracted = extractCharacterCardImage({
+    fileName: 'large-card.png',
+    mimeType: 'image/png',
+    data: original.toString('base64'),
+    encoding: 'base64'
+  });
+
+  assert.ok(original.length > 12 * 1024 * 1024);
+  assert.ok(extracted.bytes.length < 12 * 1024 * 1024);
+  assert.equal(hasTextChunk(extracted.bytes, 'chara'), false);
+  assert.equal(hasTextChunk(extracted.bytes, 'author'), true);
+  assert.deepEqual(readChunkData(extracted.bytes, 'IDAT'), Buffer.from('portrait-pixels'));
+});
+
 test('imports Character Card V3 PNG envelope and embedded lore settings', () => {
   const png = createPngWithTextChunk('Chara', Buffer.from(JSON.stringify(v3CardFixture()), 'utf8').toString('base64'));
   const imported = importCharacterCardFromPayload({
@@ -94,7 +120,7 @@ test('imports Character Card V3 PNG envelope and embedded lore settings', () => 
   assert.equal(imported.worldBook[0].secondaryMatchMode, 'regex');
   assert.equal(imported.worldBook[0].depth, 7);
   assert.equal(imported.worldBook[0].caseSensitive, true);
-  assert.equal(imported.worldBook[0].position, 'before_char');
+  assert.equal(imported.worldBook[0].position, 'before_character');
 });
 
 function v2CardFixture() {
@@ -203,3 +229,73 @@ function readChunkData(png, expectedType) {
   }
   return null;
 }
+
+function hasTextChunk(png, keyword) {
+  let offset = 8;
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.subarray(offset + 4, offset + 8).toString('ascii');
+    const data = png.subarray(offset + 8, offset + 8 + length);
+    if (['tEXt', 'zTXt', 'iTXt'].includes(type)) {
+      const separator = data.indexOf(0);
+      if (separator >= 0) {
+        const encoding = type === 'iTXt' ? 'utf8' : 'latin1';
+        if (data.subarray(0, separator).toString(encoding) === keyword) return true;
+      }
+    }
+    offset += 12 + length;
+  }
+  return false;
+}
+
+test('normalizes numeric world book position to global after_character/before_character', () => {
+  const fixture = {
+    spec: 'chara_card_v2',
+    data: {
+      name: '测试卡',
+      description: '描述',
+      character_book: {
+        entries: [
+          { id: 1, content: '条目1', position: 0 },
+          { id: 2, content: '条目2', position: 1 },
+          { id: 3, content: '条目3', position: 'after_char' },
+          { id: 4, content: '条目4', position: 'before_char' }
+        ]
+      }
+    }
+  };
+  const imported = importCharacterCardFromPayload({
+    fileName: 'test.json',
+    mimeType: 'application/json',
+    data: JSON.stringify(fixture)
+  });
+  assert.equal(imported.worldBook[0].position, 'before_character');
+  assert.equal(imported.worldBook[1].position, 'after_character');
+  assert.equal(imported.worldBook[2].position, 'after_character');
+  assert.equal(imported.worldBook[3].position, 'before_character');
+});
+
+test('filters out disabled world book entries with disable: true', () => {
+  const fixture = {
+    spec: 'chara_card_v2',
+    data: {
+      name: '测试卡',
+      description: '描述',
+      character_book: {
+        entries: [
+          { id: 1, content: '启用', disable: false },
+          { id: 2, content: '禁用', disable: true },
+          { id: 3, content: '默认启用' }
+        ]
+      }
+    }
+  };
+  const imported = importCharacterCardFromPayload({
+    fileName: 'test.json',
+    mimeType: 'application/json',
+    data: JSON.stringify(fixture)
+  });
+  assert.equal(imported.worldBook.length, 2);
+  assert.equal(imported.worldBook[0].content, '启用');
+  assert.equal(imported.worldBook[1].content, '默认启用');
+});

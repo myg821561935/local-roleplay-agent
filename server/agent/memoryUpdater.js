@@ -2,11 +2,13 @@ import { appendLedgerEvent, createTurnLedgerEvent } from '../simulation/eventLed
 import { createSimulationState } from '../simulation/npcSimulation.js';
 import { replayActionHistory } from '../simulation/worldStateArbiter.js';
 import { replayMvuHistory } from '../compat/mvuProtocol.js';
+import { createMemoryState } from '../memory/memoryContract.js';
 
 export function createDefaultMemory() {
   const worldState = {
     protagonist: { name: '', realm: '', traits: [], injuries: [], inventory: [] },
     location: { current: '', knownPlaces: [] },
+    characters: [],
     relationships: [],
     quests: [],
     factions: [],
@@ -17,6 +19,14 @@ export function createDefaultMemory() {
   return {
     rollingSummary: '',
     unsummarizedTurnCount: 0,
+    episodicMemory: createMemoryState(),
+    knowledgeGraph: {
+      schemaVersion: 1,
+      storage: 'sqlite',
+      syncState: 'pending',
+      nodes: [],
+      edges: []
+    },
     worldState,
     worldStateBaseline: structuredClone(worldState),
     memoryCards: [],
@@ -62,6 +72,7 @@ export function rebuildMemoryFromMessages({ memory, messages }) {
   const next = {
     ...createDefaultMemory(),
     rollingSummary: previous.rollingSummary || '',
+    episodicMemory: structuredClone(previous.episodicMemory || createMemoryState()),
     worldState: structuredClone(replayed.memory.worldState || createDefaultMemory().worldState),
     worldStateBaseline: structuredClone(replayed.memory.worldStateBaseline || previous.worldStateBaseline || previous.worldState || createDefaultMemory().worldState),
     memoryCards: Array.isArray(previous.memoryCards) ? structuredClone(previous.memoryCards) : [],
